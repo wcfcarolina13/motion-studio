@@ -1,0 +1,7 @@
+{
+  "name": "motion-studio",
+  "version": "1.0.0",
+  "description": "Code-rendered motion-graphics films for Claude Code: live preview, licensed music cut to the beat, recorded foley, and a blind-read gate that proves the film still makes its source's point.",
+  "author": { "name": "Bradley Stone" },
+  "license": "MIT"
+}

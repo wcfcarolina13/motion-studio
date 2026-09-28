@@ -1,0 +1,15 @@
+{
+  "name": "motion-studio",
+  "description": "motion-studio: code-rendered motion-graphics films for Claude Code.",
+  "owner": {
+    "name": "Bradley Stone"
+  },
+  "plugins": [
+    {
+      "name": "motion-studio",
+      "version": "1.0.0",
+      "source": "./plugin",
+      "description": "Code-rendered motion-graphics films for Claude Code: live preview, licensed music cut to the beat, recorded foley, and a blind-read gate."
+    }
+  ]
+}

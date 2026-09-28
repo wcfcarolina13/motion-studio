@@ -1,0 +1,49 @@
+# Sound
+
+Recorded or licensed audio only: never default to synthesized beeps or procedural jingles.
+
+## Licences (recorded in `library/catalog.json` per asset)
+
+- **Mixkit music** (Free License): social posts, YouTube, ads; not TV/radio broadcast, CDs/DVDs, games or music-only remixes. Editing a track under a film is fine. YouTube Content ID claims: forward to team@mixkit.co.
+- **Mixkit SFX** (Free License): any video use, no attribution.
+- **Kenney packs**: CC0.
+- Downloads: `studio.py fetch` uses plain HTTP with a browser User-Agent. Chrome's ad blocker blocks assets.mixkit.co, so don't try to fetch through the browser. Pexels refuses non-browser downloads.
+
+## Choosing the track
+
+1. `studio.py search music <category>` (house, downtempo, hip-hop, corporate, cinematic…), then `fetch music <id>` for 3–4 candidates. Fetching measures each one.
+2. Read the bar-loudness map from `measure`: an intro, a build, a drop (+6 dB or more), a groove, a breakdown (−8 dB or so), a return. Tracks that sit flat are hard to cut a story to.
+3. Map the chain onto the sections: the problem over the sparse intro or build; the turn on the drop; the quiet or shaping part on the breakdown; the punchline on the return; the handoff on the ring-out.
+4. **The film runs at the track's measured bpm.** Set `K.setup({bpm})` to the catalog value exactly (`library` prints it, e.g. 134.003); never time-stretch the song. The film's length is a whole number of bars.
+
+`measure` corrects the downbeat automatically: product-film's `beats.py` found Cat Walk's grid perfectly but put the downbeat two beats early, and section changes happen on downbeats. It prints the shift; if it's non-zero on a track with a loose grid (spread over ~6 ms), confirm by ear before trusting it.
+
+## sound.py
+
+```python
+m = A.Mix(Path(__file__).parent); b = m.b
+m.music("mixkit-371", [(7, 10), (11, 15), (15, 21), (31, 33), (47, 49), (59, 61)])   # song bars → film bars, back to back
+m.bed("mixkit-1213", [(b(7), b(13, 1.5), 1.0)], gain=0.55)                           # forest bed under the walk
+m.put(A.asset("mixkit-1113"), b(0, 1), 0.5)                                           # a click on a tab, on its beat
+steps = A.single_hits("mixkit-1230", "mixkit-1214")                                    # single footsteps from recordings
+m.put(A.asset("impactSoft_heavy_003"), b(7) + 0.22, 0.7)                              # a lid shutting (Kenney)
+m.master()                                                                             # two-pass loudnorm −14 LUFS / −1.5 dBTP
+```
+
+- `put` lands each clip's measured peak on the cue, so a sound is on the frame even when the file starts with silence.
+- One sound per meaningful event, not every animation. Music gain ~0.8; cues 0.2–0.6; beds 0.4–0.6.
+- The last ~1.4 s of the music fades (`m.music(..., fade_out=1.4)`) and `master()` fades the final 0.8 s, so the final card sits on a fade. End on a ring-out segment, or pass `fade_out=0` if the card needs full level.
+- Every cue time reads the same constants as the picture (`b(bar, beat)` and the film's named times). Move a picture event and move its cue.
+- Vary repeated sounds: cycle a list of footsteps or taps, jitter gain ±15%, alternate the pan.
+- The sound palette is part of the ledger row: the next film uses different foley, not the same clicks.
+
+## Where sounds came from so far
+
+| Event | Asset |
+|---|---|
+| tab/mouse clicks | mixkit-1113, mixkit-2997, mixkit-1111 |
+| key presses, typing, backspace | mixkit-2541, mixkit-2531, mixkit-2539 |
+| forest bed, footsteps | mixkit-1213, mixkit-1230, mixkit-1214 |
+| whooshes | mixkit-1490, mixkit-1489 |
+| siren, horn, crowd | mixkit-1652, mixkit-1654, mixkit-3022 |
+| soft/wood/heavy impacts | Kenney impact-sounds (impactSoft_*, impactWood_*) |
