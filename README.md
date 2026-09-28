@@ -2,6 +2,10 @@
 
 A Claude Code skill for making short motion-graphics films in code: article trailers, explainers, product launch films, inbox digests. Claude writes the film as one HTML file where every frame is a function of time, renders it in headless Chrome, cuts licensed music to the beat, places recorded sound effects on their peaks, and checks the result before you see it.
 
+![The laptop shuts on the music's drop; its closed edge becomes the trail the forest grows from](docs/walk-to-digest-v3-excerpt.gif)
+
+*An excerpt from* ***Walk to Digest*** *(35 s, 4:5), made with this skill from the Substack essay ["Write More Without Spending More Time on Your Computer"](https://brewblocks.substack.com/p/write-more-without-spending-more). [Watch the full film with sound](docs/walk-to-digest-v3.mp4). Soundtrack: "Cat Walk" and sound effects from Mixkit (Mixkit Free License), impacts from Kenney (CC0).*
+
 What makes it more than "Claude, make me a video":
 
 - **A thesis contract.** Before anything moves, the storyboard states the source's thesis and argument chain. Every edit and every reviewer note answers to it, because the easiest way to ruin a film is a series of reasonable cuts that quietly remove its point.
