@@ -591,14 +591,15 @@ if (TL.captions) {
     ws.forEach((w, k) => {
       page.push(w);
       const chars = page.map(x => x[0]).join(" ").length, end = /[.!?]$/.test(w[0]), comma = /[,;:]$/.test(w[0]);
-      if (end || page.length >= 7 || chars > 40 || (comma && page.length >= 3)) flush();
+      // short pages (about four words) so the eye can't run ahead of the voice
+      if (end || page.length >= 4 || chars > 26 || (comma && page.length >= 2)) flush();
     });
     flush();
   });
   capPages.forEach((pg, i) => {
     const next = capPages[i + 1];
-    pg.t0 = pg.words[0][1] - 0.08;
-    pg.t1 = next && next.s === pg.s ? next.words[0][1] - 0.08 : Math.min(pg.s.t1, pg.words[pg.words.length - 1][2] + 0.5);
+    pg.t0 = pg.words[0][1] - 0.05;
+    pg.t1 = next && next.s === pg.s ? next.words[0][1] - 0.05 : Math.min(pg.s.t1, pg.words[pg.words.length - 1][2] + 0.5);
     const box = document.createElement("div"), inner = document.createElement("div");
     Object.assign(box.style, { position: "absolute", left: "80px", width: (W - 160) + "px", top: (H - 128) + "px", height: "64px", overflow: "hidden", textAlign: "center",
       fontFamily: SANS, fontSize: "44px", fontWeight: "600", lineHeight: "64px" });
@@ -648,11 +649,11 @@ K.run(t => {
     const vis = t >= pg.t0 && t < pg.t1;
     pg.box.style.visibility = vis ? "visible" : "hidden";
     if (!vis) return;
-    const up = K.eout(K.prog(t, pg.t0, pg.t0 + 0.2)), gone = K.ein(K.prog(t, pg.t1 - 0.18, pg.t1));
+    const up = K.eout(K.prog(t, pg.t0, pg.t0 + 0.12)), gone = K.ein(K.prog(t, pg.t1 - 0.1, pg.t1));
     pg.inner.style.transform = `translateY(${(1 - up) * 100 - gone * 100}%)`;
     pg.spans.forEach((sp, k) => {
-      const w = pg.words[k], nx = pg.words[k + 1], lit = K.prog(t, w[1] - 0.04, w[1] + 0.12);
-      const now = t >= w[1] - 0.04 && (!nx || t < nx[1] - 0.04) && t < w[2] + 0.3;   // one word at a time
+      const w = pg.words[k], nx = pg.words[k + 1], lit = K.prog(t, w[1] - 0.02, w[1] + 0.08);
+      const now = t >= w[1] - 0.02 && (!nx || t < nx[1] - 0.02) && t < w[2] + 0.15;   // one word at a time, lit as it is said
       sp.style.color = now ? C.ACCENT : K.mix("#6b6b67", C.INK, lit);
     });
   });

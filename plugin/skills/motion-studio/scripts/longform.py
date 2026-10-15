@@ -13,7 +13,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
-  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh w.wav] [--bed-db -24]
+  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh w.wav] [--bed-db -24] [--sfx]
   longform.py render <film> [--workers 4] [--scale 1.0]
   longform.py final <film>                      mux render + mix, verify
   longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes
@@ -160,7 +160,7 @@ def cmd_timeline(a):
     if chapters:
         chapters[-1]["t1"] = total
     tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs,
-          "chapters": chapters, "captions": bool(sc.get("captions", False)) and any("words" in s for s in segs),
+          "chapters": chapters, "captions": bool(sc.get("captions", True)) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues}
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
     # narration bed: every clip placed at its segment start
@@ -357,6 +357,78 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
     return dest
 
 
+def build_sfx(film, tl, sr=48000):
+    """Small UI sounds under the picture, drawn in code (no samples) and placed from the timeline: a buzz when a
+    phone lights, a soft ping when a message lands, a paper tick when a card is pinned, a thud when a stamp hits."""
+    import numpy as np
+    import wave
+
+    def tt(d):
+        return np.arange(int(d * sr)) / sr
+
+    def thump(d, f0, f1, decay):
+        t = tt(d)
+        f = f1 + (f0 - f1) * np.exp(-t * 25)
+        return np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-t * decay) * np.minimum(1, t / 0.002)
+
+    rng = np.random.default_rng(3)
+
+    def noise(d, lo, hi, decay):
+        from scipy.signal import butter, sosfilt
+        t = tt(d)
+        return sosfilt(butter(2, [lo / (sr / 2), hi / (sr / 2)], "band", output="sos"), rng.standard_normal(len(t))) * np.exp(-t * decay)
+
+    def buzz():
+        t = tt(0.42)
+        on = ((t % 0.21) < 0.13).astype(float)
+        v = np.sign(np.sin(2 * np.pi * 165 * t)) * 0.5 + np.sin(2 * np.pi * 330 * t) * 0.3
+        from scipy.signal import butter, sosfilt
+        return sosfilt(butter(2, 900 / (sr / 2), output="sos"), v * on) * 0.5
+
+    def ping():
+        t = tt(0.5)
+        return (np.sin(2 * np.pi * 1318.5 * t) * np.exp(-t * 9) + 0.6 * np.sin(2 * np.pi * 1975.5 * t) * np.exp(-t * 12) * (t > 0.07)) * np.minimum(1, t / 0.003) * 0.35
+
+    def pin():
+        return np.concatenate([noise(0.05, 2000, 6000, 80) * 0.5 + thump(0.05, 180, 120, 60)[:int(0.05 * sr)] * 0.4, np.zeros(10)])
+
+    def thud():
+        x = thump(0.4, 90, 45, 9) * 0.9
+        x[:int(0.08 * sr)] += noise(0.08, 200, 2500, 40) * 0.4
+        return x
+
+    kinds = {"buzz": buzz(), "ping": ping(), "pin": pin(), "thud": thud()}
+    events = []
+    for sg in tl["segments"]:
+        d = sg.get("data") or {}
+        if sg["type"] == "stage":
+            for b in d.get("beats", []):
+                if b.get("t") is None:
+                    continue
+                if b.get("glow"):
+                    events.append((b["t"], "buzz"))
+                if b.get("notify"):
+                    events.append((b["t"] + (0.12 if b.get("glow") else 0.0), "ping"))
+        elif sg["type"] == "board":
+            events += [(c["t"] - 0.05, "pin") for c in d.get("cards", []) if c.get("t") is not None]
+            if d.get("stamp", {}).get("t") is not None:
+                events.append((d["stamp"]["t"] - 0.05 + 0.12, "thud"))
+        elif sg["type"] == "sms":
+            events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
+    total = tl["duration"]
+    out = np.zeros(int(total * sr) + sr)
+    for t, k in events:
+        x, i = kinds[k], int(max(0, t) * sr)
+        out[i:i + len(x)] += x[:len(out) - i]
+    out = np.stack([out, out], 1)[:int(total * sr)]
+    dest = film / "out" / "sfx.wav"
+    with wave.open(str(dest), "wb") as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes((np.clip(out, -1, 1) * 32767).astype("<i2").tobytes())
+    print(f"sfx: {len(events)} sounds ({', '.join(f'{k} {sum(1 for _, x in events if x == k)}' for k in kinds)})")
+    return dest
+
+
 def cmd_mix(a):
     """Narration on top; the music bed ducked under the voice; an optional whoosh at each chapter start."""
     film = Path(a.film).resolve()
@@ -397,6 +469,11 @@ def cmd_mix(a):
             ms = int(max(0, c - 0.25) * 1000)
             filt.append(f"[w{i}]adelay={ms}|{ms}[wd{i}]")
             mix_in.append(f"[wd{i}]")
+    if a.sfx:
+        base = len(inputs) // 2
+        inputs += ["-i", str(build_sfx(film, tl))]
+        filt.append(f"[{base}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={a.sfx_db}dB[sfx]")
+        mix_in.append("[sfx]")
     filt.append("".join(mix_in) + f"amix=inputs={len(mix_in)}:normalize=0:dropout_transition=0,atrim=0:{total}[pre]")
     script = film / "out" / "mix.filter"
     script.write_text(";".join(filt))
@@ -557,7 +634,9 @@ def main():
     p = sp.add_parser("music"); p.add_argument("film"); p.add_argument("--default", default="serious"); p.add_argument("--fit", type=float, default=0.6)
     p.set_defaults(fn=cmd_music)
     p = sp.add_parser("mix"); p.add_argument("film"); p.add_argument("--plan", action="store_true"); p.add_argument("--music")
-    p.add_argument("--whoosh"); p.add_argument("--bed-db", type=float, default=-24); p.set_defaults(fn=cmd_mix)
+    p.add_argument("--whoosh"); p.add_argument("--bed-db", type=float, default=-25.5)
+    p.add_argument("--sfx", action="store_true", help="add UI sounds from the timeline: phone buzz, message ping, card pin, stamp")
+    p.add_argument("--sfx-db", type=float, default=-12); p.set_defaults(fn=cmd_mix)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")

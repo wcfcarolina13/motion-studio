@@ -11,13 +11,13 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
 | word times | `python3 $L align <film>` | `narration/words.json` (offline forced alignment) |
 | timeline | `python3 $L timeline <film>` | `timeline.js`, `out/narration.wav`, `out/chapters.txt`, `out/captions.vtt` |
 | look | `python3 $L stills <film> --every 2.5` | stills + contact sheet in `review/` |
-| music | `python3 $L music <film>` then `python3 $L mix <film> --plan [--whoosh w.wav]` | `out/music_plan.json`, `out/mix.wav` |
+| music | `python3 $L music <film>` then `python3 $L mix <film> --plan [--whoosh w.wav] [--sfx]` | `out/music_plan.json`, `out/mix.wav`; `--sfx` adds code-drawn UI sounds from the timeline (phone buzz on `glow`, ping on `notify` and `sms`, paper tick on board cards, thud on a stamp) |
 | render | `python3 $L render <film> --workers 4` | `out/silent.mp4` |
 | ship | `python3 $L final <film>` | `out/<film>.mp4`, verify report |
 | critic | `python3 $L check <film>` | `review/check.txt` (see `critic.md`) |
 | upload | `python3 ${CLAUDE_SKILL_DIR}/scripts/youtube.py upload … --privacy private` | private video; `captions` adds the VTT |
 
-`align` needs `pip install pocketsphinx` (its English model ships in the wheel, no download). Without it, words are spread across each clip by spoken weight between measured pauses, good to about 0.15 s. Numbers, money and years are expanded the way a narrator says them ("$4.12" → four dollars twelve cents) before aligning; words the dictionary doesn't know take the gap between their neighbours.
+`align` needs `pip install pocketsphinx` (its English model ships in the wheel, no download). Without it, words are spread across each clip by spoken weight between measured pauses, good to about 0.15 s. Numbers, money and years are expanded the way a narrator says them ("$4.12" → four dollars twelve cents) before aligning; words the dictionary doesn't know take the gap between their neighbours. A year is tried both as "twenty twenty-five" and "two thousand twenty-five" (voices differ), keeping the reading whose word starts land on the measured pauses, and word edges are then snapped onto measured silence (the aligner otherwise hands leading silence to the first word).
 
 ## script.json
 
@@ -46,11 +46,11 @@ Write `"source"` on every segment that states a fact; it shows bottom left.
 
 ## Captions
 
-16:9 long-form ships captions as a track: `timeline` writes `out/captions.vtt` from the word times, and `youtube.py captions <id> out/captions.vtt` attaches it. Burned-in, word-lit captions (`"captions": true`) are for vertical cut-downs: pages of up to 7 words, spoken words turn from grey to ink, the current word is accent.
+Burned-in, word-lit captions are on by default (the channel owner wants them; `"captions": false` turns them off). `timeline` also writes `out/captions.vtt` from the word times, and `youtube.py captions <id> out/captions.vtt` attaches it as a track. The burned-in captions use pages of about four words (short pages keep the eye from running ahead of the voice), spoken words turn from grey to ink, the current word is accent.
 
 ## Music by mood
 
-`music` measures every library track once (loudness, onset density, pulse strength, brightness, major/minor lean; stored in `catalog.json` as `mood`) and ranks tracks against each chapter's mood: `tension`, `mystery`, `serious`, `calm`, `warm`, `drive`, `uplift` (targets in `audio.MOODS`). Consecutive chapters with one mood share a track; a mood change brings a different track on a 3 s crossfade at the chapter line; the last track is back-timed so its own ending lands on the film's end. A run whose best fit is under 0.6 prints NO GOOD FIT with search words for the library source: fetch better tracks rather than shipping a club track under a tense chapter. Edit `track` in `out/music_plan.json` to override. Music sits at -24 dB under the voice and ducks further while it speaks. Never put music with vocals under narration.
+`music` measures every library track once (loudness, onset density, pulse strength, brightness, major/minor lean; stored in `catalog.json` as `mood`) and ranks tracks against each chapter's mood: `tension`, `mystery`, `serious`, `calm`, `warm`, `drive`, `uplift` (targets in `audio.MOODS`). Consecutive chapters with one mood share a track; a mood change brings a different track on a 3 s crossfade at the chapter line; the last track is back-timed so its own ending lands on the film's end. A run whose best fit is under 0.6 prints NO GOOD FIT with search words for the library source: fetch better tracks rather than shipping a club track under a tense chapter. Edit `track` in `out/music_plan.json` to override. Music sits at -25.5 dB under the voice (the channel owner found -24 a little loud) and ducks further while it speaks. Never put music with vocals under narration.
 
 ## Traps hit building this
 

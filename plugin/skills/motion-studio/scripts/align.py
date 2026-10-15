@@ -123,6 +123,29 @@ def spread(toks, wav_path):
     return out
 
 
+YEAR = re.compile(r"(19|20)\d\d")
+
+
+def _onset_error(words, gaps):
+    """mean distance from each measured speech onset (end of a pause) to the nearest word start"""
+    ons = [b for a, b in gaps if a > 0.05]
+    if not ons or not words:
+        return 0.0
+    return sum(min(abs(w["t0"] - t) for w in words) for t in ons) / len(ons)
+
+
+def _snap(words, gaps, dur):
+    """Pull word edges onto measured silence: a word never starts inside a pause or ends deep into one.
+    The aligner hands leading silence to the first word and pause time to the word before it."""
+    for a, b in gaps:
+        for w in words:
+            if a - 0.02 <= w["t0"] < b:          # starts in the pause: move to where speech resumes
+                w["t0"] = round(min(b, w["t1"] - 0.05), 3)
+            if a < w["t1"] <= b + 0.02 and w["t0"] < a:   # runs into the pause: end where it goes quiet
+                w["t1"] = round(a + 0.08, 3)
+    return words
+
+
 def align_clip(clip, text, work=None):
     """Align `text` to `clip`; returns (words, method)."""
     clip = Path(clip)
@@ -130,9 +153,24 @@ def align_clip(clip, text, work=None):
     wav = work / f".{clip.stem}.16k.wav"
     to_wav16k(clip, wav)
     toks = tokens(text)
+    gaps, dur = pauses(wav)
     try:
         words = _sphinx(toks, wav)
         method = "align"
+        # a year can be read "twenty twenty-five" or "two thousand twenty-five": try the other reading and keep
+        # whichever lands word starts on the measured pauses
+        years = [i for i, t in enumerate(toks) if YEAR.fullmatch(t["w"].strip(".,;:!?"))]
+        if years:
+            alt = [dict(t) for t in toks]
+            for i in years:
+                alt[i]["say"] = say_int(int(toks[i]["w"].strip(".,;:!?"))).split()
+            try:
+                w2 = _sphinx(alt, wav)
+                if _onset_error(w2, gaps) < _onset_error(words, gaps) - 0.01:
+                    words = w2
+            except Exception:
+                pass
+        words = _snap(words, gaps, dur)
     except Exception as e:                                   # no pocketsphinx, or the aligner gave up
         words, method = spread(toks, wav), "spread"
         print(f"  {clip.name}: alignment unavailable ({e}); spread by weight")
