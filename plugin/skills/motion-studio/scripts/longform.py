@@ -13,10 +13,11 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
-  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh w.wav] [--bed-db -24] [--sfx]
+  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh w.wav] [--bed-db -25.5] [--no-sfx]
   longform.py render <film> [--workers 4] [--scale 1.0]
   longform.py final <film>                      mux render + mix, verify
   longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes
+  longform.py share <film>                      out/share/: a page that streams the cut (publish it as a private artifact)
 
 Every file stays in the film folder; nothing is uploaded from here.
 """
@@ -357,9 +358,25 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
     return dest
 
 
+SFX_GAP = {"buzz": 0.6, "ping": 0.35, "pin": 0.12, "thud": 0.5}    # same-kind sounds closer than this are dropped
+
+
+def recorded_sfx(kind):
+    """Library clips catalogued with "role": <kind> (studio.py fetch sfx <id>, then set the role in catalog.json)."""
+    import audio
+    try:
+        lib, cat = audio.library_dir(), audio.catalog()
+    except SystemExit:
+        return []
+    return [(k, audio.load(lib / v["file"])) for k, v in sorted(cat["sfx"].items())
+            if v.get("role") == kind and (lib / v["file"]).exists()]
+
+
 def build_sfx(film, tl, sr=48000):
-    """Small UI sounds under the picture, drawn in code (no samples) and placed from the timeline: a buzz when a
-    phone lights, a soft ping when a message lands, a paper tick when a card is pinned, a thud when a stamp hits."""
+    """Small UI sounds under the picture, placed from the timeline: a buzz when a phone lights, a soft ping when a
+    message lands, a paper tick when a card is pinned, a thud when a stamp hits. Each kind uses recorded clips from
+    the library when any carry that role (cycled, gain varied, transient on the cue, as sound.md asks) and falls
+    back to a sound drawn in code, which is printed so a film never ships synthetic sounds without anyone knowing."""
     import numpy as np
     import wave
 
@@ -397,7 +414,8 @@ def build_sfx(film, tl, sr=48000):
         x[:int(0.08 * sr)] += noise(0.08, 200, 2500, 40) * 0.4
         return x
 
-    kinds = {"buzz": buzz(), "ping": ping(), "pin": pin(), "thud": thud()}
+    drawn = {"buzz": buzz, "ping": ping, "pin": pin, "thud": thud}
+    kinds = {k: recorded_sfx(k) or [(f"drawn-{k}", f())] for k, f in drawn.items()}
     events = []
     for sg in tl["segments"]:
         d = sg.get("data") or {}
@@ -415,17 +433,37 @@ def build_sfx(film, tl, sr=48000):
                 events.append((d["stamp"]["t"] - 0.05 + 0.12, "thud"))
         elif sg["type"] == "sms":
             events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
+    events.sort()
+    kept, last = [], {}
+    for t, k in events:
+        if t - last.get(k, -9) >= SFX_GAP[k]:
+            kept.append((t, k)); last[k] = t
+    dropped, events = len(events) - len(kept), kept
     total = tl["duration"]
     out = np.zeros(int(total * sr) + sr)
+    used = {k: 0 for k in kinds}
     for t, k in events:
-        x, i = kinds[k], int(max(0, t) * sr)
-        out[i:i + len(x)] += x[:len(out) - i]
+        _, x = kinds[k][used[k] % len(kinds[k])]
+        if kinds[k][0][0].startswith("drawn"):                 # drawn sounds start on their cue
+            gain, peak = 1.0, 0.0
+        else:                                                   # recordings: vary the level, land the transient on the cue
+            gain, peak = rng.uniform(0.85, 1.15), np.argmax(np.abs(x[:int(0.6 * sr)])) / sr
+        i = int((t - peak) * sr)
+        if i < 0:
+            x, i = x[-i:], 0
+        n = min(len(x), len(out) - i)
+        out[i:i + n] += gain * x[:n]
+        used[k] += 1
     out = np.stack([out, out], 1)[:int(total * sr)]
     dest = film / "out" / "sfx.wav"
     with wave.open(str(dest), "wb") as w:
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
         w.writeframes((np.clip(out, -1, 1) * 32767).astype("<i2").tobytes())
-    print(f"sfx: {len(events)} sounds ({', '.join(f'{k} {sum(1 for _, x in events if x == k)}' for k in kinds)})")
+    print(f"sfx: {len(events)} sounds ({', '.join(f'{k} {used[k]}' for k in kinds)})" + (f", {dropped} too close to the last one dropped" if dropped else ""))
+    for k, clips in kinds.items():
+        if used[k]:
+            print(f"  {k}: " + (", ".join(c for c, _ in clips) if not clips[0][0].startswith("drawn")
+                               else f"drawn in code; no library clip has role \"{k}\" (see sound.md, long-form UI sounds)"))
     return dest
 
 
@@ -619,6 +657,52 @@ def cmd_check(a):
     (film / "review" / "check.txt").write_text("\n".join(report + [""] + ["FLAG: " + f for f in flags]) + "\n")
 
 
+def cmd_share(a):
+    """A page that streams the finished cut, for sending a draft to someone without a download. The artifact host
+    serves neither .m3u8 nor .ts and caps each file at 15 MB and each publish at 64 MB, so the cut is split into
+    fMP4 HLS segments named .mp4 with the playlist as index.txt, and the page plays them through hls.js."""
+    import base64
+    import html
+    film = Path(a.film).resolve()
+    src = film / "out" / f"{film.name}.mp4"
+    if not src.exists():
+        raise SystemExit(f"{src} is missing: run final first")
+    sc, tl = load_script(film), load_timeline(film)
+    meta = sc.get("share", {})
+    dest = film / "out" / "share"
+    shutil.rmtree(dest, ignore_errors=True)
+    (dest / "v").mkdir(parents=True)
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-c", "copy", "-f", "hls", "-hls_time", str(a.segment),
+         "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+         "-hls_segment_filename", str(dest / "v" / "seg%02d.mp4"), str(dest / "v" / "index.m3u8")])
+    (dest / "v" / "index.m3u8").rename(dest / "v" / "index.txt")
+    sizes = {f.name: f.stat().st_size for f in sorted((dest / "v").iterdir())}
+    big = [n for n, b in sizes.items() if b > 14e6]
+    if big:
+        raise SystemExit(f"segments over 14 MB ({', '.join(big)}): rerun with a smaller --segment")
+    poster = dest / "poster.jpg"
+    at = meta.get("poster_at", min(tl["duration"] * 0.25, tl["chapters"][1]["t0"] + 3 if len(tl["chapters"]) > 1 else 5))
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "5", str(poster)])
+    mins = round(tl["duration"] / 60)
+    fill = {
+        "TITLE": sc["title"], "HEADLINE": meta.get("headline", sc["title"]), "LEDE": meta.get("lede", "Draft cut, not yet published."),
+        "EYEBROW": meta.get("eyebrow", f"Explainer · {mins} min"), "FOOT": meta.get("foot", "Sound on."),
+        "ACCENT": (sc.get("palette") or {}).get("ACCENT", "#e8772e"),
+    }
+    page = (HERE.parent / "assets" / "templates" / "share.html").read_text()
+    for k, v in fill.items():
+        page = page.replace("{{" + k + "}}", html.escape(v))
+    chapters = [[f"{int(c['t0'] if i else 0) // 60}:{int(c['t0'] if i else 0) % 60:02d}", c["title"]] for i, c in enumerate(tl["chapters"])]
+    page = page.replace("{{CHAPTERS}}", json.dumps(chapters).replace("</", "<\\/"))
+    page = page.replace("{{POSTER}}", "data:image/jpeg;base64," + base64.b64encode(poster.read_bytes()).decode())
+    (dest / "index.html").write_text(page)
+    total = sum(sizes.values())
+    print(f"share -> {dest}/index.html + v/ ({len(sizes)} files, {total / 1e6:.1f} MB)")
+    print("publish index.html as a private artifact with every file in v/ under its own name (v/index.txt, v/init.mp4, v/seg00.mp4 ...)")
+    if total > 60e6:
+        print("over 60 MB: one publish carries at most 64 MB, so publish the page with the first segments, then the rest to the same url")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -635,7 +719,8 @@ def main():
     p.set_defaults(fn=cmd_music)
     p = sp.add_parser("mix"); p.add_argument("film"); p.add_argument("--plan", action="store_true"); p.add_argument("--music")
     p.add_argument("--whoosh"); p.add_argument("--bed-db", type=float, default=-25.5)
-    p.add_argument("--sfx", action="store_true", help="add UI sounds from the timeline: phone buzz, message ping, card pin, stamp")
+    p.add_argument("--sfx", action=argparse.BooleanOptionalAction, default=True,
+                   help="UI sounds from the timeline: phone buzz, message ping, card pin, stamp (on by default; --no-sfx)")
     p.add_argument("--sfx-db", type=float, default=-12); p.set_defaults(fn=cmd_mix)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
@@ -643,6 +728,8 @@ def main():
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
     p.set_defaults(fn=cmd_check)
+    p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, default=60, help="seconds per streamed file")
+    p.set_defaults(fn=cmd_share)
     a = ap.parse_args()
     a.fn(a)
 
