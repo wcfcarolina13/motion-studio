@@ -154,13 +154,18 @@ B.stat = (s, g) => {
   const d = s.data;
   const big = maskText("", { "font-size": 200, fill: C.ACCENT }, g);
   const lab = wrapWords(d.label, 44).map(l => maskText(l, { "font-size": 50, fill: C.INK }, g));
+  // notes: [{text, at}] — follow-up lines that land on their words under the label, so a long stat scene keeps moving
+  const notes = (d.notes || []).map(x => ({ x, m: maskText(txt(x), { "font-family": SANS, "font-size": 34, fill: C.GREY }, g) }));
   K.label((d.prefix || "") + fmtNum(d.value, d.decimals || 0) + (d.suffix || "") + " " + d.label, s.t0, s.t1, "big number");
+  notes.forEach(n => K.label(txt(n.x), s.t0, s.t1, "stat note"));
   return t => {
     const e = env(t, s), o = 1 - e.o;
     const c0 = cueT(d, s.t0 + 0.2), cnt = K.eout(K.prog(t, c0, c0 + Math.min(2.0, (s.t1 - c0) * 0.5)));
     big.t.textContent = (d.prefix || "") + fmtNum(d.value * cnt, d.decimals || 0) + (d.suffix || "");
     placeMask(big, W / 2, H * 0.47, e.i * o);
     lab.forEach((m, k) => { const tk = s.t0 + 0.6 + k * 0.12; placeMask(m, W / 2, H * 0.47 + 110 + k * 66, K.eout(K.prog(t, tk, tk + 0.35)) * o); });
+    const ny = H * 0.47 + 110 + lab.length * 66 + 30;
+    notes.forEach((n, k) => { const tk = cueT(n.x, revealAt(s, k + 1, notes.length + 1, 0.8, 0.4)); placeMask(n.m, W / 2, ny + k * 52, K.eout(K.prog(t, tk, tk + 0.35)) * o); });
   };
 };
 
@@ -249,7 +254,8 @@ B.hub = (s, g) => {    // one centre, spokes revealed around it
       const a = -Math.PI / 2 + k * 2 * Math.PI / n, tk = cueT(d.spokes[k], revealAt(s, k, n, 0.7, 0.6));
       const p = K.eio(K.prog(t, tk, tk + 0.4)) * o;
       const x = cx + Math.cos(a) * R, y = cy + Math.sin(a) * R * 0.78;
-      K.set(sp.l, { x1: cx + Math.cos(a) * 95, y1: cy + Math.sin(a) * 95 * 0.78, x2: K.lerp(cx, x, p), y2: K.lerp(cy, y, p) });
+      const rx = cx + Math.cos(a) * 95, ry = cy + Math.sin(a) * 95 * 0.78;   // spokes grow out from the rim, never across the centre
+      K.set(sp.l, { x1: rx, y1: ry, x2: K.lerp(rx, x, p), y2: K.lerp(ry, y, p) }); K.show(sp.l, p > 0.001);
       K.set(sp.c, { cx: x, cy: y, r: 16 * Math.min(1.2, K.step(t, tk + 0.35, 15, 0.6)) * o });
       const below = Math.sin(a) > 0.2, ly = below ? y + 56 : y - 36 - (sp.lab.length - 1) * 34;
       sp.lab.forEach((m, j) => placeMask(m, x, ly + j * 34, K.eout(K.prog(t, tk + 0.4, tk + 0.7)) * o));

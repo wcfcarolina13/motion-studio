@@ -426,22 +426,28 @@ def cmd_final(a):
 
 
 # ── check: the numbers a critic should start from ─────────
-def frame_diffs(video, fps=10, w=192, h=108):
-    """Mean absolute luma change between consecutive frames (0..1), sampled at `fps`."""
+def frame_diffs(video, fps=10, w=192, h=108, local=False):
+    """Mean absolute luma change between consecutive frames (0..1), sampled at `fps`. With local=True, also the
+    largest change in any 12x12 block above the caption band, so a small reveal (a spoke label) still counts."""
     import numpy as np
     p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-vf", f"fps={fps},scale={w}:{h},format=gray", "-f", "rawvideo", "-"],
                          stdout=subprocess.PIPE)
-    prev, d = None, []
+    prev, d, loc = None, [], []
+    band = int(h * 0.84) // 12 * 12                      # captions and the source line live below this
     while True:
         b = p.stdout.read(w * h)
         if len(b) < w * h:
             break
         f = np.frombuffer(b, np.uint8).astype(np.int16)
         if prev is not None:
-            d.append(float(np.abs(f - prev).mean()) / 255)
+            diff = np.abs(f - prev)
+            d.append(float(diff.mean()) / 255)
+            if local:
+                blocks = diff.reshape(h, w)[:band].reshape(band // 12, 12, w // 12, 12).mean(axis=(1, 3))
+                loc.append(float(blocks.max()) / 255)
         prev = f
     p.wait()
-    return np.array(d)
+    return (np.array(d), np.array(loc)) if local else np.array(d)
 
 
 def cmd_check(a):
@@ -476,7 +482,7 @@ def cmd_check(a):
         report.append("no render yet: run `render` for dead-air, cue and flash checks")
     else:
         fps = 10
-        d = frame_diffs(video, fps)
+        d, loc = frame_diffs(video, fps, local=True)
         ev = d > a.event
         times = np.nonzero(ev)[0] / fps
         # 2. dead air: stretches with no visible event
@@ -502,7 +508,7 @@ def cmd_check(a):
         missed = []
         for c in tl.get("cues", []):
             k0, k1 = int(max(0, c["t"] - 0.2) * fps), int((c["t"] + 0.8) * fps) + 1
-            if not (d[k0:k1] > a.event).any():
+            if not ((d[k0:k1] > a.event) | (loc[k0:k1] > a.local)).any():
                 missed.append(c)
         report.append(f"word cues: {len(tl.get('cues', []))}, {len(missed)} with no visible change near the word")
         for c in missed:
@@ -551,6 +557,7 @@ def main():
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
+    p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
     p.set_defaults(fn=cmd_check)
     a = ap.parse_args()

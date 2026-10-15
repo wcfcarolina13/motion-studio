@@ -30,7 +30,7 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
                       {"who": "you", "at": "late fee", "pose": "read", "emote": "!"}]}}]}
 ```
 
-**Word cues.** Any object inside `data` with `"at": "<word or phrase>"` gets an absolute time `t` when `timeline` runs (`"nth": 2` for a repeat, `"offset": -0.1` to lead). Things that must be read land 0.05 s before their word. `timeline` prints a PROBLEM line for any cue word that isn't in the narration. List items, flow nodes, hub spokes, compare items and statement lines accept `{"text": …, "at": …}` in place of a plain string; `stat` and `sms` take `"at"` on their data to start the count or the message on a word.
+**Word cues.** Any object inside `data` with `"at": "<word or phrase>"` gets an absolute time `t` when `timeline` runs (`"nth": 2` for a repeat, `"offset": -0.1` to lead). Things that must be read land 0.05 s before their word. `timeline` prints a PROBLEM line for any cue word that isn't in the narration. List items, flow nodes, hub spokes, compare items and statement lines accept `{"text": …, "at": …}` in place of a plain string; `stat` and `sms` take `"at"` on their data to start the count or the message on a word, and `stat` takes `"notes": [{"text", "at"}]`, follow-up lines under the label, so a long stat scene doesn't sit still after the count.
 
 ## Scene types
 

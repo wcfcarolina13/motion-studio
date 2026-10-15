@@ -9,7 +9,7 @@ The blind read asks whether the film still makes its point. The critic asks whet
 - **text-only share**: time spent on words over a background (`title chapter statement quote list`). Over 40% flags; so does a text-only run over 25 s, or three scenes of one type in a row.
 - **holds**: stretches where nothing visible changes (mean luma change under the `--event` threshold) for `--hold` seconds (default 4). A 10-minute explainer should have none over 6 s; the original toll-text cut had 59 over 4 s.
 - **per chapter**: events per minute and the share of still frames, so a flat chapter stands out from the others.
-- **cue landings**: every word cue should produce a visible change within -0.2 to +0.8 s of its word.
+- **cue landings**: every word cue should produce a visible change within -0.2 to +0.8 s of its word. A change in any small block above the caption band counts (`--local`), so a small reveal such as a spoke label registers.
 - **one-frame flashes**: a frame that differs from both neighbours while they match each other (back-to-back pops that verify's single-frame check misses).
 
 ## 2. A fresh critic, not the builder

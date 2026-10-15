@@ -37,7 +37,8 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None):
     report(w % 2 == 0 and h % 2 == 0, "even dimensions")
     report(v["pix_fmt"] == "yuv420p", "yuv420p")
     head = video.read_bytes()[:400000]
-    report(0 <= head.find(b"moov") < head.find(b"mdat"), "fast start (moov before mdat)")
+    moov, mdat = head.find(b"moov"), head.find(b"mdat")   # a long film's moov can outgrow the window: no mdat seen yet is fine
+    report(moov >= 0 and (mdat < 0 or moov < mdat), "fast start (moov before mdat)")
     dec = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "null", "-"], capture_output=True, text=True)
     report(dec.returncode == 0 and not dec.stderr.strip(), "clean decode")
 
