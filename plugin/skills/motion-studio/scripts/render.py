@@ -4,6 +4,7 @@ A film is any folder with film.html exposing window.seek(t) and window.DUR. Fram
 window.STUDIO.format when the film was built with kit.js, else from the #stage element (older films).
 Chrome is the system Chrome via Playwright (no browser download needed).
 """
+import os
 import subprocess
 from pathlib import Path
 
@@ -16,11 +17,13 @@ class Film:
     """An open headless page on a film; use as a context manager."""
 
     def __init__(self, project: Path):
-        self.project = Path(project)
+        self.project = Path(project).resolve()
 
     def __enter__(self):
         self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.launch(channel="chrome", headless=True, args=["--allow-file-access-from-files"])
+        # the installed Chrome by default; MS_CHROMIUM=/path/to/chromium for machines without it (CI, cloud sandboxes)
+        kw = {"executable_path": os.environ["MS_CHROMIUM"]} if os.environ.get("MS_CHROMIUM") else {"channel": "chrome"}
+        self.browser = self._pw.chromium.launch(headless=True, args=["--allow-file-access-from-files"], **kw)
         page = self.browser.new_page(viewport={"width": 2000, "height": 2000}, device_scale_factor=1)
         self.errors = []
         page.on("pageerror", lambda e: (self.errors.append(str(e)), print("PAGE ERROR:", e, flush=True)))

@@ -1,0 +1,282 @@
+{
+ "title": "Toll text demo",
+ "moods": {
+  "Intro": "mystery",
+  "The factory": "serious",
+  "The trick": "tension"
+ },
+ "segments": [
+  {
+   "id": "s01",
+   "chapter": "Intro",
+   "type": "stage",
+   "data": {
+    "set": "room",
+    "cast": [
+     {
+      "id": "you",
+      "x": 0.36,
+      "skin": 2,
+      "hair": "short",
+      "hairColor": 1,
+      "shirt": "#e8772e",
+      "pants": "#2c3440",
+      "pose": "stand"
+     }
+    ],
+    "beats": [
+     {
+      "who": "you",
+      "at": "text",
+      "pose": "phone",
+      "glow": true,
+      "notify": "TOLL NOTICE: unpaid toll of $4.12. Pay today to avoid a $50 late fee: tolls-pay.example/pay"
+     },
+     {
+      "who": "you",
+      "at": "late fee",
+      "pose": "read",
+      "emote": "!"
+     },
+     {
+      "who": "you",
+      "at": "link",
+      "pose": "think"
+     }
+    ]
+   },
+   "narration": "You've probably had this text. An unpaid toll of a few dollars, a fifty-dollar late fee if you don't pay today, and a link.",
+   "source": null
+  },
+  {
+   "id": "s02",
+   "chapter": "Intro",
+   "type": "stage",
+   "data": {
+    "set": "room",
+    "cast": [
+     {
+      "id": "you",
+      "x": 0.36,
+      "skin": 2,
+      "hair": "short",
+      "hairColor": 1,
+      "shirt": "#e8772e",
+      "pants": "#2c3440",
+      "pose": "read"
+     }
+    ],
+    "beats": [
+     {
+      "who": "you",
+      "at": "delete",
+      "pose": "stand",
+      "emote": "x"
+     },
+     {
+      "who": "you",
+      "at": "right move",
+      "pose": "happy"
+     },
+     {
+      "who": "you",
+      "at": "smallest",
+      "pose": "think",
+      "think": "Smallest part?"
+     }
+    ]
+   },
+   "narration": "Most people delete it and move on. That's the right move. But the text is the smallest part of what's going on.",
+   "source": null
+  },
+  {
+   "id": "s03",
+   "chapter": "Intro",
+   "type": "board",
+   "data": {
+    "title": "BEHIND ONE TEXT",
+    "cards": [
+     {
+      "id": "msg",
+      "x": 0.2,
+      "y": 0.42,
+      "icon": "phone",
+      "title": "One text",
+      "text": "a few dollars, a late fee, a link",
+      "at": "message"
+     },
+     {
+      "id": "kit",
+      "x": 0.46,
+      "y": 0.33,
+      "icon": "doc",
+      "title": "Scam kits",
+      "text": "rented by the week",
+      "at": "subscription"
+     },
+     {
+      "id": "farm",
+      "x": 0.7,
+      "y": 0.45,
+      "icon": "card",
+      "title": "Phone rooms",
+      "text": "loaded with stolen cards",
+      "at": "rooms"
+     },
+     {
+      "id": "bank",
+      "x": 0.5,
+      "y": 0.68,
+      "icon": "bank",
+      "title": "Your bank",
+      "text": "tricked into helping",
+      "at": "trick"
+     }
+    ],
+    "strings": [
+     {
+      "from": "msg",
+      "to": "kit",
+      "at": "business"
+     },
+     {
+      "from": "kit",
+      "to": "farm",
+      "at": "phones"
+     },
+     {
+      "from": "farm",
+      "to": "bank",
+      "at": "bank"
+     }
+    ],
+    "stamp": {
+     "on": "bank",
+     "text": "ORGANIZED",
+     "at": "help them"
+    }
+   },
+   "source": "KrebsOnSecurity; Palo Alto Networks Unit 42",
+   "narration": "Behind that one message is a subscription business that sells scam kits by the week, rooms full of phones loaded with stolen cards, and a trick that gets your own bank to help them."
+  },
+  {
+   "id": "s11",
+   "chapter": "The factory",
+   "type": "flow",
+   "data": {
+    "title": "Phishing as a service",
+    "accent": 0,
+    "nodes": [
+     {
+      "text": "Kit developer",
+      "at": "groups"
+     },
+     {
+      "text": "Telegram storefront",
+      "at": "Telegram"
+     },
+     {
+      "text": "Paying operators",
+      "at": "operators"
+     },
+     {
+      "text": "Text blasts",
+      "at": "sending"
+     },
+     {
+      "text": "Victims",
+      "at": "Smishing"
+     }
+    ]
+   },
+   "source": "KrebsOnSecurity; Silent Push, Apr 2025",
+   "narration": "Security researchers call it phishing as a service. A small number of groups, most of them based in China, build the scam kits and sell them on Telegram. Their customers, the operators, do the sending. Researchers often lump these groups together as the Smishing Triad."
+  },
+  {
+   "id": "s21",
+   "chapter": "The trick",
+   "type": "stage",
+   "data": {
+    "set": "blank",
+    "kicker": "THE CODE IS THE REAL PRIZE",
+    "cast": [
+     {
+      "id": "you",
+      "x": 0.27,
+      "skin": 2,
+      "hair": "short",
+      "hairColor": 1,
+      "shirt": "#e8772e",
+      "pants": "#2c3440",
+      "pose": "phone"
+     },
+     {
+      "id": "crook",
+      "x": 0.74,
+      "kind": "silhouette",
+      "hair": "hood",
+      "pose": "stand",
+      "face": "left"
+     }
+    ],
+    "beats": [
+     {
+      "who": "you",
+      "at": "enter your card",
+      "pose": "phone",
+      "glow": true
+     },
+     {
+      "who": "you",
+      "at": "one-time code",
+      "notify": "Your bank: your verification code is 482 913"
+     },
+     {
+      "who": "crook",
+      "at": "someone",
+      "pose": "phone",
+      "glow": true
+     },
+     {
+      "who": "crook",
+      "at": "triggers",
+      "emote": "$"
+     },
+     {
+      "who": "you",
+      "at": "new phone",
+      "pose": "think",
+      "emote": "?"
+     },
+     {
+      "who": "you",
+      "at": "approve",
+      "pose": "shocked"
+     },
+     {
+      "who": "crook",
+      "at": "approve",
+      "pose": "cheer"
+     }
+    ]
+   },
+   "source": "KrebsOnSecurity, Feb 18, 2025",
+   "narration": "Fourth, and this is the core of it. After you enter your card, the page says your bank needs to verify the charge with a one-time code. While you wait, someone is adding your card to Apple Pay or Google Wallet on their own phone. That's what triggers the code. Your bank is sending it because it thinks you are adding your card to a new phone. When you type it in, you approve it."
+  },
+  {
+   "id": "s22",
+   "chapter": "The trick",
+   "type": "crowd",
+   "data": {
+    "rows": 3,
+    "cols": 7,
+    "label": "Walls of phones, worked by people",
+    "from": 0.25,
+    "to": 0.7
+   },
+   "source": "KrebsOnSecurity, Apr 10, 2025",
+   "narration": "Those codes expire within minutes, so this part isn't automated. People sit at walls of phones, sending a few dozen messages at a time, so they're ready to catch each code the moment it arrives."
+  }
+ ],
+ "captions": false
+}

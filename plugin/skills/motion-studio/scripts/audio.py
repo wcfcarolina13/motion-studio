@@ -215,6 +215,101 @@ def measure(key):
     return entry
 
 
+# ── mood: what a track feels like, measured, so music is chosen for the scene and not by habit ──
+# Krumhansl-Kessler key profiles (major, minor), C first
+_KK_MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_KK_MIN = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
+# What each mood asks of a track. Each row: feature -> (low, high) where the score is full; it falls off outside.
+# energy: mean loudness dBFS; density: onsets per second; bright: spectral centroid Hz; minor: 0 major .. 1 minor;
+# dyn: bar-loudness spread in dB (p90 - p10); bpm.
+MOODS = {
+    "tension":  {"energy": (-30, -17), "density": (0.5, 3.0), "pulse": (0.0, 0.5), "bright": (400, 1600), "minor": (0.55, 1.0), "bpm": (55, 112)},
+    "mystery":  {"energy": (-30, -16), "density": (1.0, 3.5), "pulse": (0.2, 0.65), "bright": (500, 1900), "minor": (0.5, 1.0), "bpm": (65, 120)},
+    "serious":  {"energy": (-26, -14), "density": (1.5, 4.0), "pulse": (0.3, 0.8), "bright": (700, 2200), "minor": (0.35, 0.9), "bpm": (75, 125)},
+    "calm":     {"energy": (-32, -18), "density": (0.2, 2.5), "pulse": (0.0, 0.5), "bright": (400, 1700), "minor": (0.0, 0.5), "bpm": (50, 105)},
+    "warm":     {"energy": (-26, -14), "density": (1.0, 3.5), "pulse": (0.2, 0.7), "bright": (700, 2100), "minor": (0.0, 0.45), "bpm": (70, 115)},
+    "drive":    {"energy": (-17, -6), "density": (3.5, 9.0), "pulse": (0.55, 1.0), "bright": (1400, 4000), "minor": (0.0, 1.0), "bpm": (110, 140)},
+    "uplift":   {"energy": (-19, -8), "density": (2.5, 7.0), "pulse": (0.45, 1.0), "bright": (1300, 3500), "minor": (0.0, 0.4), "bpm": (95, 135)},
+}
+# Mixkit search words that tend to return each mood (for `studio.py search music ...`)
+MOOD_SEARCH = {
+    "tension": ["suspense", "tension", "dark ambient", "thriller"], "mystery": ["mystery", "investigation", "detective"],
+    "serious": ["documentary", "cinematic", "corporate serious"], "calm": ["ambient", "piano", "calm"],
+    "warm": ["acoustic", "inspiring piano", "hopeful"], "drive": ["tech house", "driving", "energetic"],
+    "uplift": ["uplifting", "inspiring", "motivational"],
+}
+
+
+def mood(key):
+    """Measure a catalogued track's mood features and store them on its catalog entry."""
+    lib, cat = library_dir(), catalog()
+    entry = cat["tracks"][key]
+    sr = 22050
+    x = load(lib / entry["file"], sr=sr)
+    n, hop = 2048, 1024
+    frames = np.lib.stride_tricks.sliding_window_view(x, n)[::hop] * np.hanning(n)
+    mag = np.abs(np.fft.rfft(frames, axis=1))
+    freqs = np.fft.rfftfreq(n, 1 / sr)
+    rms_db = 20 * np.log10(np.sqrt((frames ** 2).mean(axis=1)) + 1e-9)
+    live = rms_db > np.percentile(rms_db, 95) - 35                 # ignore the silent tail and lead-in
+    centroid = (mag * freqs).sum(axis=1) / (mag.sum(axis=1) + 1e-9)
+    flux = np.maximum(0, np.diff(np.log1p(mag[:, (freqs > 60) & (freqs < 8000)]), axis=0)).sum(axis=1)
+    thr = np.median(flux) + 0.5 * flux.std()
+    peaks = [i for i in range(1, len(flux) - 1) if flux[i] > thr and flux[i] >= flux[i - 1] and flux[i] >= flux[i + 1]]
+    # pulse strength: how much of the flux sits on a regular beat (drums) rather than spread out (pads, piano)
+    ac = np.correlate(flux - flux.mean(), flux - flux.mean(), "full")[len(flux) - 1:]
+    lag_lo, lag_hi = int(0.25 * sr / hop), int(1.0 * sr / hop)
+    pulse = float(ac[lag_lo:lag_hi].max() / (ac[0] + 1e-9))
+    secs = live.sum() * hop / sr
+    # chroma from the spectrum, 80 Hz - 5 kHz
+    band = (freqs > 80) & (freqs < 5000)
+    pc = np.round(12 * np.log2(freqs[band] / 261.63)).astype(int) % 12
+    chroma = np.zeros(12)
+    np.add.at(chroma, pc, (mag[live][:, band] ** 2).sum(axis=0))
+    chroma /= chroma.sum() + 1e-12
+    corr = lambda prof, k: float(np.corrcoef(chroma, np.roll(prof, k))[0, 1])
+    best_maj = max(corr(_KK_MAJ, k) for k in range(12)); best_min = max(corr(_KK_MIN, k) for k in range(12))
+    minor = float(np.clip(0.5 + (best_min - best_maj) * 2.5, 0, 1))
+    bars = np.array([b for b in entry.get("bar_loudness_db", []) if b > -60])
+    feats = {"energy": round(float(np.mean(rms_db[live])), 1), "density": round(float(len(peaks) / max(secs, 1)), 2),
+             "pulse": round(pulse, 2),
+             "bright": round(float(np.mean(centroid[live]))), "minor": round(minor, 2),
+             "dyn": round(float(np.percentile(bars, 90) - np.percentile(bars, 10)), 1) if len(bars) > 4 else None,
+             "bpm": entry.get("bpm")}
+    entry["mood"] = feats
+    save_catalog(cat)
+    return feats
+
+
+def mood_score(feats, name):
+    """0..1: how well measured features fit a mood. Weighted geometric mean, so one bad miss (a 130 bpm club track
+    for "tension") sinks the score instead of being averaged away."""
+    want = MOODS[name]
+    weights = {"energy": 0.8, "density": 1.0, "bright": 0.7, "minor": 1.2, "bpm": 1.0, "pulse": 1.0}
+    soft = {"energy": 5, "density": 1.5, "bright": 700, "minor": 0.25, "bpm": 15, "pulse": 0.15}
+    logs, wsum = 0.0, 0.0
+    for f, (lo, hi) in want.items():
+        v = feats.get(f)
+        if v is None:
+            continue
+        miss = max(lo - v, 0, v - hi) / soft[f]
+        logs += weights[f] * np.log(max(0.03, 1 - miss)); wsum += weights[f]
+    return round(float(np.exp(logs / wsum)), 3) if wsum else 0.0
+
+
+def rank_tracks(name, keys=None):
+    """Library tracks ranked for a mood: [(score, key, title, feats)]. Measures any track not yet measured."""
+    cat = catalog()
+    out = []
+    for key, e in cat["tracks"].items():
+        if keys and key not in keys:
+            continue
+        feats = e.get("mood") or mood(key)
+        out.append((mood_score(feats, name), key, e.get("title", key), feats))
+    return sorted(out, reverse=True)
+
+
 # ── the mix ────────────────────────────────────────────────
 def grid_from_film(film_html):
     """bpm and bars from the film's K.setup(...) call, so sound.py always matches the picture."""

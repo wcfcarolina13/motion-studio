@@ -1,6 +1,6 @@
 ---
 name: motion-studio
-description: Make short motion-graphics films (reels, promos, explainers, article trailers, launch films) in code, with a live scrub-and-annotate preview, licensed music cut to the beat, recorded foley, and a blind-read gate that proves the film still makes its source's point. Use whenever the user wants to turn an article, essay, newsletter or Substack post, inbox or notes digest, idea, product or brand into an animated video, reel, short, teaser, trailer or motion graphic; when they ask to preview, iterate on, re-time, re-score, review or fix a film made this way; or say things like "make this into a video", "animate this", "motion design", "storyboard this", "Remotion-style video". Not for editing camera footage or screen recordings.
+description: Make motion-graphics films in code, from short reels, promos, article trailers and launch films to long narrated YouTube explainers with rigged human figures, with a live scrub-and-annotate preview, licensed music cut to the beat, recorded foley, and a blind-read gate that proves the film still makes its source's point. Use whenever the user wants to turn an article, essay, newsletter or Substack post, inbox or notes digest, idea, product or brand into an animated video, reel, short, teaser, trailer or motion graphic; when they ask to preview, iterate on, re-time, re-score, review or fix a film made this way; or say things like "make this into a video", "animate this", "motion design", "storyboard this", "Remotion-style video", "make a YouTube explainer", "narrated video", "upload to YouTube". Not for editing camera footage or screen recordings.
 ---
 
 # motion-studio
@@ -48,9 +48,13 @@ Films are one HTML file where every style is a pure function of time (`window.se
 11. **Panel on request** (or a first cut of a new kind of film): a motion-design reviewer, a creative-director reviewer and an advisor. → `references/panel.md`
 12. **Deliver.** Send the final file to the user; append the ledger row; record "as built" and the blind-read verdicts in the storyboard. Don't post or publish anything: that's the user's call.
 
+## Long-form narrated films (YouTube explainers)
+
+When the film is narrated and longer than about a minute, use `scripts/longform.py` instead of `studio.py new`: the narration sets the clock, scenes are built from `script.json` segments, beats land on spoken words, figures act scenes out, music is picked per chapter mood, and `check` measures dead air before anyone watches. The workflow, script format and scene types are in `references/longform.md`; figures in `references/figures.md`; the critic pass in `references/critic.md`. Uploads go through `scripts/youtube.py` and default to private; never publish publicly without the user's explicit go-ahead. Extra dependency for word timing: `pip install pocketsphinx`.
+
 ## Where things live
 
-- The skill (read-only once installed): `scripts/` (studio.py, kit.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py), `assets/templates/`, `references/` (+ `references/prompts/`).
+- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, align.py, youtube.py), `assets/templates/`, `references/` (+ `references/prompts/`).
 - Shared data (paths from `config`): the audio library with `catalog.json`, the film ledger, optional house notes.
 - One folder per film: `film.html`, `kit.js` and `audio.py` (vendored copies, so films never break on a skill update), `storyboard.md`, `sound.py`, `sources/`, `review/`, `out/`, `notes.json`.
 

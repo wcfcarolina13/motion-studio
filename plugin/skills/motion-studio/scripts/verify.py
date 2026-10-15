@@ -20,7 +20,7 @@ def _ffprobe(video):
     return json.loads(out)
 
 
-def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11)):
+def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None):
     video = Path(video)
     fails = []
     def report(ok, what):
@@ -61,6 +61,8 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11)):
     frames = np.frombuffer(gray, np.uint8).reshape(-1, sh, sw).astype(np.int16)
     d = np.abs(np.diff(frames, axis=0)).mean(axis=(1, 2))
     pops = [(i + 1, round((i + 1) / 30, 2)) for i in range(1, len(d) - 1) if d[i] > 1.0 and d[i] > 3 * max(d[i - 1], d[i + 1])]
+    if allow:                                               # intended hits: scene wipes, stamps, hard cuts the film declares
+        pops = [p for p in pops if not any(a0 - 0.05 <= p[1] <= a1 + 0.05 for a0, a1 in allow)]
     report(not pops, "no single-frame pops" + (f": {pops}" if pops else ""))
 
     if bpm and sheet_dest:
