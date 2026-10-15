@@ -372,11 +372,11 @@ def recorded_sfx(kind):
             if v.get("role") == kind and (lib / v["file"]).exists()]
 
 
-def build_sfx(film, tl, sr=48000):
+def build_sfx(film, tl, sr=48000, drawn_ok=False):
     """Small UI sounds under the picture, placed from the timeline: a buzz when a phone lights, a soft ping when a
     message lands, a paper tick when a card is pinned, a thud when a stamp hits. Each kind uses recorded clips from
-    the library when any carry that role (cycled, gain varied, transient on the cue, as sound.md asks) and falls
-    back to a sound drawn in code, which is printed so a film never ships synthetic sounds without anyone knowing."""
+    the library when any carry that role (cycled, gain varied, transient on the cue, as sound.md asks). A kind with no
+    recording is left silent, or drawn in code with drawn_ok (a placeholder: the channel owner found them amateur)."""
     import numpy as np
     import wave
 
@@ -415,7 +415,8 @@ def build_sfx(film, tl, sr=48000):
         return x
 
     drawn = {"buzz": buzz, "ping": ping, "pin": pin, "thud": thud}
-    kinds = {k: recorded_sfx(k) or [(f"drawn-{k}", f())] for k, f in drawn.items()}
+    kinds = {k: recorded_sfx(k) or ([(f"drawn-{k}", f())] if drawn_ok else []) for k, f in drawn.items()}
+    missing = [k for k, c in kinds.items() if not c]
     events = []
     for sg in tl["segments"]:
         d = sg.get("data") or {}
@@ -433,7 +434,8 @@ def build_sfx(film, tl, sr=48000):
                 events.append((d["stamp"]["t"] - 0.05 + 0.12, "thud"))
         elif sg["type"] == "sms":
             events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
-    events.sort()
+    skipped = sum(1 for _, k in events if k in missing)
+    events = sorted(e for e in events if e[1] not in missing)
     kept, last = [], {}
     for t, k in events:
         if t - last.get(k, -9) >= SFX_GAP[k]:
@@ -460,10 +462,12 @@ def build_sfx(film, tl, sr=48000):
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
         w.writeframes((np.clip(out, -1, 1) * 32767).astype("<i2").tobytes())
     print(f"sfx: {len(events)} sounds ({', '.join(f'{k} {used[k]}' for k in kinds)})" + (f", {dropped} too close to the last one dropped" if dropped else ""))
+    if skipped:
+        print(f"  {skipped} cues silent: no library clip has role {', '.join(repr(k) for k in missing)} (sound.md, long-form UI sounds)")
     for k, clips in kinds.items():
         if used[k]:
             print(f"  {k}: " + (", ".join(c for c, _ in clips) if not clips[0][0].startswith("drawn")
-                               else f"drawn in code; no library clip has role \"{k}\" (see sound.md, long-form UI sounds)"))
+                               else "drawn in code (placeholder)"))
     return dest
 
 
@@ -509,7 +513,7 @@ def cmd_mix(a):
             mix_in.append(f"[wd{i}]")
     if a.sfx:
         base = len(inputs) // 2
-        inputs += ["-i", str(build_sfx(film, tl))]
+        inputs += ["-i", str(build_sfx(film, tl, drawn_ok=a.sfx_drawn))]
         filt.append(f"[{base}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={a.sfx_db}dB[sfx]")
         mix_in.append("[sfx]")
     filt.append("".join(mix_in) + f"amix=inputs={len(mix_in)}:normalize=0:dropout_transition=0,atrim=0:{total}[pre]")
@@ -721,6 +725,7 @@ def main():
     p.add_argument("--whoosh"); p.add_argument("--bed-db", type=float, default=-25.5)
     p.add_argument("--sfx", action=argparse.BooleanOptionalAction, default=True,
                    help="UI sounds from the timeline: phone buzz, message ping, card pin, stamp (on by default; --no-sfx)")
+    p.add_argument("--sfx-drawn", action="store_true", help="fill kinds with no recorded clip with code-drawn placeholders")
     p.add_argument("--sfx-db", type=float, default=-12); p.set_defaults(fn=cmd_mix)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)

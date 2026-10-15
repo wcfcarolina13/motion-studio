@@ -39,6 +39,8 @@ m.master()                                                                      
 
 ## Long-form UI sounds
 
+The channel owner's rule (2026-10-15): professional sounds only, free and cleared for commercial use, recorded or AI-generated. Record the licence in `catalog.json` for every clip; a clip without one doesn't ship.
+
 `longform.py mix` places UI sounds from the timeline (longform.md, UI sounds). To replace a drawn kind with recordings: fetch 2–4 clips per kind (`studio.py fetch sfx <id>`; search words: buzz "phone vibration", ping "message notification" or "soft notification", pin "paper" or "pin board", thud "stamp" or "rubber stamp"), then add `"role": "<kind>"` to each clip's entry under `sfx` in `catalog.json`. Pick short single hits (under about 0.6 s, since the transient is searched for in the first 0.6 s), or cut them first. Mixkit can't be reached from the cloud container or the desktop app's shell; fetch on the owner's Mac through a Remote Control session and stage the files into the container.
 
 Still open for long-form sound, in order: recorded clips for the four kinds; a whoosh on chapter cards from the library by default; a sound for counters and bars landing; checking each sound's level against the bed so none masks a word; varied clips per film so one channel's films don't share every click.

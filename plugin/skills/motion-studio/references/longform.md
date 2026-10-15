@@ -55,7 +55,7 @@ Burned-in, word-lit captions are on by default (the channel owner wants them; `"
 
 ## UI sounds
 
-`mix` adds one sound per on-screen event, read from the timeline: a buzz when a phone lights (`glow`), a ping when a message lands (`notify`, `sms`; 0.12 s after the buzz when both happen), a paper tick when a board card pins, a thud when a stamp hits. They sit at -12 dB (`--sfx-db`) under the voice. Same-kind sounds closer than the gaps in `SFX_GAP` are dropped so a burst of cards doesn't rattle. Each kind uses recorded library clips that carry `"role": "buzz" | "ping" | "pin" | "thud"` in `catalog.json` (cycled, level varied ±15%, transient on the cue); a kind with none falls back to a sound drawn in code, and `mix` prints which kinds did. The channel owner approved the drawn set on the toll-text film; sound.md's rule still prefers recordings, so give each kind recorded clips when the library can be reached (see sound.md).
+`mix` adds one sound per on-screen event, read from the timeline: a buzz when a phone lights (`glow`), a ping when a message lands (`notify`, `sms`; 0.12 s after the buzz when both happen), a paper tick when a board card pins, a thud when a stamp hits. They sit at -12 dB (`--sfx-db`) under the voice. Same-kind sounds closer than the gaps in `SFX_GAP` are dropped so a burst of cards doesn't rattle. Each kind uses recorded library clips that carry `"role": "buzz" | "ping" | "pin" | "thud"` in `catalog.json` (cycled, level varied ±15%, transient on the cue). A kind with no recording stays silent and `mix` says so; `--sfx-drawn` fills it with a sound drawn in code, as a placeholder only: the channel owner liked that the sounds landed on their events in the toll-text film but found the drawn sounds themselves amateur. Sounds must be professional recordings or generations that are free for commercial use (sound.md).
 
 ## Sharing a draft
 
@@ -67,7 +67,7 @@ Each of these came from the channel owner watching a cut; the fix lives in the e
 
 - **Captions must follow the voice, not the page.** Long caption pages let the eye run ahead and word timing drifted up to 0.9 s after pauses. Fixed by short pages (about 4 words), word edges snapped to measured silence, and trying both readings of a year. Check any new voice on its first film: median word-start error should stay near 0.
 - **Music under narration is quieter than it sounds while building.** -24 dB was too loud on a phone speaker; -25.5 dB is the default, with every track level-matched first so a quiet track doesn't jump at a chapter change.
-- **Small sounds make the scenes feel real.** One sound per visible event, never per animation.
+- **Sound placement works; the sounds must be professional.** One sound per visible event, never per animation, from recorded or generated clips that are free for commercial use. Drawn-in-code sounds read as amateur.
 - **A mood measure can't tell relative keys apart.** Composed minor beds read as major; trust chapter intent and override `out/music_plan.json` by hand.
 - **Music sources may be blocked from the build machine.** Check the library can be reached before planning a film around new tracks (sound.md lists the routes).
 - **The owner reviews on a link, not a file.** Run `share` with every draft so review doesn't wait on a download or a YouTube upload.
