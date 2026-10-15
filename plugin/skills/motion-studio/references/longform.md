@@ -38,7 +38,7 @@ Text-led (use sparingly; `check` flags a film that is more than 40% these): `tit
 Diagrams: `compare`, `stat`, `bars`, `flow`, `hub`, `sms` (a phone with a message).
 People and evidence (their own set; they wipe on and off left to right instead of cutting):
 
-- **`stage`**: rigged figures on a set (`room`, `street`, `desk`, `blank`). Cast entries take figure options (below) plus `x` (0–1), `h` (px, default 540), `pose`, `enter: "left"|"right"` (walks in). Beats: `pose`, `face`, `emote` (`? ! $ … x`), `say` / `think` (bubble), `notify` (a message card beside the phone), `glow` (the phone lights and buzzes), `move` (walk to a new x). The camera leans toward whoever acted last. `kicker` is a fixed label top left.
+- **`stage`**: rigged figures on a set (`room`, `street`, `desk`, `blank`). Cast entries take figure options (below) plus `x` (0–1), `h` (px, default 540), `pose`, `enter: "left"|"right"` (walks in). Beats: `pose`, `face`, `emote` (`? ! $ … x`), `say` / `think` (bubble), `notify` (a message card beside the phone; `from` changes its "MESSAGES · now" header, e.g. for a browser or an app), `glow` (the phone lights and buzzes), `move` (walk to a new x). The camera leans toward whoever acted last. `kicker` is a fixed label top left.
 - **`board`**: an evidence board. `cards` (`id, x, y, title, text, icon: phone|bank|card|person|money|web|doc, kind: "note"`) pin up on their words; `strings` (`from, to`) draw red string; `stamp` (`on, text`) slams onto a card. The camera drifts toward the newest card.
 - **`crowd`**: rows of seated people on phones; the camera starts on one person and pulls back to the room (`from`/`to` are 0–1 of the segment), then `label` and an optional `count` (`value, prefix, suffix, label, at`).
 
