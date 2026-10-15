@@ -315,6 +315,10 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
     runs = plan["runs"]
     for k, r in enumerate(runs):
         x = audio.load(audio.library_dir() / cat[r["track"]]["file"], stereo=True, sr=sr)
+        # level-match tracks to one loudness, so a quiet piano run and a loud score sit at the same depth under the voice
+        e = (cat[r["track"]].get("mood") or {}).get("energy")
+        if e is not None:
+            x = x * 10 ** ((-20.0 - e) / 20)
         a0 = max(0.0, r["t0"] - (xfade / 2 if k else 0))
         a1 = min(total, r["t1"] + (xfade / 2 if k < len(runs) - 1 else 0))
         need = int((a1 - a0) * sr)
