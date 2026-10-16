@@ -5,7 +5,7 @@ A breakout is a video whose views beat the median of the same creator's recent v
 (the outlier score) is the signal paid tools sell; this computes it from free sources.
 
   trends.py tiktok @user [@user ...] [--watchlist FILE] [--per-creator 30]
-  trends.py tiktok-tag scam [--videos 60] [--per-creator 20]      hashtag discovery, then each creator's baseline
+  trends.py tiktok-tag scam [--videos 60] [--per-creator 20]      hashtag discovery (broken as of 2026-10: yt-dlp needs TikTok app info)
   trends.py youtube "query" [--days 14] [--max 25] [--per-creator 20]
   common: [--min-score 3] [--min-age-days 1] [--out DIR]
 
