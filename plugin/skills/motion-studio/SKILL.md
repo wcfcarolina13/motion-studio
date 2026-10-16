@@ -52,9 +52,11 @@ Films are one HTML file where every style is a pure function of time (`window.se
 
 When the film is narrated and longer than about a minute, use `scripts/longform.py` instead of `studio.py new`: the narration sets the clock, scenes are built from `script.json` segments, beats land on spoken words, figures act scenes out, music is picked per chapter mood, and `check` measures dead air before anyone watches. The workflow, script format and scene types are in `references/longform.md`; figures in `references/figures.md`; the critic pass in `references/critic.md`. Uploads go through `scripts/youtube.py` and default to private; never publish publicly without the user's explicit go-ahead. Extra dependency for word timing: `pip install pocketsphinx`.
 
+To pick topics, `scripts/trends.py` finds TikTok and YouTube videos that broke out against their own creator's median views, from free sources only. It picks topics; it never downloads footage. → `references/trends.md`
+
 ## Where things live
 
-- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, align.py, youtube.py), `assets/templates/`, `references/` (+ `references/prompts/`).
+- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, align.py, youtube.py, trends.py), `assets/templates/`, `references/` (+ `references/prompts/`).
 - Shared data (paths from `config`): the audio library with `catalog.json`, the film ledger, optional house notes.
 - One folder per film: `film.html`, `kit.js` and `audio.py` (vendored copies, so films never break on a skill update), `storyboard.md`, `sound.py`, `sources/`, `review/`, `out/`, `notes.json`.
 
