@@ -87,7 +87,7 @@ jobs:
             if [ -n "$WATCHLIST" ]; then cat "$WATCHLIST" >> "$RUNNER_TEMP/watch.txt"; fi
             if [ ! -s "$RUNNER_TEMP/watch.txt" ]; then echo "::error::give handles or a watchlist"; exit 1; fi
           fi
-      - run: python -m pip install -q -U yt-dlp
+      - run: python -m pip install -q -U yt-dlp && echo "::notice::yt-dlp $(python -m yt_dlp --version)"
         if: inputs.source != 'youtube'
       - name: Scan
         env:
