@@ -10,6 +10,10 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py init <film>                       copy the engine (film.html, kit.js, figure.js) into the folder
   longform.py lines <film> [--json]             each segment's narration (feed to TTS, one file per id; --json adds speaker, mono)
   longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
+  longform.py lint <film | prompts.json>        warn on prompt patterns that break hands, limbs and busy scenes
+  longform.py review <film> [--checks c.json]   out/review/index.html: numbered panels to mark by click, regions by drag
+  longform.py repair <film> --beat b07 --box x,y,w,h --prompt "..."   redraw one region -> repairs/<image>/rNN/ candidates
+  longform.py accept|revert <film> panels/p07/r02 [--seed 2]   put a repair into the panel, or take it back out
   longform.py upscale <film> [--size 2304x1296]   Real-ESRGAN 4x then Lanczos to cover the size -> panels-hd/ (timeline uses it)
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
@@ -38,6 +42,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE.parent / "assets" / "templates" / "longform.html"
 sys.path.insert(0, str(HERE))
+import panelqa  # noqa: E402
 FPS = 30
 TEXT_ONLY = {"statement", "quote", "list", "chapter", "title"}      # scene types that are words on a background
 
@@ -81,11 +86,9 @@ def cmd_lines(a):
         print(f"{s['id']}\t{s['narration']}")
 
 
-def cmd_panels(a):
-    """Every panel image the script's panel scenes use, once each, with what the generator needs: the shot, who is in
-    frame, the prompt, and whether the file exists. Beats that reuse a panel (another crop or camera move) list it once."""
-    film = Path(a.film).resolve()
-    sc = load_script(film)
+def panel_list(film, sc, problems=None):
+    """Every panel image the script's panel scenes use, once each and in film order, with what the generator needs: the
+    shot, who is in frame, the prompt, reference images and plate. The first beat to give a field sets it."""
     panels = {}
     for s in sc["segments"]:
         if s.get("type") != "panel":
@@ -93,23 +96,109 @@ def cmd_panels(a):
         d = s.get("data") or {}
         img = d.get("image")
         if not img:
-            print(f"PROBLEM: {s['id']}: panel scene with no data.image")
+            if problems is not None:
+                problems.append(f"{s['id']}: panel scene with no data.image")
             continue
         p = panels.setdefault(img, {"image": img, "beats": [], "shot": d.get("shot"), "char_in_frame": d.get("char_in_frame", []),
-                                    "flashback": bool(d.get("flashback")), "prompt": d.get("prompt", ""), "seed": d.get("seed")})
+                                    "flashback": bool(d.get("flashback")), "prompt": d.get("prompt", ""), "seed": d.get("seed"),
+                                    "refs": d.get("refs", []), "plate": d.get("plate")})
         p["beats"].append(s["id"])
-        if d.get("prompt") and not p["prompt"]:
-            p["prompt"] = d["prompt"]
-    for p in panels.values():
+        for k in ("prompt", "refs", "plate"):
+            if d.get(k) and not p[k]:
+                p[k] = d[k]
+    return list(panels.values())
+
+
+def cmd_panels(a):
+    """The unique panel images and their prompts -> out/panels.json for the image runner. Beats that reuse a panel
+    (another crop or camera move) list it once."""
+    film = Path(a.film).resolve()
+    sc = load_script(film)
+    problems = []
+    panels = panel_list(film, sc, problems)
+    for p in panels:
         p["exists"] = (film / p["image"]).exists()
         p["upscaled"] = bool(hd_path(film, p["image"]))
         if not p["prompt"]:
-            print(f"PROBLEM: {p['image']} (beats {', '.join(p['beats'])}): no prompt")
+            problems.append(f"{p['image']} (beats {', '.join(p['beats'])}): no prompt")
+    for x in problems:
+        print("PROBLEM:", x)
     out = film / "out" / "panels.json"
     out.parent.mkdir(exist_ok=True)
-    out.write_text(json.dumps({"panels": list(panels.values()), "characters": sc.get("characters", {})}, indent=1, ensure_ascii=False) + "\n")
-    missing = [p for p in panels.values() if not p["exists"]]
-    print(f"{len(panels)} unique panels for {sum(len(p['beats']) for p in panels.values())} panel beats; {len(missing)} still to generate -> {out}")
+    out.write_text(json.dumps({"panels": panels, "characters": sc.get("characters", {})}, indent=1, ensure_ascii=False) + "\n")
+    missing = [p for p in panels if not p["exists"]]
+    print(f"{len(panels)} unique panels for {sum(len(p['beats']) for p in panels)} panel beats; {len(missing)} still to generate -> {out}")
+    warned = panelqa.lint([dict(p, id=p["image"]) for p in panels])
+    if warned:
+        print(f"{len(warned)} panel prompts have lint warnings; run `longform.py lint {a.film}`")
+
+
+def cmd_lint(a):
+    """Warn on prompt patterns that break anatomy or blur a scene on small image models. Takes a film folder (its panel
+    scenes) or a JSON list of panel records with prompt, shot, refs and plate (an image runner's prompt file)."""
+    src = Path(a.source).resolve()
+    if src.is_dir():
+        items = [dict(p, id=f"{p['image']} ({', '.join(p['beats'])})") for p in panel_list(src, load_script(src))]
+    else:
+        data = json.loads(src.read_text())
+        data = data.get("panels", data) if isinstance(data, dict) else data
+        items = [dict(x, id=str(x.get("id") or x.get("beat") or x.get("image") or i + 1)) for i, x in enumerate(data)]
+    warned = panelqa.lint(items)
+    for pid, ws in warned:
+        print(pid)
+        for w in ws:
+            print("   ", w)
+    n = sum(len(w) for _, w in warned)
+    print(f"{len(items)} prompts, {len(warned)} with warnings ({n} in all). Warnings are heuristics from the 2026-10-17 anatomy "
+          "research; a person decides.")
+
+
+def cmd_review(a):
+    """out/review/index.html: every panel numbered in film order. Click to mark, drag to box a region, type the fix; the
+    page keeps marks in this browser, downloads them as marks.json, and prints a `repair` command for each box.
+    --checks is a checker's verdicts, {image: {"verdict": "FAIL", "reason", "boxes": [[x, y, w, h] in 0-1]}}."""
+    film = Path(a.film).resolve()
+    sc = load_script(film)
+    checks = json.loads(Path(a.checks).read_text()) if a.checks else {}
+    page = panelqa.review_page(film, panel_list(film, sc), checks, sc.get("title", film.name))
+    print(f"review sheet -> {page} (open it in a browser; it reads the panels from the film folder)")
+
+
+def image_for(film, a):
+    if a.image:
+        return a.image, [p for p in panel_list(film, load_script(film)) if p["image"] == a.image][:1]
+    for p in panel_list(film, load_script(film)):
+        if a.beat in p["beats"]:
+            return p["image"], [p]
+    raise SystemExit(f"no panel beat {a.beat}")
+
+
+def cmd_repair(a):
+    """Redraw one region of a panel (a broken hand, a stray limb): crop a square around --box, scale it to 1024, redraw it
+    with an mflux edit model, scale back and paste in only the box with a feathered edge. mflux has no masked inpainting
+    for klein or Qwen-Edit, so the model redraws the whole crop and our mask confines the change. Candidates land in
+    repairs/<image>/rNN/; nothing touches the panel until `accept`."""
+    film = Path(a.film).resolve()
+    img, found = image_for(film, a)
+    beats = found[0]["beats"] if found else []
+    rdir, made, secs = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=a.model, seeds=a.seeds, context=a.context,
+                                      feather=a.feather, gen_args=a.gen_args.split() if a.gen_args else [], beats=beats)
+    rid = f"{Path(img).with_suffix('').as_posix()}/{rdir.name}"
+    print(f"{rid}: {len(made)} candidate(s) in {secs} s -> {rdir.relative_to(film)}/compare_<seed>.png")
+    if made:
+        print(f"look at the compare images, then: longform.py accept {a.film} {rid}" + (" --seed N" if len(made) > 1 else ""))
+
+
+def cmd_accept(a):
+    film = Path(a.film).resolve()
+    src = panelqa.accept(film, a.repair, a.seed)
+    print(f"{src.relative_to(film)} replaced (the previous version is in repairs/{a.repair}/); run `upscale` again for this panel")
+
+
+def cmd_revert(a):
+    film = Path(a.film).resolve()
+    src = panelqa.revert(film, a.repair)
+    print(f"{src.relative_to(film)} restored from before {a.repair}; run `upscale` again for this panel")
 
 
 PANEL_HD = "panels-hd"      # upscaled copies of the panel images, same relative paths; timeline prefers them
@@ -1020,6 +1109,23 @@ def main():
     p = sp.add_parser("init"); p.add_argument("film"); p.set_defaults(fn=cmd_init)
     p = sp.add_parser("lines"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lines)
     p = sp.add_parser("panels"); p.add_argument("film"); p.set_defaults(fn=cmd_panels)
+    p = sp.add_parser("lint"); p.add_argument("source", help="a film folder, or a JSON list of panel prompts"); p.set_defaults(fn=cmd_lint)
+    p = sp.add_parser("review"); p.add_argument("film"); p.add_argument("--checks", help="a checker's verdicts per image (JSON)")
+    p.set_defaults(fn=cmd_review)
+    p = sp.add_parser("repair"); p.add_argument("film"); g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--beat"); g.add_argument("--image")
+    p.add_argument("--box", required=True, help="x,y,w,h in panel pixels, or all four in 0-1 (as the review sheet gives them)")
+    p.add_argument("--prompt", required=True, help='what to redraw, e.g. "Redraw the right hand in image 1 with five fingers ..."')
+    p.add_argument("--ref", help="a second image, e.g. the sleeve and hand cropped from the character sheet")
+    p.add_argument("--model", choices=sorted(panelqa.GENERATORS), default="klein")
+    p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
+    p.add_argument("--context", type=float, default=2.25, help="crop side as a multiple of the box's longer side")
+    p.add_argument("--feather", type=float, default=6, help="pixels of soft edge outside the box")
+    p.add_argument("--gen-args", help='extra mflux arguments, e.g. "-q 8" or "--lora-paths x.safetensors --steps 8"')
+    p.set_defaults(fn=cmd_repair)
+    p = sp.add_parser("accept"); p.add_argument("film"); p.add_argument("repair", help="the repair id, e.g. panels/p07/r02")
+    p.add_argument("--seed", type=int); p.set_defaults(fn=cmd_accept)
+    p = sp.add_parser("revert"); p.add_argument("film"); p.add_argument("repair"); p.set_defaults(fn=cmd_revert)
     p = sp.add_parser("upscale"); p.add_argument("film"); p.add_argument("--size", default="2304x1296")
     p.add_argument("--model", default="realesrgan-x4plus-anime"); p.add_argument("--bin", default="realesrgan-ncnn-vulkan")
     p.add_argument("--redo", action="store_true"); p.set_defaults(fn=cmd_upscale)
