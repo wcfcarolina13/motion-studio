@@ -62,8 +62,31 @@ def hands_in(prompt):
     return n, contact
 
 
-def lint(items):
-    """items: [{"id", "prompt", "shot"?, "refs"?, "plate"?, "char_in_frame"?}] -> [(id, [warnings])] for panels with any."""
+ROLE = re.compile(r"^(?:Image|Picture) \d+ (?:is|shows|gives)\b", re.I)
+
+
+def sentences(prompt):
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+", prompt.strip()) if x.strip()]
+
+
+def scene_words(prompt, boiler, boiler_re=None):
+    """Words of the scene description: sentences that only say what a reference image is ("Image 1 is the identity
+    reference for ...") and the shared style ending are fixed boilerplate, not scene."""
+    return sum(len(x.split()) for x in sentences(prompt) if not ROLE.match(x) and x not in boiler and
+               not (boiler_re and boiler_re.search(x)))
+
+
+def lint(items, boiler_re=None):
+    """items: [{"id", "prompt", "shot"?, "refs"?, "plate"?, "char_in_frame"?}] -> [(id, [warnings])] for panels with any.
+    A last sentence shared by at least half the prompts (the style anchor) is not counted as scene words; nor is any
+    sentence matching boiler_re."""
+    boiler_re = re.compile(boiler_re, re.I) if boiler_re else None
+    last = [sentences(it["prompt"])[-1:] for it in items if it.get("prompt")]
+    counts = {}
+    for x in last:
+        if x:
+            counts[x[0]] = counts.get(x[0], 0) + 1
+    boiler = {k for k, v in counts.items() if len(last) > 1 and v * 2 >= len(last)}
     out = []
     for it in items:
         p, w = it.get("prompt") or "", []
@@ -74,9 +97,9 @@ def lint(items):
         n_img = len(refs) + (1 if it.get("plate") else 0)
         if n_img > MAX_IMAGES:
             w.append(f"{n_img} reference images; keep 1-2 in one style (identity mixes above {MAX_IMAGES})")
-        words = len(p.split())
+        words = scene_words(p, boiler, boiler_re)
         if words > MAX_WORDS:
-            w.append(f"{words} words; keep to {MAX_WORDS} (one action, one setting)")
+            w.append(f"{words} scene words; keep to {MAX_WORDS} (one action, one setting; reference lines and the style ending don't count)")
         chars = it.get("char_in_frame") or []
         if len(chars) > MAX_CHARS:
             w.append(f"{len(chars)} characters in frame; keep to {MAX_CHARS}, the rest as silhouettes or out of frame")

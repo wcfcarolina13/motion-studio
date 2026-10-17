@@ -143,7 +143,7 @@ def cmd_lint(a):
         data = json.loads(src.read_text())
         data = data.get("panels", data) if isinstance(data, dict) else data
         items = [dict(x, id=str(x.get("id") or x.get("beat") or x.get("image") or i + 1)) for i, x in enumerate(data)]
-    warned = panelqa.lint(items)
+    warned = panelqa.lint(items, a.boiler)
     for pid, ws in warned:
         print(pid)
         for w in ws:
@@ -1109,7 +1109,9 @@ def main():
     p = sp.add_parser("init"); p.add_argument("film"); p.set_defaults(fn=cmd_init)
     p = sp.add_parser("lines"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lines)
     p = sp.add_parser("panels"); p.add_argument("film"); p.set_defaults(fn=cmd_panels)
-    p = sp.add_parser("lint"); p.add_argument("source", help="a film folder, or a JSON list of panel prompts"); p.set_defaults(fn=cmd_lint)
+    p = sp.add_parser("lint"); p.add_argument("source", help="a film folder, or a JSON list of panel prompts")
+    p.add_argument("--boiler", help="regex: sentences to leave out of the word count (reference lines and a shared last sentence already are)")
+    p.set_defaults(fn=cmd_lint)
     p = sp.add_parser("review"); p.add_argument("film"); p.add_argument("--checks", help="a checker's verdicts per image (JSON)")
     p.set_defaults(fn=cmd_review)
     p = sp.add_parser("repair"); p.add_argument("film"); g = p.add_mutually_exclusive_group(required=True)
