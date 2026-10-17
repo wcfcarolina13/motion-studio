@@ -181,7 +181,7 @@ def cmd_timeline(a):
             dur = d + a.pad + s.get("extra", 0.0)
         else:
             dur = s.get("hold", 3.0)
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3))
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -190,8 +190,10 @@ def cmd_timeline(a):
             problems.append(f"{s['id']}: narration changed since `align`; run align again")
         resolve_cues(seg.get("data", {}), seg.get("words"), seg, problems, cues)
         if seg.get("sfx"):      # drama foley: "sfx": ["paper slap", {"kind": "low hit", "at": "envelope"}]
-            seg["sfx"] = [x if isinstance(x, dict) else {"kind": x} for x in seg["sfx"]]
+            seg["sfx"] = [dict(x, kind=kind_key(x["kind"])) if isinstance(x, dict) else {"kind": kind_key(x)} for x in seg["sfx"]]
             resolve_cues(seg["sfx"], seg.get("words"), seg, problems, cues)
+        if seg.get("bed"):      # ambience under the whole segment: "bed": "rain glass" (or a list)
+            seg["bed"] = [kind_key(b) for b in ([seg["bed"]] if isinstance(seg["bed"], str) else seg["bed"])]
         segs.append(seg)
         if s.get("chapter") and (not chapters or chapters[-1]["title"] != s["chapter"]):
             if chapters:
@@ -455,7 +457,17 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
 
 
 SFX_GAP = {"buzz": 0.6, "ping": 0.35, "pin": 0.12, "thud": 0.5}    # same-kind sounds closer than this are dropped
-SFX_MAX = {"buzz": 0.9, "ping": 1.2, "pin": 0.4, "thud": 0.8, "whoosh": 1.0}   # seconds a cue may ring; longer clips are cut
+SFX_MAX = {"buzz": 0.9, "ping": 1.2, "pin": 0.4, "thud": 0.8, "whoosh": 1.0,    # seconds a cue may ring; longer clips are cut
+           "gavel": 3.0, "footsteps-marble": 3.0, "monitor-beep": 3.0, "low-hit": 2.5, "glass-break": 2.0, "door": 2.0,
+           "pen-roll": 1.5, "paper-slide": 1.5, "pen-scratch": 1.5, "keys-lock": 1.5, "cutlery": 1.5, "dripping-water": 1.5,
+           "seal-stamp": 1.0, "paper-slap": 0.8, "slap": 0.8}
+BED_GAIN = 0.3        # an ambience bed sits about 10 dB under the foley hits (the whole sfx bus is then --sfx-db)
+BED_FADE = 0.8        # seconds a bed fades in and out at the edges of its run of segments
+
+
+def kind_key(k):
+    """One spelling per kind: "paper slap", "Paper_Slap" and "paper-slap" are the same role."""
+    return "-".join(str(k).lower().replace("_", " ").split())
 
 
 def trim_clip(x, kind, sr=48000, fade=0.06):
@@ -470,15 +482,50 @@ def trim_clip(x, kind, sr=48000, fade=0.06):
     return x
 
 
-def recorded_sfx(kind):
-    """Library clips catalogued with "role": <kind> (studio.py fetch sfx <id>, then set the role in catalog.json)."""
+def recorded_sfx(kind, trim=True):
+    """Library clips catalogued with "role": <kind> (studio.py role <id> <kind>); trim=False keeps a bed's full length."""
     import audio
     try:
         lib, cat = audio.library_dir(), audio.catalog()
     except SystemExit:
         return []
-    return [(k, trim_clip(audio.load(lib / v["file"]), kind)) for k, v in sorted(cat["sfx"].items())
-            if v.get("role") == kind and (lib / v["file"]).exists()]
+    kind = kind_key(kind)
+    return [(k, trim_clip(audio.load(lib / v["file"]), kind) if trim else audio.load(lib / v["file"]))
+            for k, v in sorted(cat["sfx"].items()) if v.get("role") and kind_key(v["role"]) == kind and (lib / v["file"]).exists()]
+
+
+def bed_runs(segs):
+    """[(kind, t0, t1)]: a bed over each run of back-to-back segments that ask for it, so it doesn't restart at a cut."""
+    runs, open_ = [], {}
+    for sg in segs:
+        here = set(sg.get("bed") or [])
+        for k in list(open_):
+            if k not in here:
+                runs.append((k, *open_.pop(k)))
+        for k in here:
+            if k in open_:
+                open_[k][1] = sg["t1"]
+            else:
+                open_[k] = [sg["t0"], sg["t1"]]
+    return sorted(runs + [(k, a, b) for k, (a, b) in open_.items()], key=lambda r: r[1])
+
+
+def lay_bed(x, n, sr=48000, xfade=1.0):
+    """Loop a clip to n samples with a crossfade at each seam, and fade the ends of the run."""
+    import numpy as np
+    f = min(int(xfade * sr), len(x) // 3)
+    out = x[:n].copy() if len(x) >= n else None
+    if out is None:
+        out = x.copy()
+        ramp = np.linspace(0, 1, f)
+        while len(out) < n:
+            out[-f:] = out[-f:] * (1 - ramp) + x[:f] * ramp
+            out = np.concatenate([out, x[f:]])
+        out = out[:n]
+    e = min(int(BED_FADE * sr), n // 2)
+    out[:e] *= np.linspace(0, 1, e)
+    out[n - e:] *= np.linspace(1, 0, e)
+    return out
 
 
 def build_sfx(film, tl, sr=48000, drawn_ok=False):
@@ -527,7 +574,7 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
     kinds = {k: recorded_sfx(k) or ([(f"drawn-{k}", f())] if drawn_ok else []) for k, f in drawn.items()}
     for sg in tl["segments"]:           # foley a segment asks for by name: recorded clips only, never drawn
         for x in sg.get("sfx", []):
-            kinds.setdefault(x["kind"], recorded_sfx(x["kind"]))
+            kinds.setdefault(kind_key(x["kind"]), recorded_sfx(x["kind"]))
     missing = [k for k, c in kinds.items() if not c]
     events = []
     for sg in tl["segments"]:
@@ -546,7 +593,7 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
                 events.append((d["stamp"]["t"] - 0.05 + 0.12, "thud"))
         elif sg["type"] == "sms":
             events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
-        events += [(x.get("t", sg["t0"] + 0.1), x["kind"]) for x in sg.get("sfx", [])]
+        events += [(x.get("t", sg["t0"] + 0.1), kind_key(x["kind"])) for x in sg.get("sfx", [])]
     skipped = sum(1 for _, k in events if k in missing)
     events = sorted(e for e in events if e[1] not in missing)
     kept, last = [], {}
@@ -569,6 +616,20 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
         n = min(len(x), len(out) - i)
         out[i:i + n] += gain * x[:n]
         used[k] += 1
+    beds, bed_used, bed_silent = {}, {}, set()
+    for k, a, b in bed_runs(tl["segments"]):
+        clips = beds.setdefault(k, recorded_sfx(k, trim=False))
+        if not clips:
+            bed_silent.add(k); continue
+        done = bed_used.setdefault(k, [])
+        key, x = clips[len(done) % len(clips)]
+        i, n = int(a * sr), int((b - a) * sr)
+        n = min(n, len(out) - i)
+        out[i:i + n] += BED_GAIN * lay_bed(x, n, sr)
+        bed_used[k].append(key)
+        print(f"  bed {k}: {key} under {a:.1f}-{b:.1f} s")
+    if bed_silent:
+        print(f"  beds silent: no library clip has role {', '.join(repr(k) for k in sorted(bed_silent))}")
     out = np.stack([out, out], 1)[:int(total * sr)]
     dest = film / "out" / "sfx.wav"
     with wave.open(str(dest), "wb") as w:
@@ -581,7 +642,10 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
         if used[k]:
             print(f"  {k}: " + (", ".join(c for c, _ in clips) if not clips[0][0].startswith("drawn")
                                else "drawn in code (placeholder)"))
-    return dest, {k: [c for c, _ in kinds[k][:used[k]]] for k in kinds if used[k] and not kinds[k][0][0].startswith("drawn")}
+    sounds = {k: [c for c, _ in kinds[k][:used[k]]] for k in kinds if used[k] and not kinds[k][0][0].startswith("drawn")}
+    for k, keys in bed_used.items():
+        sounds.setdefault(k, []).extend(c for c in dict.fromkeys(keys) if c not in sounds.get(k, []))
+    return dest, sounds
 
 
 def library_whoosh():
