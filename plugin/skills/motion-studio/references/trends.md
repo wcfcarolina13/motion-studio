@@ -17,3 +17,8 @@
 - The score picks topics. It is not a reason to copy footage. The episode is original: narration, figures, and at most a few credited seconds for commentary. See `longform.md`.
 - Prefer topics with a story that lasts (scams, money, people, mysteries) over dances and sounds. A trend that will be dead before the episode ships is a Short at most.
 - Read the median column: a breakout against a tiny median (under about 1,000 views) is noise until it repeats.
+
+## On a GitHub runner
+TikTok rate-limits an IP that scans often (the owner's Mac was limited on 2026-10-17), so `.github/workflows/trend-radar.yml` runs the `tiktok` scan on a GitHub runner, one niche per run, started by hand (Actions > trend-radar > Run workflow, or the API's workflow dispatch) with `niche`, `handles` or `watchlist`, `per_creator` and `min_score`. The workflow has to be on the default branch before it can be started. Runner IPs are shared and can be blocked too; the log counts the creator pages that failed.
+
+The repo is public, so run logs and artifacts are public. By default (`output: encrypted`) the log shows only counts, and the results leave the runner as `radar-<niche>.tgz.gpg`, encrypted with the `RADAR_KEY` repository secret and kept 7 days. To read them: `gh run download <run-id> -n radar-<niche>`, then `gpg -d radar-<niche>.tgz.gpg | tar -xzf -` with the same passphrase. `output: public` prints the ranked table and uploads plain files. That's handles, titles and view counts, all public on TikTok already, but it shows which niches the channel is watching. The dispatch inputs (niche label, handles) show on the run page either way.
