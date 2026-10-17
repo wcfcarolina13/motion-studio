@@ -5,18 +5,27 @@ One-time setup (Google Cloud Console): enable "YouTube Data API v3", set the OAu
 screen to External + Testing with your Google account as a test user, create an OAuth client of
 type "Desktop app", and save its JSON as ~/.motion-studio/youtube/client_secret.json (or set YT_SECRETS).
 
+  youtube.py [--channel SLUG] <command> ...   one token per channel (several Brand Account channels, one OAuth client)
+
   youtube.py auth                       sign in on this machine (opens the browser, catches the redirect)
   youtube.py auth-url                   print a sign-in link to open anywhere; then:
   youtube.py exchange "<redirected URL>" paste the http://127.0.0.1... address the browser landed on
   youtube.py whoami                     the channel the token uploads to
   youtube.py upload FILE --title T [--description-file F] [--tags a,b] [--privacy private|unlisted|public]
                     [--category 27] [--thumbnail PNG] [--made-for-kids] [--synthetic]
+                    [--language en] [--localizations titles.json]   {"es": {"title", "description"?}, "pt-BR": {...}}
   youtube.py set-privacy VIDEO_ID private|unlisted|public
   youtube.py captions VIDEO_ID FILE.vtt [--language en] [--name English]   add a caption track (longform.py writes one)
 
 Privacy defaults to private. Nothing here publishes publicly unless --privacy public is passed.
-Tokens live next to the client secret, in token.json. While the consent screen is in Testing, Google expires the
-refresh token after 7 days; run `auth` again, or move the app to In production for a lasting token.
+Tokens live next to the client secret: token.json, or token-<slug>.json with --channel (or YT_CHANNEL). Signing in
+with --channel records which YouTube channel the token reaches in channels.json; every later command on that slug
+checks the token still reaches it, so one show's video can't land on another show's channel. channels.json may also
+hold, per slug: "disclosure" (a line appended word for word to the description and to every localized description,
+so the AI disclosure reads the same in every language), "synthetic": true (declare altered or synthetic content)
+and "language" (the default language of titles and audio).
+While the consent screen is in Testing, Google expires the refresh token after 7 days; run `auth` again, or move the
+app to In production for a lasting token.
 """
 import argparse
 import http.server
@@ -34,7 +43,36 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SECRETS = Path(os.environ.get("YT_SECRETS", Path.home() / ".motion-studio" / "youtube")).expanduser()
 CLIENT = SECRETS / "client_secret.json"
+CHANNELS = SECRETS / "channels.json"
+SLUG = os.environ.get("YT_CHANNEL", "")       # set from --channel in main()
 TOKEN = SECRETS / "token.json"
+
+
+def channels():
+    return json.loads(CHANNELS.read_text()) if CHANNELS.exists() else {}
+
+
+def channel_cfg():
+    return channels().get(SLUG, {}) if SLUG else {}
+
+
+def mine():
+    """(id, title) of the channel the current token reaches."""
+    s, _, b = api("GET", "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true")
+    items = json.loads(b).get("items", []) if s == 200 else []
+    if s != 200:
+        raise SystemExit(f"channels -> {s}: {b.decode()[:400]}")
+    return (items[0]["id"], items[0]["snippet"]["title"]) if items else (None, None)
+
+
+def check_channel():
+    """With --channel, the token must still reach the channel recorded for the slug at sign-in."""
+    want = channel_cfg().get("channel_id")
+    if not want:
+        return
+    got, title = mine()
+    if got != want:
+        raise SystemExit(f"--channel {SLUG} is recorded as {want}, but this token reaches {got} ({title}); run `--channel {SLUG} auth` again")
 # upload + readonly for videos; force-ssl is the scope captions.insert requires
 SCOPES = ("https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly "
           "https://www.googleapis.com/auth/youtube.force-ssl")
@@ -83,6 +121,18 @@ def exchange(redirected):
     TOKEN.write_text(json.dumps(tok, indent=2))
     os.chmod(TOKEN, 0o600)
     print(f"token saved to {TOKEN}")
+    if SLUG:            # record (or check) which channel this slot reaches; Google's picker lists every Brand Account
+        cid, title = mine()
+        all_ = channels()
+        cfg = all_.setdefault(SLUG, {})
+        if cfg.get("channel_id") and cfg["channel_id"] != cid:
+            TOKEN.unlink()
+            raise SystemExit(f"you picked {title} ({cid}), but {SLUG} is {cfg.get('title')} ({cfg['channel_id']}): token discarded, sign in again")
+        if not cid:
+            raise SystemExit("this Google account or Brand Account has no YouTube channel yet: create it at youtube.com first")
+        cfg.update(channel_id=cid, title=title)
+        CHANNELS.write_text(json.dumps(all_, indent=2, ensure_ascii=False) + "\n")
+        print(f"{SLUG} -> {title} ({cid})")
 
 
 def access_token():
@@ -138,6 +188,8 @@ def cmd_auth(a):
 
 
 def cmd_whoami(a):
+    if SLUG:
+        print(f"{SLUG}: recorded {channel_cfg().get('title')} ({channel_cfg().get('channel_id')})")
     s, _, b = api("GET", "https://www.googleapis.com/youtube/v3/channels?part=snippet,status&mine=true")
     data = json.loads(b)
     if s != 200:
@@ -148,19 +200,40 @@ def cmd_whoami(a):
         print("this Google account has no YouTube channel yet: create one at youtube.com first")
 
 
+def with_disclosure(desc, line):
+    """The channel's disclosure line, word for word, at the end of a description (once)."""
+    if not line or line in desc:
+        return desc
+    return (desc.rstrip() + "\n\n" + line).lstrip()
+
+
 def cmd_upload(a):
     path = Path(a.file)
     size = path.stat().st_size
     if a.privacy == "public" and not a.yes_public:
         raise SystemExit("refusing public upload without --yes-public")
-    desc = Path(a.description_file).read_text() if a.description_file else (a.description or "")
+    check_channel()
+    cfg = channel_cfg()
+    line = cfg.get("disclosure", "")
+    desc = with_disclosure(Path(a.description_file).read_text() if a.description_file else (a.description or ""), line)
+    lang = a.language or cfg.get("language", "en")
     meta = {
         "snippet": {"title": a.title[:100], "description": desc[:5000], "categoryId": a.category,
-                    "tags": [t.strip() for t in a.tags.split(",")] if a.tags else []},
+                    "tags": [t.strip() for t in a.tags.split(",")] if a.tags else [],
+                    "defaultLanguage": lang, "defaultAudioLanguage": lang},
         "status": {"privacyStatus": a.privacy, "selfDeclaredMadeForKids": a.made_for_kids,
-                   "containsSyntheticMedia": a.synthetic},
+                   "containsSyntheticMedia": a.synthetic or bool(cfg.get("synthetic"))},
     }
-    s, h, b = api("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+    parts = "snippet,status"
+    if a.localizations:     # titles (and descriptions) per language; the disclosure line stays the same in each
+        loc = json.loads(Path(a.localizations).read_text())
+        for code, v in loc.items():
+            if len(v["title"]) > 100:
+                raise SystemExit(f"{code} title is over 100 characters: {v['title']}")
+            v["description"] = with_disclosure(v.get("description") or desc, line)[:5000]
+        meta["localizations"] = loc
+        parts += ",localizations"
+    s, h, b = api("POST", f"https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part={parts}",
                   body=meta, headers={"X-Upload-Content-Length": str(size),
                                       "X-Upload-Content-Type": mimetypes.guess_type(path.name)[0] or "video/mp4"})
     if s != 200:
@@ -202,6 +275,7 @@ def cmd_upload(a):
 def cmd_set_privacy(a):
     if a.privacy == "public" and not a.yes_public:
         raise SystemExit("refusing to make public without --yes-public")
+    check_channel()
     s, _, b = api("GET", f"https://www.googleapis.com/youtube/v3/videos?part=status&id={a.video_id}")
     items = json.loads(b).get("items", [])
     if not items:
@@ -213,6 +287,7 @@ def cmd_set_privacy(a):
 
 
 def cmd_captions(a):
+    check_channel()
     meta = json.dumps({"snippet": {"videoId": a.video_id, "language": a.language, "name": a.name, "isDraft": False}})
     boundary = "ms" + secrets.token_hex(8)
     body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n"
@@ -226,6 +301,7 @@ def cmd_captions(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--channel", default=os.environ.get("YT_CHANNEL", ""), help="channel slug: its own token and checks")
     sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("auth").set_defaults(fn=cmd_auth)
     sp.add_parser("auth-url").set_defaults(fn=lambda a: print(auth_url()))
@@ -237,12 +313,19 @@ def main():
     p.add_argument("--yes-public", action="store_true"); p.add_argument("--category", default="27")
     p.add_argument("--thumbnail"); p.add_argument("--made-for-kids", action="store_true")
     p.add_argument("--synthetic", action="store_true", help="declare altered or synthetic content")
+    p.add_argument("--language", help="default language of title and audio (else the channel's, else en)")
+    p.add_argument("--localizations", help='JSON {"es": {"title", "description"?}, ...}; the disclosure line is added to each')
     p.set_defaults(fn=cmd_upload)
     p = sp.add_parser("set-privacy"); p.add_argument("video_id"); p.add_argument("privacy", choices=["private", "unlisted", "public"])
     p.add_argument("--yes-public", action="store_true"); p.set_defaults(fn=cmd_set_privacy)
     p = sp.add_parser("captions"); p.add_argument("video_id"); p.add_argument("file"); p.add_argument("--language", default="en")
     p.add_argument("--name", default="English"); p.set_defaults(fn=cmd_captions)
     a = ap.parse_args()
+    global SLUG, TOKEN
+    if a.channel:
+        if not all(ch.isalnum() or ch in "-_" for ch in a.channel):
+            raise SystemExit("--channel: letters, digits, - and _ only")
+        SLUG, TOKEN = a.channel, SECRETS / f"token-{a.channel}.json"
     a.fn(a)
 
 
