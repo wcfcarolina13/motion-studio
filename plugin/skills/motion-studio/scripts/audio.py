@@ -145,6 +145,9 @@ def import_sfx(src, roles=0):
         if not licence_ok(m.get("licence") or ""):
             refused.append((m["file"], m.get("licence") or "no licence"))
             continue
+        if "generated" in f"{m.get('source', '')} {m.get('licence', '')}".lower():
+            refused.append((m["file"], "drawn in code: the library takes recorded (or AI) clips only"))
+            continue
         f = src / m["file"]
         key = Path(m["file"]).stem
         dest = lib / "sfx" / m.get("source", "other") / m["kind"] / f.name
