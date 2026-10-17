@@ -5,6 +5,7 @@ A breakout is a video whose views beat the median of the same creator's recent v
 (the outlier score) is the signal paid tools sell; this computes it from free sources.
 
   trends.py tiktok @user [@user ...] [--watchlist FILE] [--per-creator 30] [--stale-days 60] [--keywords a,b --min-fit 0.3]
+                    [--keep @a,@b]   creators kept whatever the stale and niche filters say
   trends.py tiktok-tag scam [--videos 60] [--per-creator 20]      hashtag discovery (broken as of 2026-10: yt-dlp needs TikTok app info)
   trends.py youtube "query" [--days 14] [--max 25] [--per-creator 20]
   common: [--min-score 3] [--min-age-days 1] [--max-age-days 30] [--out DIR]
@@ -21,6 +22,9 @@ Sources, all free:
 
 Each run writes trends-<date>-<source>.md (ranked table) and .json (every video seen) to --out.
 Scores for videos younger than --min-age-days are left out: they have not had time to collect views.
+Each video carries "paid": why it looks sponsored ("declared" when YouTube says it has paid placement, else the
+first marker found in its caption or description: #ad, "sponsored by", "use code"...), or null. A sponsored
+breakout may be paid reach, not organic demand; the report marks it.
 The radar picks topics. It never downloads videos; the factory makes original episodes about them.
 """
 import argparse
@@ -108,6 +112,7 @@ def tiktok_list(url, limit):
         out.append({"source": "tiktok", "creator": creator, "id": e.get("id"),
                     "url": e.get("url") or e.get("webpage_url"),
                     "title": (e.get("title") or e.get("description") or "").replace("\n", " ")[:160],
+                    "text": e.get("description") or e.get("title") or "",     # the whole caption, hashtags included
                     "views": e["view_count"], "likes": e.get("like_count"),
                     "comments": e.get("comment_count"), "shares": e.get("repost_count"),
                     "timestamp": e.get("timestamp")})
@@ -142,21 +147,26 @@ def handles(args):
 
 def fit_filter(videos, a):
     """Drop creators who are stale (newest video older than --stale-days) or off-niche (under --min-fit of their
-    titles match --keywords). Returns (kept videos, [(creator, reason)])."""
+    videos match --keywords in the caption or its hashtags), except those named in --keep.
+    Returns (kept videos, [(creator, reason)])."""
     by = {}
     for v in videos:
         by.setdefault(v["creator"], []).append(v)
     words = [w.strip().lower() for w in (a.keywords or "").split(",") if w.strip()]
+    keep = {k.strip().lstrip("@").lower() for k in (getattr(a, "keep", None) or "").split(",") if k.strip()}
     kept, dropped, now = [], [], time.time()
     for c, vs in by.items():
+        if c.lower() in keep:
+            kept += vs
+            continue
         ts = [v["timestamp"] for v in vs if v.get("timestamp")]
         if a.stale_days and ts and (now - max(ts)) / DAY > a.stale_days:
             dropped.append((c, f"no post in {round((now - max(ts)) / DAY)} days"))
             continue
         if words:
-            fit = sum(any(w in (v.get("title") or "").lower() for w in words) for v in vs) / len(vs)
+            fit = sum(any(w in (v.get("text") or v.get("title") or "").lower() for w in words) for v in vs) / len(vs)
             if fit < a.min_fit:
-                dropped.append((c, f"{fit:.0%} of titles on-niche"))
+                dropped.append((c, f"{fit:.0%} of videos on-niche"))
                 continue
         kept += vs
     return kept, dropped
@@ -224,13 +234,28 @@ def yt(path, **params):
         raise SystemExit(f"YouTube API {path} -> {e.code}: {e.read().decode()[:400]}")
 
 
+PAID_PART = [True]     # videos.list part=paidProductPlacementDetails; dropped for the run if the API refuses it
+
+
 def yt_videos(ids):
     out = []
     for i in range(0, len(ids), 50):
-        for it in yt("videos", part="snippet,statistics", id=",".join(ids[i:i + 50]))["items"]:
+        batch = ",".join(ids[i:i + 50])
+        try:
+            items = yt("videos", part="snippet,statistics" + (",paidProductPlacementDetails" if PAID_PART[0] else ""), id=batch)["items"]
+        except SystemExit as e:
+            if not PAID_PART[0] or "-> 400" not in str(e):
+                raise
+            PAID_PART[0] = False
+            print("  paidProductPlacementDetails refused by the API; paid flags come from descriptions only", file=sys.stderr)
+            items = yt("videos", part="snippet,statistics", id=batch)["items"]
+        for it in items:
             s, st = it["snippet"], it.get("statistics", {})
+            declared = (it.get("paidProductPlacementDetails") or {}).get("hasPaidProductPlacement")
             out.append({"source": "youtube", "creator": s["channelTitle"], "channel_id": s["channelId"],
                         "id": it["id"], "url": f"https://www.youtube.com/watch?v={it['id']}",
+                        "text": " ".join([s["title"], s.get("description", ""), " ".join("#" + t for t in s.get("tags", []))]),
+                        "paid_declared": bool(declared),
                         "title": s["title"][:160], "views": int(st["viewCount"]) if "viewCount" in st else None,
                         "likes": int(st.get("likeCount", 0)), "comments": int(st.get("commentCount", 0)),
                         "timestamp": datetime.fromisoformat(s["publishedAt"].replace("Z", "+00:00")).timestamp()})
@@ -258,6 +283,23 @@ def cmd_youtube(a):
     return out, "youtube-" + "-".join(a.query.lower().split())[:40]
 
 
+# ── paid partnerships ──────────────────────────────────────
+PAID = re.compile(r"(?i)(#ad\b|#ads\b|#sponsored\b|#partner\b|#partnership\b|#paidpartnership\b|#brandpartner\b"
+                  r"|paid partnership|sponsored by|\bsponsor(?:ed|ing|s)?\b|in partnership with|\buse (?:my |the )?code\b"
+                  r"|promo code|discount code|affiliate link)")
+
+
+def paid_flag(v):
+    """Why a video looks sponsored, or None: the platform's own declaration first, then a marker in its text."""
+    if v.get("paid_declared"):
+        return "declared"
+    text = v.get("text") or v.get("title") or ""
+    for m in PAID.finditer(text):
+        if not re.search(r"(?i)\b(?:not|no|never|isn'?t|wasn'?t)\s+(?:\w+\s+)?$", text[max(0, m.start() - 20):m.start()]):
+            return m.group(0).lower()        # "not sponsored" and "no sponsor" don't count
+    return None
+
+
 # ── report ─────────────────────────────────────────────────
 def fmt(n):
     return "" if n is None else f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e3 else str(n)
@@ -265,6 +307,8 @@ def fmt(n):
 
 def report(videos, label, a):
     score(videos, a.min_age_days)
+    for v in videos:
+        v["paid"] = paid_flag(v)
     ranked = breakouts([v for v in videos if v.get("in_query", True)], a.min_score, a.max_age_days)
     out = Path(a.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
@@ -273,13 +317,14 @@ def report(videos, label, a):
     lines = [f"# Breakouts: {label} ({datetime.now():%Y-%m-%d})", "",
              f"{len(videos)} videos from {len({v['creator'] for v in videos})} creators; "
              f"{len(ranked)} at {a.min_score}x or more of their creator's median" + (f", posted in the last {a.max_age_days:g} days" if a.max_age_days else "") + ".", "",
-             "| Score | Views | Creator median | Age (days) | Creator | Video |", "|---|---|---|---|---|---|"]
+             "Paid: why a breakout looks sponsored (declared by YouTube, or a marker in its caption); its reach may be bought.", "",
+             "| Score | Views | Creator median | Age (days) | Paid | Creator | Video |", "|---|---|---|---|---|---|---|"]
     for v in ranked:
         title = v["title"].replace("|", "/") or v["id"]
-        lines.append(f"| {v['score']}x | {fmt(v['views'])} | {fmt(round(v['baseline']))} | {v['age_days']} "
+        lines.append(f"| {v['score']}x | {fmt(v['views'])} | {fmt(round(v['baseline']))} | {v['age_days']} | {v['paid'] or ''} "
                      f"| {v['creator']} | [{title}]({v['url']}) |")
     stem.with_suffix(".md").write_text("\n".join(lines) + "\n")
-    print("\n".join(lines[:4 + 2 + 15]))
+    print("\n".join(lines[:6 + 2 + 15]))
     print(f"\nwrote {stem}.md and .json")
 
 
@@ -297,6 +342,7 @@ def main():
     p.add_argument("--stale-days", type=float, default=60, help="drop creators with no post in this many days (0: keep all)")
     p.add_argument("--keywords", help="comma-separated niche words; with --min-fit, drop creators mostly off-niche")
     p.add_argument("--min-fit", type=float, default=0.3)
+    p.add_argument("--keep", help="comma-separated creators kept whatever the stale and niche filters say")
     p.add_argument("--per-creator", type=int, default=30); common(p); p.set_defaults(fn=cmd_tiktok)
     p = sp.add_parser("tiktok-tag"); p.add_argument("tag"); p.add_argument("--videos", type=int, default=60)
     p.add_argument("--per-creator", type=int, default=20); common(p); p.set_defaults(fn=cmd_tiktok_tag)

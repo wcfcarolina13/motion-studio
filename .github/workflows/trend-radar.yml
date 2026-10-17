@@ -44,6 +44,10 @@ on:
         description: "niche words, comma separated: creators mostly off-niche are dropped (optional)"
         required: false
         default: ""
+      keep:
+        description: "creators always kept, comma separated, whatever the stale and niche filters say (optional)"
+        required: false
+        default: ""
       output:
         description: "encrypted (default: counts only in the log) or public (table in the log, plain artifact)"
         type: choice
@@ -62,6 +66,7 @@ jobs:
       MIN_SCORE: ${{ inputs.min_score }}
       MAX_AGE: ${{ inputs.max_age_days }}
       KEYWORDS: ${{ inputs.keywords }}
+      KEEP: ${{ inputs.keep }}
       SOURCE: ${{ inputs.source }}
       QUERIES: ${{ inputs.queries }}
       DAYS: ${{ inputs.days }}
@@ -111,7 +116,7 @@ jobs:
             done
           else
             python $T tiktok --watchlist "$RUNNER_TEMP/watch.txt" \
-              --per-creator "$PER_CREATOR" --min-score "$MIN_SCORE" --max-age-days "$MAX_AGE" --keywords "$KEYWORDS" \
+              --per-creator "$PER_CREATOR" --min-score "$MIN_SCORE" --max-age-days "$MAX_AGE" --keywords "$KEYWORDS" --keep "$KEEP" \
               --out "$RUNNER_TEMP/out" > "$RUNNER_TEMP/out/stdout.txt" 2> "$RUNNER_TEMP/out/stderr.txt"
             rc=$?
           fi
@@ -126,9 +131,10 @@ jobs:
               vids = json.load(open(f))
               hits = breakouts([v for v in vids if v.get("in_query", True)], ms, age)   # youtube baseline videos are not results
               total += len(hits)
+              paid = sum(1 for v in hits if v.get("paid"))
               label = os.path.basename(f)[len("trends-") + 11:-len(".json")]
               print(f"::notice::{label}: {len(vids)} videos from {len({v['creator'] for v in vids})} creators, "
-                    f"{len(hits)} breakouts at {ms:g}x or more" + (f" in the last {age:g} days" if age else ""))
+                    f"{len(hits)} breakouts at {ms:g}x or more" + (f" in the last {age:g} days" if age else "") + f", {paid} of them look sponsored")
           print(f"::notice::{os.environ['NICHE']}: {total} breakouts in all")
           PY
           bot=$(grep -c '^  ! \[bot-check\]' "$RUNNER_TEMP/out/stderr.txt" || true)
