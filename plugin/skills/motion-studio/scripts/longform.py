@@ -165,9 +165,11 @@ def cmd_review(a):
 
 
 def image_for(film, a):
+    """The panel image to repair and its panel record. --image works on a bare folder of panels with no script.json."""
+    sc = load_script(film) if (film / "script.json").exists() else {"segments": []}
     if a.image:
-        return a.image, [p for p in panel_list(film, load_script(film)) if p["image"] == a.image][:1]
-    for p in panel_list(film, load_script(film)):
+        return a.image, [p for p in panel_list(film, sc) if p["image"] == a.image][:1]
+    for p in panel_list(film, sc):
         if a.beat in p["beats"]:
             return p["image"], [p]
     raise SystemExit(f"no panel beat {a.beat}")
