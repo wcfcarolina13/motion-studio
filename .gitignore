@@ -1,3 +1,15 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local work products, never committed
+out/
+/models/
+/.venv*/
+/test-renders/
+
+# Credentials. youtube.py keeps them in ~/.motion-studio/youtube by default; these catch a copy made inside the checkout
+.secrets/
+client_secret*.json
+token.json
+token-*.json
