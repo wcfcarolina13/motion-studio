@@ -2,7 +2,7 @@
 """Long-form narrated films (YouTube explainers, 5-20 minutes) on the motion-studio engine.
 
 A film folder holds script.json and narration/<id>.mp3 (one clip per segment, from any TTS or a human read).
-script.json: {"title", "palette"?, "captions"?: true, "moods"?: {"<chapter>": "tension"}, "segments": [
+script.json: {"title", "palette"?, "captions"?: false, "moods"?: {"<chapter>": "tension"}, "segments": [
   {"id", "chapter", "type", "data", "narration", "source"?, "mood"?}]}.
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
@@ -12,6 +12,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
+  longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
   longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh id|w.wav | --no-whoosh] [--bed-db -25.5] [--no-sfx]
@@ -26,6 +27,7 @@ Every file stays in the film folder; nothing is uploaded from here.
 import argparse
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -200,7 +202,7 @@ def cmd_timeline(a):
     if chapters:
         chapters[-1]["t1"] = total
     tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs,
-          "chapters": chapters, "captions": bool(sc.get("captions", True)) and any("words" in s for s in segs),
+          "chapters": chapters, "captions": bool(sc.get("captions", False)) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues}
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
     # narration bed: every clip placed at its segment start
@@ -235,24 +237,77 @@ def cmd_timeline(a):
 
 def write_vtt(segs, dest, max_words=9, max_chars=42):
     """A caption track from the aligned words (upload it to YouTube instead of burning captions into 16:9)."""
-    def ts(x):
-        h, m, sec = int(x // 3600), int(x % 3600 // 60), x % 60
-        return f"{h:02d}:{m:02d}:{sec:06.3f}"
     cues = []
     for s in segs:
-        page = []
+        page, mono = [], s.get("mono")
         for w in s.get("words", []):
             page.append(w)
             text = " ".join(x[0] for x in page)
             if w[0][-1:] in ".!?" or len(page) >= max_words or len(text) > max_chars:
-                cues.append((page[0][1], page[-1][2], text)); page = []
+                cues.append((page[0][1], page[-1][2], text, mono)); page = []
         if page:
-            cues.append((page[0][1], page[-1][2], " ".join(x[0] for x in page)))
+            cues.append((page[0][1], page[-1][2], " ".join(x[0] for x in page), mono))
+    vtt_out(cues, dest)
+
+
+def vtt_ts(x):
+    h, m, sec = int(x // 3600), int(x % 3600 // 60), x % 60
+    return f"{h:02d}:{m:02d}:{sec:06.3f}"
+
+
+def vtt_out(cues, dest):
+    """cues: (t0, t1, text, mono). Each cue holds 0.3 s past its last word unless the next one starts; inner
+    monologue is italic (<i>, which YouTube shows), and speakers carry no label, as no badge is burned in either."""
     out = ["WEBVTT", ""]
-    for i, (a, b, text) in enumerate(cues):
+    for i, (a, b, text, mono) in enumerate(cues):
         b = min(b + 0.3, cues[i + 1][0]) if i + 1 < len(cues) else b + 0.3
-        out += [f"{ts(a)} --> {ts(b)}", text, ""]
+        out += [f"{vtt_ts(a)} --> {vtt_ts(b)}", f"<i>{text}</i>" if mono else text, ""]
     Path(dest).write_text("\n".join(out))
+
+
+def pages(text, max_chars=42):
+    """Split a line into caption pages of at most max_chars: a page never runs past a sentence end unless the
+    next sentence fits whole on it, and a long sentence wraps at spaces."""
+    out = []
+    for sent in re.findall(r"\S.*?(?:[.!?…]+[\"'»”)]*(?=\s|$)|$)", text):
+        cur = out.pop() if out and len(out[-1]) + 1 + len(sent.strip()) <= max_chars and out[-1][-1:] in ".!?…»”\"')" else ""
+        for w in sent.split():
+            nxt = (cur + " " + w).strip()
+            if cur and len(nxt) > max_chars:
+                out.append(cur); cur = w
+            else:
+                cur = nxt
+        if cur:
+            out.append(cur)
+    return out
+
+
+def cmd_captions(a):
+    """A caption track in another language from translated lines, timed to the English read: each segment's
+    translation spans that segment's spoken words (first word to last), its pages sharing the time by length."""
+    film = Path(a.film).resolve()
+    tl = load_timeline(film)
+    tr = json.loads(Path(a.text).read_text())
+    spoken = [s for s in tl["segments"] if s.get("words")]
+    missing = [s["id"] for s in spoken if not str(tr.get(s["id"], "")).strip()]
+    if missing:
+        raise SystemExit(f"{len(missing)} spoken segments have no {a.lang} line: {', '.join(missing[:12])}")
+    extra = sorted(set(tr) - {s["id"] for s in spoken})
+    cues = []
+    for s in spoken:
+        t0, t1 = s["words"][0][1], s["words"][-1][2]
+        pg = pages(tr[s["id"]])
+        total = sum(len(x) for x in pg)
+        t = t0
+        for x in pg:
+            d = (t1 - t0) * len(x) / total
+            cues.append((round(t, 3), round(t + d, 3), x, s.get("mono")))
+            t += d
+    dest = film / "out" / f"captions.{a.lang}.vtt"
+    vtt_out(cues, dest)
+    print(f"{len(cues)} cues -> {dest}")
+    if extra:
+        print(f"ignored {len(extra)} ids not spoken in this film: {', '.join(extra[:12])}")
 
 
 def cmd_stills(a):
@@ -843,6 +898,8 @@ def main():
     p = sp.add_parser("align"); p.add_argument("film"); p.add_argument("--redo", action="store_true"); p.set_defaults(fn=cmd_align)
     p = sp.add_parser("timeline"); p.add_argument("film"); p.add_argument("--pad", type=float, default=0.45)
     p.add_argument("--lead", type=float, default=0.3); p.add_argument("--tail", type=float, default=1.5); p.set_defaults(fn=cmd_timeline)
+    p = sp.add_parser("captions"); p.add_argument("film"); p.add_argument("--lang", required=True)
+    p.add_argument("--text", required=True, help='JSON {"<segment id>": "translated line"}'); p.set_defaults(fn=cmd_captions)
     p = sp.add_parser("stills"); p.add_argument("film"); p.add_argument("--every", type=float); p.add_argument("--at", type=float, default=0.75)
     p.set_defaults(fn=cmd_stills)
     p = sp.add_parser("render"); p.add_argument("film"); p.add_argument("--workers", type=int, default=4); p.add_argument("--scale", type=float, default=1.0)
