@@ -4,10 +4,13 @@
 A breakout is a video whose views beat the median of the same creator's recent videos. That ratio
 (the outlier score) is the signal paid tools sell; this computes it from free sources.
 
-  trends.py tiktok @user [@user ...] [--watchlist FILE] [--per-creator 30]
+  trends.py tiktok @user [@user ...] [--watchlist FILE] [--per-creator 30] [--stale-days 60] [--keywords a,b --min-fit 0.3]
   trends.py tiktok-tag scam [--videos 60] [--per-creator 20]      hashtag discovery (broken as of 2026-10: yt-dlp needs TikTok app info)
   trends.py youtube "query" [--days 14] [--max 25] [--per-creator 20]
-  common: [--min-score 3] [--min-age-days 1] [--out DIR]
+  common: [--min-score 3] [--min-age-days 1] [--max-age-days 30] [--out DIR]
+
+Watchlist lines: "@handle", or "@handle tiktokuser:<secUid>" (the secUid route still works when TikTok bot-checks
+profile pages), "#" starts a comment.
 
 Sources, all free:
   TikTok   yt-dlp (pip install yt-dlp); no account or cookie. Unofficial, so it breaks when TikTok
@@ -55,8 +58,11 @@ def score(videos, min_age_days=1.0, now=None):
     return videos
 
 
-def breakouts(videos, min_score):
-    hits = [v for v in videos if v.get("score") is not None and v["score"] >= min_score]
+def breakouts(videos, min_score, max_age_days=None):
+    """Videos at min_score or more, ranked; with max_age_days, only those inside the window (the baseline still
+    uses every video, so an old hit can't hide a creator's normal)."""
+    hits = [v for v in videos if v.get("score") is not None and v["score"] >= min_score
+            and (max_age_days is None or (v.get("age_days") is not None and v["age_days"] <= max_age_days))]
     return sorted(hits, key=lambda v: (-v["score"], -v["views"]))
 
 
@@ -70,14 +76,28 @@ def ydl():
                              "skip_download": True, "extractor_retries": 3})
 
 
+BOT_CHECK = ("captcha", "verify", "rehydration", "unable to extract", "bot", "access denied", "403")
+FAILS = {"bot-check": 0, "other": 0}
+
+
+def failure_kind(msg):
+    """TikTok answers a scraping IP with its bot-check page; yt-dlp then can't find the page's data. Upgrading
+    yt-dlp doesn't fix that, a different IP (a GitHub runner) or the secUid route might."""
+    m = msg.lower()
+    return "bot-check" if any(k in m for k in BOT_CHECK) else "other"
+
+
 def tiktok_list(url, limit):
-    """Flat entries from a TikTok user or tag page, newest first."""
+    """Flat entries from a TikTok user or tag page (or a tiktokuser:<secUid> id), newest first."""
     with ydl() as y:
         y.params["playlistend"] = limit
         try:
             info = y.extract_info(url, download=False)
         except Exception as e:  # yt-dlp raises its own error types; report and carry on with the rest
-            print(f"  ! {url}: {str(e).splitlines()[0][:200]}", file=sys.stderr)
+            msg = str(e).splitlines()[0][:200]
+            kind = failure_kind(msg)
+            FAILS[kind] += 1
+            print(f"  ! [{kind}] {url}: {msg}", file=sys.stderr)
             return []
     out = []
     for e in (info or {}).get("entries") or []:
@@ -94,10 +114,41 @@ def tiktok_list(url, limit):
 
 
 def handles(args):
-    names = list(args.users)
+    """[(name, url)] from the command line and the watchlist; a tiktokuser:<secUid> on a line is used as its URL."""
+    lines = list(args.users)
     if args.watchlist:
-        names += [l.split("#")[0].strip() for l in Path(args.watchlist).read_text().splitlines()]
-    return list(dict.fromkeys(n.lstrip("@") for n in names if n.strip()))
+        lines += [l.split("#")[0].strip() for l in Path(args.watchlist).read_text().splitlines()]
+    out = {}
+    for line in lines:
+        parts = line.split()
+        if not parts:
+            continue
+        sec = next((x for x in parts if x.startswith("tiktokuser:")), None)
+        name = next((x.lstrip("@") for x in parts if not x.startswith("tiktokuser:")), sec)
+        out[name] = sec or f"https://www.tiktok.com/@{name}"
+    return list(out.items())
+
+
+def fit_filter(videos, a):
+    """Drop creators who are stale (newest video older than --stale-days) or off-niche (under --min-fit of their
+    titles match --keywords). Returns (kept videos, [(creator, reason)])."""
+    by = {}
+    for v in videos:
+        by.setdefault(v["creator"], []).append(v)
+    words = [w.strip().lower() for w in (a.keywords or "").split(",") if w.strip()]
+    kept, dropped, now = [], [], time.time()
+    for c, vs in by.items():
+        ts = [v["timestamp"] for v in vs if v.get("timestamp")]
+        if a.stale_days and ts and (now - max(ts)) / DAY > a.stale_days:
+            dropped.append((c, f"no post in {round((now - max(ts)) / DAY)} days"))
+            continue
+        if words:
+            fit = sum(any(w in (v.get("title") or "").lower() for w in words) for v in vs) / len(vs)
+            if fit < a.min_fit:
+                dropped.append((c, f"{fit:.0%} of titles on-niche"))
+                continue
+        kept += vs
+    return kept, dropped
 
 
 def cmd_tiktok(a):
@@ -105,10 +156,16 @@ def cmd_tiktok(a):
     if not names:
         raise SystemExit("name at least one @creator or pass --watchlist")
     videos = []
-    for n in names:
-        got = tiktok_list(f"https://www.tiktok.com/@{n}", a.per_creator)
+    for n, url in names:
+        got = tiktok_list(url, a.per_creator)
         print(f"  @{n}: {len(got)} videos", file=sys.stderr)
         videos += got
+    if FAILS["bot-check"] and FAILS["bot-check"] >= len(names) / 2:
+        print(f"  TikTok bot-checked {FAILS['bot-check']} of {len(names)} pages from this IP. Upgrading yt-dlp won't fix that: "
+              "wait, run from another network (the GitHub runner workflow), or add tiktokuser:<secUid> to the watchlist.", file=sys.stderr)
+    videos, dropped = fit_filter(videos, a)
+    for c, why in dropped:
+        print(f"  dropped @{c}: {why}", file=sys.stderr)
     return videos, "tiktok"
 
 
@@ -194,14 +251,14 @@ def fmt(n):
 
 def report(videos, label, a):
     score(videos, a.min_age_days)
-    ranked = breakouts([v for v in videos if v.get("in_query", True)], a.min_score)
+    ranked = breakouts([v for v in videos if v.get("in_query", True)], a.min_score, a.max_age_days)
     out = Path(a.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
     stem = out / f"trends-{datetime.now():%Y-%m-%d}-{label}"
     stem.with_suffix(".json").write_text(json.dumps(videos, indent=1))
     lines = [f"# Breakouts: {label} ({datetime.now():%Y-%m-%d})", "",
              f"{len(videos)} videos from {len({v['creator'] for v in videos})} creators; "
-             f"{len(ranked)} at {a.min_score}x or more of their creator's median.", "",
+             f"{len(ranked)} at {a.min_score}x or more of their creator's median" + (f", posted in the last {a.max_age_days:g} days" if a.max_age_days else "") + ".", "",
              "| Score | Views | Creator median | Age (days) | Creator | Video |", "|---|---|---|---|---|---|"]
     for v in ranked:
         title = v["title"].replace("|", "/") or v["id"]
@@ -219,9 +276,13 @@ def main():
     def common(p):
         p.add_argument("--min-score", type=float, default=3.0, help="breakout threshold, x creator median")
         p.add_argument("--min-age-days", type=float, default=1.0)
+        p.add_argument("--max-age-days", type=float, help="rank only videos at most this old (the baseline uses all)")
         p.add_argument("--out", default="research/trends")
 
     p = sp.add_parser("tiktok"); p.add_argument("users", nargs="*"); p.add_argument("--watchlist")
+    p.add_argument("--stale-days", type=float, default=60, help="drop creators with no post in this many days (0: keep all)")
+    p.add_argument("--keywords", help="comma-separated niche words; with --min-fit, drop creators mostly off-niche")
+    p.add_argument("--min-fit", type=float, default=0.3)
     p.add_argument("--per-creator", type=int, default=30); common(p); p.set_defaults(fn=cmd_tiktok)
     p = sp.add_parser("tiktok-tag"); p.add_argument("tag"); p.add_argument("--videos", type=int, default=60)
     p.add_argument("--per-creator", type=int, default=20); common(p); p.set_defaults(fn=cmd_tiktok_tag)

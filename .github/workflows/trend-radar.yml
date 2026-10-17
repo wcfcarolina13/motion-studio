@@ -11,7 +11,7 @@ on:
         description: "label for this run, e.g. money-scams"
         required: true
       handles:
-        description: "TikTok handles, space or comma separated (or leave empty and give a watchlist file)"
+        description: "TikTok handles, comma separated; '@h tiktokuser:<secUid>' for a bot-checked page (or use a watchlist file)"
         required: false
         default: ""
       watchlist:
@@ -24,6 +24,13 @@ on:
       min_score:
         description: "breakout threshold, x the creator's median"
         default: "3"
+      max_age_days:
+        description: "rank only videos posted within this many days"
+        default: "30"
+      keywords:
+        description: "niche words, comma separated: creators mostly off-niche are dropped (optional)"
+        required: false
+        default: ""
       output:
         description: "encrypted (default: counts only in the log) or public (table in the log, plain artifact)"
         type: choice
@@ -40,6 +47,8 @@ jobs:
       OUTPUT: ${{ inputs.output }}
       PER_CREATOR: ${{ inputs.per_creator }}
       MIN_SCORE: ${{ inputs.min_score }}
+      MAX_AGE: ${{ inputs.max_age_days }}
+      KEYWORDS: ${{ inputs.keywords }}
       RADAR_KEY: ${{ secrets.RADAR_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -48,11 +57,11 @@ jobs:
       - name: Check inputs
         run: |
           case "$NICHE" in *[!a-zA-Z0-9_-]*|"") echo "::error::niche must be letters, digits, - or _"; exit 1;; esac
-          case "$PER_CREATOR$MIN_SCORE" in *[!0-9.]*) echo "::error::per_creator and min_score must be numbers"; exit 1;; esac
+          case "$PER_CREATOR$MIN_SCORE$MAX_AGE" in *[!0-9.]*) echo "::error::per_creator and min_score must be numbers"; exit 1;; esac
           if [ "$OUTPUT" = encrypted ] && [ -z "$RADAR_KEY" ]; then
             echo "::error::output=encrypted needs the RADAR_KEY repository secret (Settings > Secrets and variables > Actions)"; exit 1
           fi
-          echo "$HANDLES" | tr ', ' '\n\n' | sed '/^$/d' > "$RUNNER_TEMP/watch.txt"
+          echo "$HANDLES" | tr ',' '\n' | sed 's/^ *//; s/ *$//; /^$/d' > "$RUNNER_TEMP/watch.txt"
           if [ -n "$WATCHLIST" ]; then cat "$WATCHLIST" >> "$RUNNER_TEMP/watch.txt"; fi
           if [ ! -s "$RUNNER_TEMP/watch.txt" ]; then echo "::error::give handles or a watchlist"; exit 1; fi
       - run: python -m pip install -q -U yt-dlp
@@ -61,7 +70,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           set +e
           python plugin/skills/motion-studio/scripts/trends.py tiktok --watchlist "$RUNNER_TEMP/watch.txt" \
-            --per-creator "$PER_CREATOR" --min-score "$MIN_SCORE" --out "$RUNNER_TEMP/out" \
+            --per-creator "$PER_CREATOR" --min-score "$MIN_SCORE" --max-age-days "$MAX_AGE" --keywords "$KEYWORDS" \
+            --out "$RUNNER_TEMP/out" \
             > "$RUNNER_TEMP/out/stdout.txt" 2> "$RUNNER_TEMP/out/stderr.txt"
           rc=$?
           set -e
@@ -73,8 +83,10 @@ jobs:
           creators = {v["creator"] for v in vids}
           print(f"::notice::{os.environ['NICHE']}: {len(vids)} videos from {len(creators)} creators, {len(hits)} breakouts at {ms}x or more")
           PY
-          fails=$(grep -c '^  ! ' "$RUNNER_TEMP/out/stderr.txt" || true)
-          echo "::notice::creator pages that failed: $fails (yt-dlp exit $rc)"
+          bot=$(grep -c '^  ! \[bot-check\]' "$RUNNER_TEMP/out/stderr.txt" || true)
+          other=$(grep -c '^  ! \[other\]' "$RUNNER_TEMP/out/stderr.txt" || true)
+          dropped=$(grep -c '^  dropped @' "$RUNNER_TEMP/out/stderr.txt" || true)
+          echo "::notice::pages failed: $bot bot-checked, $other other; creators dropped as stale or off-niche: $dropped (exit $rc)"
           if [ "$OUTPUT" = public ]; then cat "$RUNNER_TEMP/out/stdout.txt" "$RUNNER_TEMP/out/stderr.txt"; fi
       - name: Encrypt
         if: inputs.output == 'encrypted'
