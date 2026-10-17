@@ -13,10 +13,11 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
-  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh w.wav] [--bed-db -24]
+  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh w.wav] [--bed-db -25.5] [--no-sfx]
   longform.py render <film> [--workers 4] [--scale 1.0]
   longform.py final <film>                      mux render + mix, verify
   longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes
+  longform.py share <film>                      out/share/: a page that streams the cut (publish it as a private artifact)
 
 Every file stays in the film folder; nothing is uploaded from here.
 """
@@ -160,7 +161,7 @@ def cmd_timeline(a):
     if chapters:
         chapters[-1]["t1"] = total
     tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs,
-          "chapters": chapters, "captions": bool(sc.get("captions", False)) and any("words" in s for s in segs),
+          "chapters": chapters, "captions": bool(sc.get("captions", True)) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues}
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
     # narration bed: every clip placed at its segment start
@@ -315,6 +316,10 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
     runs = plan["runs"]
     for k, r in enumerate(runs):
         x = audio.load(audio.library_dir() / cat[r["track"]]["file"], stereo=True, sr=sr)
+        # level-match tracks to one loudness, so a quiet piano run and a loud score sit at the same depth under the voice
+        e = (cat[r["track"]].get("mood") or {}).get("energy")
+        if e is not None:
+            x = x * 10 ** ((-20.0 - e) / 20)
         a0 = max(0.0, r["t0"] - (xfade / 2 if k else 0))
         a1 = min(total, r["t1"] + (xfade / 2 if k < len(runs) - 1 else 0))
         need = int((a1 - a0) * sr)
@@ -350,6 +355,119 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
     pcm = (np.clip(bed, -1, 1) * 32767).astype("<i2")
     with wave.open(str(dest), "wb") as w:
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
+    return dest
+
+
+SFX_GAP = {"buzz": 0.6, "ping": 0.35, "pin": 0.12, "thud": 0.5}    # same-kind sounds closer than this are dropped
+
+
+def recorded_sfx(kind):
+    """Library clips catalogued with "role": <kind> (studio.py fetch sfx <id>, then set the role in catalog.json)."""
+    import audio
+    try:
+        lib, cat = audio.library_dir(), audio.catalog()
+    except SystemExit:
+        return []
+    return [(k, audio.load(lib / v["file"])) for k, v in sorted(cat["sfx"].items())
+            if v.get("role") == kind and (lib / v["file"]).exists()]
+
+
+def build_sfx(film, tl, sr=48000, drawn_ok=False):
+    """Small UI sounds under the picture, placed from the timeline: a buzz when a phone lights, a soft ping when a
+    message lands, a paper tick when a card is pinned, a thud when a stamp hits. Each kind uses recorded clips from
+    the library when any carry that role (cycled, gain varied, transient on the cue, as sound.md asks). A kind with no
+    recording is left silent, or drawn in code with drawn_ok (a placeholder: the channel owner found them amateur)."""
+    import numpy as np
+    import wave
+
+    def tt(d):
+        return np.arange(int(d * sr)) / sr
+
+    def thump(d, f0, f1, decay):
+        t = tt(d)
+        f = f1 + (f0 - f1) * np.exp(-t * 25)
+        return np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-t * decay) * np.minimum(1, t / 0.002)
+
+    rng = np.random.default_rng(3)
+
+    def noise(d, lo, hi, decay):
+        from scipy.signal import butter, sosfilt
+        t = tt(d)
+        return sosfilt(butter(2, [lo / (sr / 2), hi / (sr / 2)], "band", output="sos"), rng.standard_normal(len(t))) * np.exp(-t * decay)
+
+    def buzz():
+        t = tt(0.42)
+        on = ((t % 0.21) < 0.13).astype(float)
+        v = np.sign(np.sin(2 * np.pi * 165 * t)) * 0.5 + np.sin(2 * np.pi * 330 * t) * 0.3
+        from scipy.signal import butter, sosfilt
+        return sosfilt(butter(2, 900 / (sr / 2), output="sos"), v * on) * 0.5
+
+    def ping():
+        t = tt(0.5)
+        return (np.sin(2 * np.pi * 1318.5 * t) * np.exp(-t * 9) + 0.6 * np.sin(2 * np.pi * 1975.5 * t) * np.exp(-t * 12) * (t > 0.07)) * np.minimum(1, t / 0.003) * 0.35
+
+    def pin():
+        return np.concatenate([noise(0.05, 2000, 6000, 80) * 0.5 + thump(0.05, 180, 120, 60)[:int(0.05 * sr)] * 0.4, np.zeros(10)])
+
+    def thud():
+        x = thump(0.4, 90, 45, 9) * 0.9
+        x[:int(0.08 * sr)] += noise(0.08, 200, 2500, 40) * 0.4
+        return x
+
+    drawn = {"buzz": buzz, "ping": ping, "pin": pin, "thud": thud}
+    kinds = {k: recorded_sfx(k) or ([(f"drawn-{k}", f())] if drawn_ok else []) for k, f in drawn.items()}
+    missing = [k for k, c in kinds.items() if not c]
+    events = []
+    for sg in tl["segments"]:
+        d = sg.get("data") or {}
+        if sg["type"] == "stage":
+            for b in d.get("beats", []):
+                if b.get("t") is None:
+                    continue
+                if b.get("glow"):
+                    events.append((b["t"], "buzz"))
+                if b.get("notify"):
+                    events.append((b["t"] + (0.12 if b.get("glow") else 0.0), "ping"))
+        elif sg["type"] == "board":
+            events += [(c["t"] - 0.05, "pin") for c in d.get("cards", []) if c.get("t") is not None]
+            if d.get("stamp", {}).get("t") is not None:
+                events.append((d["stamp"]["t"] - 0.05 + 0.12, "thud"))
+        elif sg["type"] == "sms":
+            events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
+    skipped = sum(1 for _, k in events if k in missing)
+    events = sorted(e for e in events if e[1] not in missing)
+    kept, last = [], {}
+    for t, k in events:
+        if t - last.get(k, -9) >= SFX_GAP[k]:
+            kept.append((t, k)); last[k] = t
+    dropped, events = len(events) - len(kept), kept
+    total = tl["duration"]
+    out = np.zeros(int(total * sr) + sr)
+    used = {k: 0 for k in kinds}
+    for t, k in events:
+        _, x = kinds[k][used[k] % len(kinds[k])]
+        if kinds[k][0][0].startswith("drawn"):                 # drawn sounds start on their cue
+            gain, peak = 1.0, 0.0
+        else:                                                   # recordings: vary the level, land the transient on the cue
+            gain, peak = rng.uniform(0.85, 1.15), np.argmax(np.abs(x[:int(0.6 * sr)])) / sr
+        i = int((t - peak) * sr)
+        if i < 0:
+            x, i = x[-i:], 0
+        n = min(len(x), len(out) - i)
+        out[i:i + n] += gain * x[:n]
+        used[k] += 1
+    out = np.stack([out, out], 1)[:int(total * sr)]
+    dest = film / "out" / "sfx.wav"
+    with wave.open(str(dest), "wb") as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes((np.clip(out, -1, 1) * 32767).astype("<i2").tobytes())
+    print(f"sfx: {len(events)} sounds ({', '.join(f'{k} {used[k]}' for k in kinds)})" + (f", {dropped} too close to the last one dropped" if dropped else ""))
+    if skipped:
+        print(f"  {skipped} cues silent: no library clip has role {', '.join(repr(k) for k in missing)} (sound.md, long-form UI sounds)")
+    for k, clips in kinds.items():
+        if used[k]:
+            print(f"  {k}: " + (", ".join(c for c, _ in clips) if not clips[0][0].startswith("drawn")
+                               else "drawn in code (placeholder)"))
     return dest
 
 
@@ -393,6 +511,11 @@ def cmd_mix(a):
             ms = int(max(0, c - 0.25) * 1000)
             filt.append(f"[w{i}]adelay={ms}|{ms}[wd{i}]")
             mix_in.append(f"[wd{i}]")
+    if a.sfx:
+        base = len(inputs) // 2
+        inputs += ["-i", str(build_sfx(film, tl, drawn_ok=a.sfx_drawn))]
+        filt.append(f"[{base}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={a.sfx_db}dB[sfx]")
+        mix_in.append("[sfx]")
     filt.append("".join(mix_in) + f"amix=inputs={len(mix_in)}:normalize=0:dropout_transition=0,atrim=0:{total}[pre]")
     script = film / "out" / "mix.filter"
     script.write_text(";".join(filt))
@@ -426,22 +549,28 @@ def cmd_final(a):
 
 
 # ── check: the numbers a critic should start from ─────────
-def frame_diffs(video, fps=10, w=192, h=108):
-    """Mean absolute luma change between consecutive frames (0..1), sampled at `fps`."""
+def frame_diffs(video, fps=10, w=192, h=108, local=False):
+    """Mean absolute luma change between consecutive frames (0..1), sampled at `fps`. With local=True, also the
+    largest change in any 12x12 block above the caption band, so a small reveal (a spoke label) still counts."""
     import numpy as np
     p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-vf", f"fps={fps},scale={w}:{h},format=gray", "-f", "rawvideo", "-"],
                          stdout=subprocess.PIPE)
-    prev, d = None, []
+    prev, d, loc = None, [], []
+    band = int(h * 0.84) // 12 * 12                      # captions and the source line live below this
     while True:
         b = p.stdout.read(w * h)
         if len(b) < w * h:
             break
         f = np.frombuffer(b, np.uint8).astype(np.int16)
         if prev is not None:
-            d.append(float(np.abs(f - prev).mean()) / 255)
+            diff = np.abs(f - prev)
+            d.append(float(diff.mean()) / 255)
+            if local:
+                blocks = diff.reshape(h, w)[:band].reshape(band // 12, 12, w // 12, 12).mean(axis=(1, 3))
+                loc.append(float(blocks.max()) / 255)
         prev = f
     p.wait()
-    return np.array(d)
+    return (np.array(d), np.array(loc)) if local else np.array(d)
 
 
 def cmd_check(a):
@@ -476,7 +605,7 @@ def cmd_check(a):
         report.append("no render yet: run `render` for dead-air, cue and flash checks")
     else:
         fps = 10
-        d = frame_diffs(video, fps)
+        d, loc = frame_diffs(video, fps, local=True)
         ev = d > a.event
         times = np.nonzero(ev)[0] / fps
         # 2. dead air: stretches with no visible event
@@ -502,7 +631,7 @@ def cmd_check(a):
         missed = []
         for c in tl.get("cues", []):
             k0, k1 = int(max(0, c["t"] - 0.2) * fps), int((c["t"] + 0.8) * fps) + 1
-            if not (d[k0:k1] > a.event).any():
+            if not ((d[k0:k1] > a.event) | (loc[k0:k1] > a.local)).any():
                 missed.append(c)
         report.append(f"word cues: {len(tl.get('cues', []))}, {len(missed)} with no visible change near the word")
         for c in missed:
@@ -532,6 +661,52 @@ def cmd_check(a):
     (film / "review" / "check.txt").write_text("\n".join(report + [""] + ["FLAG: " + f for f in flags]) + "\n")
 
 
+def cmd_share(a):
+    """A page that streams the finished cut, for sending a draft to someone without a download. The artifact host
+    serves neither .m3u8 nor .ts and caps each file at 15 MB and each publish at 64 MB, so the cut is split into
+    fMP4 HLS segments named .mp4 with the playlist as index.txt, and the page plays them through hls.js."""
+    import base64
+    import html
+    film = Path(a.film).resolve()
+    src = film / "out" / f"{film.name}.mp4"
+    if not src.exists():
+        raise SystemExit(f"{src} is missing: run final first")
+    sc, tl = load_script(film), load_timeline(film)
+    meta = sc.get("share", {})
+    dest = film / "out" / "share"
+    shutil.rmtree(dest, ignore_errors=True)
+    (dest / "v").mkdir(parents=True)
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-c", "copy", "-f", "hls", "-hls_time", str(a.segment),
+         "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+         "-hls_segment_filename", str(dest / "v" / "seg%02d.mp4"), str(dest / "v" / "index.m3u8")])
+    (dest / "v" / "index.m3u8").rename(dest / "v" / "index.txt")
+    sizes = {f.name: f.stat().st_size for f in sorted((dest / "v").iterdir())}
+    big = [n for n, b in sizes.items() if b > 14e6]
+    if big:
+        raise SystemExit(f"segments over 14 MB ({', '.join(big)}): rerun with a smaller --segment")
+    poster = dest / "poster.jpg"
+    at = meta.get("poster_at", min(tl["duration"] * 0.25, tl["chapters"][1]["t0"] + 3 if len(tl["chapters"]) > 1 else 5))
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "5", str(poster)])
+    mins = round(tl["duration"] / 60)
+    fill = {
+        "TITLE": sc["title"], "HEADLINE": meta.get("headline", sc["title"]), "LEDE": meta.get("lede", "Draft cut, not yet published."),
+        "EYEBROW": meta.get("eyebrow", f"Explainer · {mins} min"), "FOOT": meta.get("foot", "Sound on."),
+        "ACCENT": (sc.get("palette") or {}).get("ACCENT", "#e8772e"),
+    }
+    page = (HERE.parent / "assets" / "templates" / "share.html").read_text()
+    for k, v in fill.items():
+        page = page.replace("{{" + k + "}}", html.escape(v))
+    chapters = [[f"{int(c['t0'] if i else 0) // 60}:{int(c['t0'] if i else 0) % 60:02d}", c["title"]] for i, c in enumerate(tl["chapters"])]
+    page = page.replace("{{CHAPTERS}}", json.dumps(chapters).replace("</", "<\\/"))
+    page = page.replace("{{POSTER}}", "data:image/jpeg;base64," + base64.b64encode(poster.read_bytes()).decode())
+    (dest / "index.html").write_text(page)
+    total = sum(sizes.values())
+    print(f"share -> {dest}/index.html + v/ ({len(sizes)} files, {total / 1e6:.1f} MB)")
+    print("publish index.html as a private artifact with every file in v/ under its own name (v/index.txt, v/init.mp4, v/seg00.mp4 ...)")
+    if total > 60e6:
+        print("over 60 MB: one publish carries at most 64 MB, so publish the page with the first segments, then the rest to the same url")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -547,12 +722,19 @@ def main():
     p = sp.add_parser("music"); p.add_argument("film"); p.add_argument("--default", default="serious"); p.add_argument("--fit", type=float, default=0.6)
     p.set_defaults(fn=cmd_music)
     p = sp.add_parser("mix"); p.add_argument("film"); p.add_argument("--plan", action="store_true"); p.add_argument("--music")
-    p.add_argument("--whoosh"); p.add_argument("--bed-db", type=float, default=-24); p.set_defaults(fn=cmd_mix)
+    p.add_argument("--whoosh"); p.add_argument("--bed-db", type=float, default=-25.5)
+    p.add_argument("--sfx", action=argparse.BooleanOptionalAction, default=True,
+                   help="UI sounds from the timeline: phone buzz, message ping, card pin, stamp (on by default; --no-sfx)")
+    p.add_argument("--sfx-drawn", action="store_true", help="fill kinds with no recorded clip with code-drawn placeholders")
+    p.add_argument("--sfx-db", type=float, default=-12); p.set_defaults(fn=cmd_mix)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
+    p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
     p.set_defaults(fn=cmd_check)
+    p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, default=60, help="seconds per streamed file")
+    p.set_defaults(fn=cmd_share)
     a = ap.parse_args()
     a.fn(a)
 

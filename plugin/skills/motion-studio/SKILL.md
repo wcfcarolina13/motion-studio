@@ -50,7 +50,7 @@ Films are one HTML file where every style is a pure function of time (`window.se
 
 ## Long-form narrated films (YouTube explainers)
 
-When the film is narrated and longer than about a minute, use `scripts/longform.py` instead of `studio.py new`: the narration sets the clock, scenes are built from `script.json` segments, beats land on spoken words, figures act scenes out, music is picked per chapter mood, and `check` measures dead air before anyone watches. The workflow, script format and scene types are in `references/longform.md`; figures in `references/figures.md`; the critic pass in `references/critic.md`. Uploads go through `scripts/youtube.py` and default to private; never publish publicly without the user's explicit go-ahead. Extra dependency for word timing: `pip install pocketsphinx`.
+When the film is narrated and longer than about a minute, use `scripts/longform.py` instead of `studio.py new`: the narration sets the clock, scenes are built from `script.json` segments, beats land on spoken words, figures act scenes out, music is picked per chapter mood, and `check` measures dead air before anyone watches. The workflow, script format and scene types are in `references/longform.md`; figures in `references/figures.md`; the critic pass in `references/critic.md`. `longform.py share` builds a streaming page for sending a draft as a private artifact link. Uploads go through `scripts/youtube.py` and default to private; never publish publicly without the user's explicit go-ahead. Extra dependency for word timing: `pip install pocketsphinx`.
 
 ## Where things live
 
