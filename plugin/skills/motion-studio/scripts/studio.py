@@ -14,6 +14,9 @@
   studio.py fetch music|sfx <id> [<id> ...] | fetch kenney [<pack>]   download into the shared library + catalog
   studio.py measure <track-id>                              beat grid + corrected downbeat + bar loudness map (sections)
   studio.py library                                         what the library holds
+  studio.py import-sfx <dir> [--roles N]                    add a staged folder (manifest.json, ranking.json) to the library
+  studio.py role <sfx-id> <kind> | role <sfx-id> --clear    the clips mix uses for a kind (buzz, ping, pin, thud, whoosh, pop)
+  studio.py audition [<kind> ...] [--out DIR]               a page to hear every candidate per kind (publish as a private artifact)
   studio.py mix <film>                                      run the film's sound.py -> out/mix.wav, then report loudness
 
   studio.py config                                         paths in use (films, library, ledger, house notes); creates the ledger
@@ -235,9 +238,72 @@ def cmd_library(a):
         print(f"  music {k:12s} {e.get('title', ''):24s} bpm {e['bpm']} (use exactly this in K.setup), {e.get('duration_s', '?')} s")
         print(f"        sections (song bars:loudness): {secs}")
     for k, e in cat["sfx"].items():
-        print(f"  sfx   {k:12s} {e.get('title', '')}")
+        tag = f"role {e['role']}" if e.get("role") else (f"candidate {e['candidate']}" if e.get("candidate") else "")
+        print(f"  sfx   {k:12s} {e.get('title', '')}" + (f"  [{tag}; {e.get('licence_name', '')}]" if tag else ""))
     for k, e in cat["packs"].items():
         print(f"  pack  {k}  ({e['dir']})")
+
+
+def cmd_import_sfx(a):
+    import audio
+    added, refused = audio.import_sfx(a.dir, roles=a.roles)
+    cat = audio.catalog()["sfx"]
+    print(f"imported {len(added)} clips into {audio.library_dir()}")
+    for kind in sorted({cat[k]["candidate"] for k in added}):
+        picks = [k for k in added if cat[k]["candidate"] == kind and cat[k].get("role") == kind]
+        print(f"  {kind}: {sum(cat[k]['candidate'] == kind for k in added)} candidates" + (f", role given to {', '.join(picks)}" if picks else ""))
+    for f, lic in refused:
+        print(f"  refused {f}: {lic} (only commercial-use licences without NC, ND or SA)")
+
+
+def cmd_role(a):
+    import audio
+    if not a.clear and not a.kind:
+        raise SystemExit("give a kind, or --clear")
+    audio.set_role(a.id, None if a.clear else a.kind)
+    print(f"{a.id}: " + ("role cleared" if a.clear else f"role {a.kind}"))
+
+
+def cmd_audition(a):
+    """Every candidate clip per kind on one page, short AAC files beside it, the current role picks marked."""
+    import html as h, subprocess, audio
+    lib, cat = audio.library_dir(), audio.catalog()["sfx"]
+    clips = [(k, e) for k, e in cat.items() if e.get("candidate") or e.get("role")]
+    kinds = a.kinds or sorted({e.get("candidate") or e["role"] for _, e in clips})
+    out = Path(a.out).expanduser() if a.out else lib / "audition"
+    (out / "a").mkdir(parents=True, exist_ok=True)
+    sections, n = [], 0
+    for kind in kinds:
+        group = [(k, e) for k, e in clips if kind in (e.get("candidate"), e.get("role"))]
+        # earshot's order first, then the rest by score
+        group.sort(key=lambda x: ((x[1].get("earshot") or {}).get("rank") is None, (x[1].get("earshot") or {}).get("rank") or 0,
+                                  -((x[1].get("earshot") or {}).get("z") or -99)))
+        cards = []
+        for k, e in group:
+            dest = out / "a" / f"{k}.m4a"
+            if not dest.exists():
+                subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lib / e["file"]), "-c:a", "aac", "-b:a", "128k", str(dest)], check=True)
+            es = e.get("earshot") or {}
+            badges = ("<span class='badge b-role'>in use</span>" if e.get("role") == kind else "") + \
+                     (f"<span class='badge b-top'>earshot #{es['rank'] + 1}</span>" if es.get("rank") is not None else "")
+            heard = f"earshot: {es.get('verdict', '?')}, z {es.get('z')}; sounds most like {es.get('sounds_most_like')}" if es else "not scored"
+            cards.append(f"<div class='c{' role' if e.get('role') == kind else ''}'><div>{badges}</div>"
+                         f"<div class='t'>{h.escape(e.get('title') or k)}</div><div class='k'>{h.escape(k)}</div>"
+                         f"<audio controls preload='none' src='a/{h.escape(k)}.m4a'></audio>"
+                         f"<div class='m'>{h.escape(e.get('licence_name') or e.get('licence', ''))} · {h.escape(e.get('creator') or '')}"
+                         f" · {e.get('duration_s') or '?'} s</div><div class='m'>{h.escape(heard)}</div></div>")
+            n += 1
+        q = next(((e.get("earshot") or {}).get("query") for _, e in group if (e.get("earshot") or {}).get("query")), "")
+        sections.append(f"<section><h2>{h.escape(kind)}</h2><p class='q'>{h.escape(('Searched for: ' + q) if q else '')}</p>"
+                        f"<div class='grid'>{''.join(cards)}</div></section>")
+    page = (SKILL / "assets" / "templates" / "audition.html").read_text()
+    page = page.replace("{{TITLE}}", "Sound audition").replace("{{SECTIONS}}", "\n".join(sections))
+    page = page.replace("{{LEDE}}", "Every candidate per kind, earshot's order first. Clips marked “in use” are the ones mix plays now. "
+                        "Listen at a normal level; pick by ear, not by score.")
+    page = page.replace("{{FOOT}}", "Licences are recorded per clip in the library catalog. CC BY clips need a credit line in the video "
+                        "description (longform.py credits).")
+    (out / "index.html").write_text(page)
+    print(f"audition -> {out}/index.html + a/ ({n} clips). Publish index.html as a private artifact with every a/*.m4a under its own name.")
 
 
 def cmd_mix(a):
@@ -272,6 +338,11 @@ def main():
     p = sp.add_parser("fetch"); p.add_argument("kind", choices=["music", "sfx", "kenney"]); p.add_argument("ids", nargs="*"); p.set_defaults(fn=cmd_fetch)
     p = sp.add_parser("measure"); p.add_argument("track"); p.set_defaults(fn=cmd_measure)
     p = sp.add_parser("library"); p.set_defaults(fn=cmd_library)
+    p = sp.add_parser("import-sfx"); p.add_argument("dir"); p.add_argument("--roles", type=int, default=0,
+                   help="give the role to earshot's top N per kind now (provisional; confirm by ear)"); p.set_defaults(fn=cmd_import_sfx)
+    p = sp.add_parser("role"); p.add_argument("id"); p.add_argument("kind", nargs="?"); p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_role)
+    p = sp.add_parser("audition"); p.add_argument("kinds", nargs="*"); p.add_argument("--out"); p.set_defaults(fn=cmd_audition)
     p = sp.add_parser("mix"); p.add_argument("film"); p.set_defaults(fn=cmd_mix)
     a = ap.parse_args()
     a.fn(a)

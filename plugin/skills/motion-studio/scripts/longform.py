@@ -13,7 +13,8 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
-  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh w.wav] [--bed-db -25.5] [--no-sfx]
+  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh id|w.wav | --no-whoosh] [--bed-db -25.5] [--no-sfx]
+  longform.py credits <film>                    out/credits.txt: the attribution lines for every sound the mix used
   longform.py render <film> [--workers 4] [--scale 1.0]
   longform.py final <film>                      mux render + mix, verify
   longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes
@@ -468,7 +469,18 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
         if used[k]:
             print(f"  {k}: " + (", ".join(c for c, _ in clips) if not clips[0][0].startswith("drawn")
                                else "drawn in code (placeholder)"))
-    return dest
+    return dest, {k: [c for c, _ in kinds[k][:used[k]]] for k in kinds if used[k] and not kinds[k][0][0].startswith("drawn")}
+
+
+def library_whoosh():
+    """The first library clip catalogued with "role": "whoosh", as (key, path), or None."""
+    import audio
+    try:
+        lib, cat = audio.library_dir(), audio.catalog()
+    except SystemExit:
+        return None
+    hits = [(k, lib / v["file"]) for k, v in sorted(cat["sfx"].items()) if v.get("role") == "whoosh" and (lib / v["file"]).exists()]
+    return hits[0] if hits else None
 
 
 def cmd_mix(a):
@@ -477,16 +489,20 @@ def cmd_mix(a):
     tl = load_timeline(film)
     total = tl["duration"]
     narr = film / "out" / "narration.wav"
+    sounds = {}                                          # what the mix used, for `credits`
     inputs = ["-i", str(narr)]
     filt = ["[0:a]aformat=sample_rates=48000:channel_layouts=stereo,asplit=2[voice][key]"]
     if a.plan:
-        bed = build_bed(film, json.loads((film / "out" / "music_plan.json").read_text()), total)
+        plan = json.loads((film / "out" / "music_plan.json").read_text())
+        sounds["music"] = list(dict.fromkeys(r["track"] for r in plan["runs"]))
+        bed = build_bed(film, plan, total)
         inputs += ["-i", str(bed)]
         filt.append(f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={a.bed_db}dB,afade=t=in:d=1.0[bed]")
         filt.append("[bed][key]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=600[ducked]")
         mix_in = ["[voice]", "[ducked]"]
     elif a.music:
         tracks = [Path(p) for p in a.music.split(",")]
+        sounds["music"] = [str(t) for t in tracks]
         seq, k = [], 0
         while sum(duration(t) for t in seq) < total + 5:
             seq.append(tracks[k % len(tracks)]); k += 1
@@ -501,9 +517,21 @@ def cmd_mix(a):
         mix_in = ["[voice]", "[ducked]"]
     else:
         mix_in = ["[voice]"]
-    if a.whoosh and len(tl["chapters"]) > 1:
+    whoosh = None
+    if a.whoosh and Path(a.whoosh).exists():
+        whoosh = (a.whoosh, Path(a.whoosh))
+    elif a.whoosh:                                       # a catalog id
+        import audio
+        e = audio.catalog()["sfx"].get(a.whoosh)
+        if e is None:
+            raise SystemExit(f"--whoosh {a.whoosh}: not a file or a catalogued sfx id")
+        whoosh = (a.whoosh, audio.library_dir() / e["file"])
+    elif a.whoosh is None:                               # default: the library's whoosh, if one carries the role
+        whoosh = library_whoosh()
+    if whoosh and len(tl["chapters"]) > 1:
+        sounds["whoosh"] = whoosh[0]
         base = len(inputs) // 2
-        inputs += ["-i", a.whoosh]
+        inputs += ["-i", str(whoosh[1])]
         cuts = [ch["t0"] for ch in tl["chapters"][1:]]
         filt.append(f"[{base}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=-10dB,asplit={len(cuts)}" +
                     "".join(f"[w{i}]" for i in range(len(cuts))))
@@ -513,7 +541,8 @@ def cmd_mix(a):
             mix_in.append(f"[wd{i}]")
     if a.sfx:
         base = len(inputs) // 2
-        inputs += ["-i", str(build_sfx(film, tl, drawn_ok=a.sfx_drawn))]
+        sfx_wav, sounds["sfx"] = build_sfx(film, tl, drawn_ok=a.sfx_drawn)
+        inputs += ["-i", str(sfx_wav)]
         filt.append(f"[{base}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={a.sfx_db}dB[sfx]")
         mix_in.append("[sfx]")
     filt.append("".join(mix_in) + f"amix=inputs={len(mix_in)}:normalize=0:dropout_transition=0,atrim=0:{total}[pre]")
@@ -528,7 +557,46 @@ def cmd_mix(a):
     ln = (f"loudnorm=I=-14:TP=-2.5:LRA=11:measured_I={j['input_i']}:measured_TP={j['input_tp']}:measured_LRA={j['input_lra']}:"
           f"measured_thresh={j['input_thresh']}:offset={j['target_offset']}:linear=true")
     run(["ffmpeg", "-v", "error", "-y", "-i", str(pre), "-af", ln, "-ar", "48000", str(film / "out" / "mix.wav")])
-    print("mix ->", film / "out" / "mix.wav")
+    (film / "out" / "sounds_used.json").write_text(json.dumps(sounds, indent=1) + "\n")
+    print("mix ->", film / "out" / "mix.wav", "(sounds used -> out/sounds_used.json; run `credits` for the description)")
+
+
+def attribution_needed(licence):
+    """CC BY needs a credit line; CC0, Mixkit and Kenney do not. NC/ND/SA never enter the library (studio.py import-sfx)."""
+    return "CC BY" in licence.upper().replace("-", " ") or "/LICENSES/BY/" in licence.upper()
+
+
+def cmd_credits(a):
+    """The attribution lines for every catalogued sound the last mix used -> out/credits.txt, for the video description.
+    A used sound with no licence in the catalog stops here: it doesn't ship (sound.md)."""
+    import audio
+    film = Path(a.film).resolve()
+    used = film / "out" / "sounds_used.json"
+    if not used.exists():
+        raise SystemExit(f"no {used}: run `mix` first")
+    u = json.loads(used.read_text())
+    cat = audio.catalog()
+    keys = [("tracks", k) for k in u.get("music", [])] + ([("sfx", u["whoosh"])] if u.get("whoosh") else [])
+    keys += [("sfx", k) for ks in (u.get("sfx") or {}).values() for k in ks]
+    lines, free, unknown = [], [], []
+    for table, k in dict.fromkeys(keys):
+        e = cat[table].get(k)
+        if e is None:
+            unknown.append(k)                            # a raw file path given to --music / --whoosh
+            continue
+        lic = e.get("licence", "")
+        if not lic:
+            raise SystemExit(f"{k} has no licence in catalog.json: it can't ship (sound.md)")
+        if attribution_needed(lic):
+            lines.append(e.get("attribution") or
+                         f'"{e.get("title") or k}" by {e.get("creator", "unknown")} ({e.get("url", "")}), {e.get("licence_name", lic)}')
+        else:
+            free.append(k)
+    out = film / "out" / "credits.txt"
+    out.write_text(("Sound credits:\n" + "\n".join(lines) + "\n") if lines else "")
+    print(f"credits -> {out} ({len(lines)} attribution lines; {len(free)} sounds need none: {', '.join(free) or '-'})")
+    if unknown:
+        print(f"  not in the catalog, check their licence by hand: {', '.join(unknown)}")
 
 
 def cmd_final(a):
@@ -722,11 +790,14 @@ def main():
     p = sp.add_parser("music"); p.add_argument("film"); p.add_argument("--default", default="serious"); p.add_argument("--fit", type=float, default=0.6)
     p.set_defaults(fn=cmd_music)
     p = sp.add_parser("mix"); p.add_argument("film"); p.add_argument("--plan", action="store_true"); p.add_argument("--music")
-    p.add_argument("--whoosh"); p.add_argument("--bed-db", type=float, default=-25.5)
+    p.add_argument("--whoosh", help="a file or catalog id for the chapter-start whoosh (default: the library clip with role whoosh)")
+    p.add_argument("--no-whoosh", dest="whoosh", action="store_const", const="", help="no whoosh at chapter starts")
+    p.add_argument("--bed-db", type=float, default=-25.5)
     p.add_argument("--sfx", action=argparse.BooleanOptionalAction, default=True,
                    help="UI sounds from the timeline: phone buzz, message ping, card pin, stamp (on by default; --no-sfx)")
     p.add_argument("--sfx-drawn", action="store_true", help="fill kinds with no recorded clip with code-drawn placeholders")
     p.add_argument("--sfx-db", type=float, default=-12); p.set_defaults(fn=cmd_mix)
+    p = sp.add_parser("credits"); p.add_argument("film"); p.set_defaults(fn=cmd_credits)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")

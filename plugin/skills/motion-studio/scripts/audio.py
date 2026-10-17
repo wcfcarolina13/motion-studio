@@ -5,11 +5,13 @@ Library (path from ~/.motion-studio.json "library"):
   mixkit/music/<id>.mp3        Mixkit Free License (music): social, YouTube, ads; not broadcast, games, music-only remixes
   mixkit/sfx/<id>.wav          Mixkit Free License (SFX): any video use, no attribution
   kenney/<pack>/...            Kenney CC0 packs
+  sfx/<source>/<kind>/...      clips added by `studio.py import-sfx` (CC0, CC BY, Mixkit), with creator and attribution
 Recorded or licensed sound only: no synthesized beeps.
 """
 import html
 import json
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -114,6 +116,70 @@ def fetch_kenney(pack="impact-sounds"):
                                       "url": f"https://kenney.nl/assets/{pack}"}
     save_catalog(cat)
     return dest
+
+
+BANNED_LICENCE = ("NC", "ND", "SA", "NONCOMMERCIAL", "NON-COMMERCIAL", "NODERIVATIVES", "SHAREALIKE")
+
+
+def licence_ok(name):
+    """Commercial use, edits allowed, no share-alike: CC0, CC BY, Mixkit, Kenney. Anything NC, ND or SA stays out."""
+    words = name.upper().replace("-", " ").replace("_", " ").split()
+    return bool(name.strip()) and not any(w in BANNED_LICENCE for w in words)
+
+
+def import_sfx(src, roles=0):
+    """Add a staged folder of sound effects to the library: src/manifest.json lists each clip (kind, file, source,
+    upstream, title, creator, licence, licence_url, source_page, duration_s, attribution); src/ranking.json (optional,
+    from earshot) adds each clip's score. Clips are copied to <library>/sfx/<source>/<kind>/ and catalogued with
+    "candidate": <kind>, so mix doesn't use them until they carry "role": <kind>. roles=N gives the role to earshot's
+    top N per kind straight away (a provisional pick, to be confirmed by ear). Returns (added, refused)."""
+    src = Path(src).expanduser()
+    lib, cat = library_dir(), catalog()
+    manifest = json.loads((src / "manifest.json").read_text())
+    rank = json.loads((src / "ranking.json").read_text()) if (src / "ranking.json").exists() else {"kinds": {}}
+    scores = {sc["file"]: sc for k in rank["kinds"].values() for sc in k.get("scores", [])}
+    top = {f: i for k in rank["kinds"].values() for i, f in enumerate(k.get("top3", []))}
+    added, refused = [], []
+    for m in manifest:
+        if not licence_ok(m.get("licence") or ""):
+            refused.append((m["file"], m.get("licence") or "no licence"))
+            continue
+        f = src / m["file"]
+        key = Path(m["file"]).stem
+        dest = lib / "sfx" / m.get("source", "other") / m["kind"] / f.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            shutil.copy2(f, dest)
+        entry = cat["sfx"].get(key, {})
+        entry.update({"id": key, "title": m.get("title") or "", "file": str(dest.relative_to(lib)),
+                      "url": m.get("source_page") or "", "licence": f"{m['licence']}: {m.get('licence_url') or ''}".rstrip(": "),
+                      "licence_name": m["licence"], "creator": m.get("creator") or "", "source": m.get("source") or "",
+                      "upstream": m.get("upstream") or "", "duration_s": m.get("duration_s"), "candidate": m["kind"]})
+        if m.get("attribution"):
+            entry["attribution"] = m["attribution"]
+        sc = scores.get(m["file"])
+        if sc:
+            entry["earshot"] = {"query": rank["kinds"].get(m["kind"], {}).get("query"), "z": sc.get("z"), "cosine": sc.get("cosine"),
+                                "verdict": sc.get("verdict"), "sounds_most_like": sc.get("sounds_most_like"),
+                                "rank": top.get(m["file"]), "tool": rank.get("tool"), "commit": rank.get("earshot_commit")}
+        if roles and top.get(m["file"], 99) < roles:
+            entry["role"] = m["kind"]
+        cat["sfx"][key] = entry
+        added.append(key)
+    save_catalog(cat)
+    return added, refused
+
+
+def set_role(key, kind):
+    """Give a catalogued clip a role (mix uses every clip with the role, cycled), or clear it with kind=None."""
+    cat = catalog()
+    if key not in cat["sfx"]:
+        raise SystemExit(f"{key} is not a catalogued sfx")
+    if kind:
+        cat["sfx"][key]["role"] = kind
+    else:
+        cat["sfx"][key].pop("role", None)
+    save_catalog(cat)
 
 
 # ── decoding + small DSP ───────────────────────────────────

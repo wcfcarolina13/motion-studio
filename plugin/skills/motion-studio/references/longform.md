@@ -11,7 +11,7 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
 | word times | `python3 $L align <film>` | `narration/words.json` (offline forced alignment) |
 | timeline | `python3 $L timeline <film>` | `timeline.js`, `out/narration.wav`, `out/chapters.txt`, `out/captions.vtt` |
 | look | `python3 $L stills <film> --every 2.5` | stills + contact sheet in `review/` |
-| music | `python3 $L music <film>` then `python3 $L mix <film> --plan [--whoosh w.wav]` | `out/music_plan.json`, `out/mix.wav`, with UI sounds from the timeline (below; `--no-sfx` leaves them out) |
+| music | `python3 $L music <film>` then `python3 $L mix <film> --plan` then `python3 $L credits <film>` | `out/music_plan.json`, `out/mix.wav`, with UI sounds from the timeline (below; `--no-sfx` leaves them out) and the library's whoosh at chapter starts (`--no-whoosh`); `out/credits.txt` for the description |
 | render | `python3 $L render <film> --workers 4` | `out/silent.mp4` |
 | ship | `python3 $L final <film>` | `out/<film>.mp4`, verify report |
 | critic | `python3 $L check <film>` | `review/check.txt` (see `critic.md`) |
