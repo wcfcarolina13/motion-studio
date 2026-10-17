@@ -87,7 +87,12 @@ jobs:
             if [ -n "$WATCHLIST" ]; then cat "$WATCHLIST" >> "$RUNNER_TEMP/watch.txt"; fi
             if [ ! -s "$RUNNER_TEMP/watch.txt" ]; then echo "::error::give handles or a watchlist"; exit 1; fi
           fi
-      - run: python -m pip install -q -U yt-dlp && echo "::notice::yt-dlp $(python -m yt_dlp --version)"
+      # curl-cffi lets yt-dlp impersonate a browser: tiktokuser:<secUid> lines failed on the runner without it and worked
+      # on a Mac with it (2026-10-17). curl_cffi is MIT; its bundled curl-impersonate build carries curl, BoringSSL,
+      # nghttp2/3, ngtcp2, brotli, zlib, zstd (permissive) and libidn2 (LGPL-3+/GPL-2+), used here only at run time.
+      - run: |
+          python -m pip install -q -U "yt-dlp[default,curl-cffi]"
+          echo "::notice::yt-dlp $(python -m yt_dlp --version), impersonation targets: $(python -m yt_dlp --list-impersonate-targets 2>/dev/null | grep -c curl_cffi)"
         if: inputs.source != 'youtube'
       - name: Scan
         env:
