@@ -29,6 +29,7 @@ class Film:
         page.on("pageerror", lambda e: (self.errors.append(str(e)), print("PAGE ERROR:", e, flush=True)))
         page.goto((self.project / "film.html").as_uri())
         page.evaluate("document.fonts.ready")
+        page.evaluate("window.STUDIO && window.STUDIO.ready")   # panel images decoded (long-form panel scenes)
         page.wait_for_timeout(250)
         info = page.evaluate("""() => {
             const s = window.STUDIO, st = document.getElementById('stage').getBoundingClientRect();

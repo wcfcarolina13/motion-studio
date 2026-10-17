@@ -8,7 +8,8 @@ Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth"
 that word of the segment's narration once `align` has run, so beats land on what is said.
 
   longform.py init <film>                       copy the engine (film.html, kit.js, figure.js) into the folder
-  longform.py lines <film>                      each segment's narration (feed to TTS, one file per id)
+  longform.py lines <film> [--json]             each segment's narration (feed to TTS, one file per id; --json adds speaker, mono)
+  longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
@@ -68,9 +69,43 @@ def cmd_init(a):
 
 def cmd_lines(a):
     film = Path(a.film).resolve()
-    for s in load_script(film)["segments"]:
-        if s.get("narration"):
-            print(f"{s['id']}\t{s['narration']}")
+    segs = [s for s in load_script(film)["segments"] if s.get("narration")]
+    if a.json:      # a drama: one voice per speaker, inner monologue read closer and quieter
+        print(json.dumps([{"id": s["id"], "speaker": s.get("speaker", "narrator"), "mono": bool(s.get("mono")), "text": s["narration"]}
+                          for s in segs], indent=1, ensure_ascii=False))
+        return
+    for s in segs:
+        print(f"{s['id']}\t{s['narration']}")
+
+
+def cmd_panels(a):
+    """Every panel image the script's panel scenes use, once each, with what the generator needs: the shot, who is in
+    frame, the prompt, and whether the file exists. Beats that reuse a panel (another crop or camera move) list it once."""
+    film = Path(a.film).resolve()
+    sc = load_script(film)
+    panels = {}
+    for s in sc["segments"]:
+        if s.get("type") != "panel":
+            continue
+        d = s.get("data") or {}
+        img = d.get("image")
+        if not img:
+            print(f"PROBLEM: {s['id']}: panel scene with no data.image")
+            continue
+        p = panels.setdefault(img, {"image": img, "beats": [], "shot": d.get("shot"), "char_in_frame": d.get("char_in_frame", []),
+                                    "flashback": bool(d.get("flashback")), "prompt": d.get("prompt", ""), "seed": d.get("seed")})
+        p["beats"].append(s["id"])
+        if d.get("prompt") and not p["prompt"]:
+            p["prompt"] = d["prompt"]
+    for p in panels.values():
+        p["exists"] = (film / p["image"]).exists()
+        if not p["prompt"]:
+            print(f"PROBLEM: {p['image']} (beats {', '.join(p['beats'])}): no prompt")
+    out = film / "out" / "panels.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps({"panels": list(panels.values()), "characters": sc.get("characters", {})}, indent=1, ensure_ascii=False) + "\n")
+    missing = [p for p in panels.values() if not p["exists"]]
+    print(f"{len(panels)} unique panels for {sum(len(p['beats']) for p in panels.values())} panel beats; {len(missing)} still to generate -> {out}")
 
 
 def cmd_align(a):
@@ -144,7 +179,7 @@ def cmd_timeline(a):
             dur = d + a.pad + s.get("extra", 0.0)
         else:
             dur = s.get("hold", 3.0)
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3))
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -152,6 +187,9 @@ def cmd_timeline(a):
         elif s.get("narration") and allwords:
             problems.append(f"{s['id']}: narration changed since `align`; run align again")
         resolve_cues(seg.get("data", {}), seg.get("words"), seg, problems, cues)
+        if seg.get("sfx"):      # drama foley: "sfx": ["paper slap", {"kind": "low hit", "at": "envelope"}]
+            seg["sfx"] = [x if isinstance(x, dict) else {"kind": x} for x in seg["sfx"]]
+            resolve_cues(seg["sfx"], seg.get("words"), seg, problems, cues)
         segs.append(seg)
         if s.get("chapter") and (not chapters or chapters[-1]["title"] != s["chapter"]):
             if chapters:
@@ -174,6 +212,8 @@ def cmd_timeline(a):
     graph = ";".join(filt) + ";" + "".join(f"[n{i}]" for i in range(len(clips))) + \
         f"amix=inputs={len(clips)}:normalize=0:dropout_transition=0,apad=whole_dur={total}[out]"
     script = film / "out" / "narration.filter"
+    if not clips:       # nothing spoken yet (a silent cut or a panel test): a silent bed of the right length
+        inputs, graph = ["-f", "lavfi", "-i", f"anullsrc=r={sr}:cl=mono"], "[0:a]anull[out]"
     script.write_text(graph)
     run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex_script", str(script), "-map", "[out]",
          "-t", str(total), "-ar", str(sr), "-ac", "1", str(film / "out" / "narration.wav")])
@@ -430,6 +470,9 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
 
     drawn = {"buzz": buzz, "ping": ping, "pin": pin, "thud": thud}
     kinds = {k: recorded_sfx(k) or ([(f"drawn-{k}", f())] if drawn_ok else []) for k, f in drawn.items()}
+    for sg in tl["segments"]:           # foley a segment asks for by name: recorded clips only, never drawn
+        for x in sg.get("sfx", []):
+            kinds.setdefault(x["kind"], recorded_sfx(x["kind"]))
     missing = [k for k, c in kinds.items() if not c]
     events = []
     for sg in tl["segments"]:
@@ -448,11 +491,12 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
                 events.append((d["stamp"]["t"] - 0.05 + 0.12, "thud"))
         elif sg["type"] == "sms":
             events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
+        events += [(x.get("t", sg["t0"] + 0.1), x["kind"]) for x in sg.get("sfx", [])]
     skipped = sum(1 for _, k in events if k in missing)
     events = sorted(e for e in events if e[1] not in missing)
     kept, last = [], {}
     for t, k in events:
-        if t - last.get(k, -9) >= SFX_GAP[k]:
+        if t - last.get(k, -9) >= SFX_GAP.get(k, 0.3):
             kept.append((t, k)); last[k] = t
     dropped, events = len(events) - len(kept), kept
     total = tl["duration"]
@@ -794,7 +838,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("init"); p.add_argument("film"); p.set_defaults(fn=cmd_init)
-    p = sp.add_parser("lines"); p.add_argument("film"); p.set_defaults(fn=cmd_lines)
+    p = sp.add_parser("lines"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lines)
+    p = sp.add_parser("panels"); p.add_argument("film"); p.set_defaults(fn=cmd_panels)
     p = sp.add_parser("align"); p.add_argument("film"); p.add_argument("--redo", action="store_true"); p.set_defaults(fn=cmd_align)
     p = sp.add_parser("timeline"); p.add_argument("film"); p.add_argument("--pad", type=float, default=0.45)
     p.add_argument("--lead", type=float, default=0.3); p.add_argument("--tail", type=float, default=1.5); p.set_defaults(fn=cmd_timeline)

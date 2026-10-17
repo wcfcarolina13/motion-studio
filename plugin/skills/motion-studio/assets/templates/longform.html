@@ -562,7 +562,89 @@ B.crowd = (s, g) => {
   };
 };
 
+
+// ── a full illustrated panel (webtoon / motion comic): one composed image per beat, a real camera over it ──
+// data: { image: "panels/p03.png", shot?: "EST"|"WIDE"|"MED"|"CU"|"ECU"|"INS"|"OTS"|"TWO", focus?: [x, y] (0..1 of the frame),
+//         camera?: "push"|"pull"|"pan-left"|"pan-right"|"tilt-up"|"tilt-down"|"hold" | {from: {x, y, z}, to: {x, y, z}},
+//         flashback?: true, caption_card?: "text" | {text, at?, hold?}, freeze?: true | {at}, shake?: {at, amp?},
+//         enter?: "cut"|"fade", exit?: "cut"|"fade" }
+// The camera crops and scales the still (z >= 1 keeps the frame covered); each shot type has a default move.
+const SHOT_CAM = { EST: ["pull", 1.16, 1.0], WIDE: ["pan", 1.08, 1.08], MED: ["push", 1.02, 1.08], CU: ["push", 1.04, 1.13],
+                   ECU: ["push", 1.08, 1.2], INS: ["push", 1.03, 1.1], OTS: ["pan", 1.1, 1.12], TWO: ["push", 1.0, 1.05] };
+const PANEL_IMAGES = [];
+function panelCam(d) {
+  if (d.camera && typeof d.camera === "object") return d.camera;
+  const [fx, fy] = d.focus || [0.5, 0.45], [def, z0, z1] = SHOT_CAM[d.shot] || ["push", 1.02, 1.08];
+  let mv = d.camera || def;
+  if (mv === "pan") mv = fx < 0.5 ? "pan-left" : "pan-right";
+  const zp = Math.max(z0, z1, 1.08), dx = 0.05, c = { x: 0.5, y: 0.5 }, f = { x: fx, y: fy };
+  switch (mv) {
+    case "pull":      return { from: { ...f, z: Math.max(z0, z1) }, to: { ...c, z: Math.min(z0, z1) } };
+    case "pan-left":  return { from: { x: 0.5 + dx, y: fy, z: zp }, to: { x: 0.5 - dx, y: fy, z: zp } };
+    case "pan-right": return { from: { x: 0.5 - dx, y: fy, z: zp }, to: { x: 0.5 + dx, y: fy, z: zp } };
+    case "tilt-up":   return { from: { x: fx, y: 0.5 + dx, z: zp }, to: { x: fx, y: 0.5 - dx, z: zp } };
+    case "tilt-down": return { from: { x: fx, y: 0.5 - dx, z: zp }, to: { x: fx, y: 0.5 + dx, z: zp } };
+    case "hold":      return { from: { ...f, z: 1.03 }, to: { ...f, z: 1.045 } };
+    default:          return { from: { x: K.lerp(0.5, fx, 0.4), y: K.lerp(0.5, fy, 0.4), z: Math.min(z0, z1) }, to: { ...f, z: Math.max(z0, z1) } };
+  }
+}
+let fbVig = null;
+B.panel = (s, g) => {
+  const d = s.data || {}, id = "pf" + s.id.replace(/\W/g, "");
+  PANEL_IMAGES.push(d.image);
+  // grade: saturation (dropped on a freeze), then sepia for a flashback
+  const flt = K.el("filter", { id, "color-interpolation-filters": "sRGB" }, K.defs);
+  const sat = K.el("feColorMatrix", { type: "saturate", values: d.flashback ? 0.55 : 1 }, flt);
+  if (d.flashback) K.el("feColorMatrix", { type: "matrix", values: ".393 .769 .189 0 0  .349 .686 .168 0 0  .272 .534 .131 0 0  0 0 0 1 0" }, flt);
+  K.el("rect", { x: 0, y: 0, width: W, height: H, fill: "#000" }, g);
+  const img = K.el("image", { href: d.image, x: 0, y: 0, width: W, height: H, preserveAspectRatio: "xMidYMid slice", filter: `url(#${id})` }, g);
+  void img;
+  if (d.flashback) {
+    if (!fbVig) {
+      const gr = K.el("radialGradient", { id: "fbvig", cx: "50%", cy: "50%", r: "70%" }, K.defs);
+      K.el("stop", { offset: "40%", "stop-color": "#1a1206", "stop-opacity": 0 }, gr);
+      K.el("stop", { offset: "100%", "stop-color": "#1a1206", "stop-opacity": 0.75 }, gr);
+      fbVig = true;
+    }
+    K.el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#fbvig)" }, s.ov);
+  }
+  let card = null;
+  if (d.caption_card) {
+    const cc = typeof d.caption_card === "string" ? { text: d.caption_card } : d.caption_card;
+    const c0 = cueT(cc, s.t0 + 0.15), c1 = cc.hold ? c0 + cc.hold : s.t1;
+    const cg = K.el("g", {}, s.ov);
+    const tx = K.text(cc.text, { "font-family": FONT, "font-size": 38, fill: "#f2ead8", x: 92, y: 118 }, cg);
+    const bw = Math.max(260, cc.text.length * 19 + 64);
+    cg.insertBefore(K.el("rect", { x: 60, y: 66, width: bw, height: 76, rx: 4, fill: "#0d0c0a", "fill-opacity": 0.86, stroke: "#f2ead8", "stroke-opacity": 0.35 }, cg), tx);
+    K.label(cc.text, c0, c1, "caption card");
+    card = { g: cg, c0, c1 };
+  }
+  const cam = panelCam(d);
+  const fz = d.freeze ? (d.freeze === true ? s.t1 - 0.6 : cueT(d.freeze, s.t1 - 0.6)) : null;
+  const sh = d.shake ? { t: cueT(d.shake, s.t0), a: d.shake.amp || 14 } : null;
+  return t => {
+    const end = fz != null ? Math.min(fz, s.t1) : s.t1;
+    const p = K.eio(K.prog(Math.min(t, end), s.t0, end));
+    let z = Math.exp(K.lerp(Math.log(cam.from.z), Math.log(cam.to.z), p));
+    z = Math.max(1, z);
+    let cx = K.lerp(cam.from.x, cam.to.x, p) * W, cy = K.lerp(cam.from.y, cam.to.y, p) * H;
+    if (sh && t >= sh.t) {
+      const k = Math.exp(-(t - sh.t) * 7) * sh.a;
+      cx += k * Math.sin((t - sh.t) * 71); cy += k * Math.sin((t - sh.t) * 53 + 1.3);
+    }
+    // keep the frame covered: the camera can't look past the still's edge
+    const hw = W / (2 * z), hh = H / (2 * z);
+    cx = Math.min(Math.max(cx, hw), W - hw); cy = Math.min(Math.max(cy, hh), H - hh);
+    g.__cam = { z, cx, cy };
+    if (fz != null) K.set(sat, { values: (d.flashback ? 0.55 : 1) * K.lerp(1, 0.3, K.eout(K.prog(t, fz, fz + 0.25))) });
+    const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;
+    g.setAttribute("opacity", Math.min(fin, fout));
+    if (card) card.g.setAttribute("opacity", K.eout(K.prog(t, card.c0, card.c0 + 0.25)) * (1 - K.ein(K.prog(t, card.c1 - 0.25, card.c1))));
+  };
+};
+
 const OPAQUE = new Set(["stage", "board", "crowd"]);   // scenes with their own set: no drifting dots behind them
+const FULL = new Set(["panel"]);                       // full-frame images: they cut (or fade), and nothing shows behind them
 
 // ── build every segment once ─────────────────────────────
 const built = SEGS.map((s, i) => {
@@ -602,7 +684,7 @@ if (TL.captions) {
     pg.t1 = next && next.s === pg.s ? next.words[0][1] - 0.05 : Math.min(pg.s.t1, pg.words[pg.words.length - 1][2] + 0.5);
     const box = document.createElement("div"), inner = document.createElement("div");
     Object.assign(box.style, { position: "absolute", left: "80px", width: (W - 160) + "px", top: (H - 128) + "px", height: "64px", overflow: "hidden", textAlign: "center",
-      fontFamily: SANS, fontSize: "44px", fontWeight: "600", lineHeight: "64px" });
+      fontFamily: SANS, fontSize: "44px", fontWeight: "600", lineHeight: "64px", fontStyle: pg.s.mono ? "italic" : "normal" });
     pg.spans = pg.words.map(w => { const sp = document.createElement("span"); sp.textContent = w[0] + " "; sp.style.whiteSpace = "pre"; inner.appendChild(sp); return sp; });
     box.appendChild(inner); capsDiv.appendChild(box);
     pg.box = box; pg.inner = inner;
@@ -621,10 +703,16 @@ const vig = (() => {
 })();
 void vig;
 
+// panel images must be decoded before a frame is taken (render.py waits on STUDIO.ready)
+window.STUDIO.ready = Promise.all([...new Set(PANEL_IMAGES.filter(Boolean))].map(src => {
+  const im = new Image(); im.src = src;
+  return im.decode().catch(() => { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`panel image missing or unreadable: ${src}`); });
+}));
+
 // ── render(t) ────────────────────────────────────────────
 K.run(t => {
   dots.forEach(d => K.set(d.el, { cx: (d.x + t * d.v) % W, cy: d.y, r: d.s }));
-  K.show(bgG, !built.some(b => OPAQUE.has(b.s.type) && t >= b.s.t0 + WIPE && t <= b.s.t1));
+  K.show(bgG, !built.some(b => (OPAQUE.has(b.s.type) && t >= b.s.t0 + WIPE && t <= b.s.t1) || (FULL.has(b.s.type) && t >= b.s.t0 && t <= b.s.t1)));
   let src = "", chap = "";
   built.forEach(b => {
     const on = t >= b.s.t0 - 0.01 && t <= b.s.t1 + 0.01 + (b.wipe ? WIPE : 0);
@@ -639,7 +727,7 @@ K.run(t => {
       // slow drift so nothing sits still (1.0 → 1.03), or the scene's own camera if it set one
       const cam = b.g.__cam, z = cam ? cam.z : K.lerp(1, 1.03, K.prog(t, b.s.t0, b.s.t1));
       b.g.setAttribute("transform", `translate(${W / 2} ${H / 2}) scale(${z}) translate(${-(cam ? cam.cx : W / 2)} ${-(cam ? cam.cy : H / 2)})`);
-      src = b.s.source || ""; chap = b.s.chapter || "";
+      src = b.s.source || ""; chap = FULL.has(b.s.type) ? "" : b.s.chapter || "";   // a drama panel carries no chapter label
     }
   });
   sourceT.textContent = src ? "Source: " + src : "";
@@ -654,7 +742,7 @@ K.run(t => {
     pg.spans.forEach((sp, k) => {
       const w = pg.words[k], nx = pg.words[k + 1], lit = K.prog(t, w[1] - 0.02, w[1] + 0.08);
       const now = t >= w[1] - 0.02 && (!nx || t < nx[1] - 0.02) && t < w[2] + 0.15;   // one word at a time, lit as it is said
-      sp.style.color = now ? C.ACCENT : K.mix("#6b6b67", C.INK, lit);
+      sp.style.color = now ? C.ACCENT : K.mix("#6b6b67", pg.s.mono ? "#e9dcc0" : C.INK, lit);   // inner monologue reads warmer
     });
   });
 });

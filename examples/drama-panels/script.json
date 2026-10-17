@@ -1,0 +1,22 @@
+{"title": "The Chairman's Secret Will (cold open, panel example)", "captions": true,
+ "characters": {"seoyeon": "Seo-yeon, 29, black hair in a low knot, silver magnolia pin", "minjun": "Min-jun, 33, navy suit, cold"},
+ "segments": [
+  {"id": "b01", "chapter": "Cold open", "type": "panel", "speaker": "minjun", "narration": "Sign the divorce papers, Seo-yeon.",
+   "sfx": [{"kind": "paper slap", "at": "papers"}],
+   "data": {"image": "panels/p01.png", "shot": "INS", "focus": [0.55, 0.6], "char_in_frame": ["minjun"],
+            "prompt": "webtoon panel, insert shot: a man's hand slapping divorce papers onto a glossy boardroom table, night, rain on the window"}},
+  {"id": "b03", "chapter": "Cold open", "type": "panel", "speaker": "seoyeon", "mono": true,
+   "narration": "Twelve directors. Not one of them would look at me.", "sfx": ["rain on glass"],
+   "data": {"image": "panels/p02.png", "shot": "WIDE", "focus": [0.3, 0.5], "char_in_frame": ["seoyeon"],
+            "prompt": "webtoon panel, wide shot: twelve directors at a long boardroom table, a young woman alone at the far end, night"}},
+  {"id": "b08", "chapter": "Cold open", "type": "panel", "speaker": "seoyeon", "mono": true,
+   "narration": "Three days ago, I didn't know what my mother left me.",
+   "data": {"image": "panels/p03.png", "shot": "ECU", "focus": [0.6, 0.35], "char_in_frame": ["seoyeon"],
+            "prompt": "webtoon panel, extreme close-up: a silver magnolia hair pin in wet black hair"}},
+  {"id": "b10", "chapter": "Cold open", "type": "panel", "hold": 2.5, "sfx": [{"kind": "low hit"}],
+   "data": {"image": "panels/p04.png", "shot": "CU", "focus": [0.5, 0.4], "freeze": true, "shake": {"amp": 12}, "char_in_frame": ["yoon"],
+            "prompt": "webtoon panel, close-up: an older woman at the head of the table, a flicker of fear"}},
+  {"id": "b11", "chapter": "Three days earlier", "type": "panel", "hold": 3.0, "speaker": "seoyeon",
+   "data": {"image": "panels/p05.png", "shot": "EST", "caption_card": "Three days earlier", "enter": "fade", "char_in_frame": [],
+            "prompt": "webtoon panel, establishing shot: a VIP ICU corridor in a Seoul hospital at night"}}
+ ]}
