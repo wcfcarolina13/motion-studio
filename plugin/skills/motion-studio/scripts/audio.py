@@ -131,7 +131,8 @@ def import_sfx(src, roles=0):
     """Add a staged folder of sound effects to the library: src/manifest.json lists each clip (kind, file, source,
     upstream, title, creator, licence, licence_url, source_page, duration_s, attribution); src/ranking.json (optional,
     from earshot) adds each clip's score. Clips are copied to <library>/sfx/<source>/<kind>/ and catalogued with
-    "candidate": <kind>, so mix doesn't use them until they carry "role": <kind>. roles=N gives the role to earshot's
+    "candidates": [<kind>, ...], so mix doesn't use them until they carry "role": <kind>. A file staged under two kinds
+    is one entry with both kinds. roles=N gives the role to earshot's
     top N per kind straight away (a provisional pick, to be confirmed by ear). Returns (added, refused)."""
     src = Path(src).expanduser()
     lib, cat = library_dir(), catalog()
@@ -147,19 +148,23 @@ def import_sfx(src, roles=0):
         f = src / m["file"]
         key = Path(m["file"]).stem
         dest = lib / "sfx" / m.get("source", "other") / m["kind"] / f.name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if not dest.exists():
-            shutil.copy2(f, dest)
         entry = cat["sfx"].get(key, {})
-        entry.update({"id": key, "title": m.get("title") or "", "file": str(dest.relative_to(lib)),
+        if not (entry.get("file") and (lib / entry["file"]).exists()):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.exists():
+                shutil.copy2(f, dest)
+        kinds = list(dict.fromkeys(candidate_kinds(entry) + [m["kind"]]))   # one file staged under two kinds keeps both
+        entry.pop("candidate", None); entry.pop("earshot", None)    # older single-kind fields
+        keep = entry.get("file") and (lib / entry["file"]).exists()      # a second kind doesn't move the file
+        entry.update({"candidates": kinds, "id": key, "title": m.get("title") or "", "file": entry["file"] if keep else str(dest.relative_to(lib)),
                       "url": m.get("source_page") or "", "licence": f"{m['licence']}: {m.get('licence_url') or ''}".rstrip(": "),
                       "licence_name": m["licence"], "creator": m.get("creator") or "", "source": m.get("source") or "",
-                      "upstream": m.get("upstream") or "", "duration_s": m.get("duration_s"), "candidate": m["kind"]})
+                      "upstream": m.get("upstream") or "", "duration_s": m.get("duration_s")})
         if m.get("attribution"):
             entry["attribution"] = m["attribution"]
         sc = scores.get(m["file"])
         if sc:
-            entry["earshot"] = {"query": rank["kinds"].get(m["kind"], {}).get("query"), "z": sc.get("z"), "cosine": sc.get("cosine"),
+            entry.setdefault("earshot_by_kind", {})[m["kind"]] = {"query": rank["kinds"].get(m["kind"], {}).get("query"), "z": sc.get("z"), "cosine": sc.get("cosine"),
                                 "verdict": sc.get("verdict"), "sounds_most_like": sc.get("sounds_most_like"),
                                 "rank": top.get(m["file"]), "tool": rank.get("tool"), "commit": rank.get("earshot_commit")}
         if roles and top.get(m["file"], 99) < roles:
@@ -168,6 +173,16 @@ def import_sfx(src, roles=0):
         added.append(key)
     save_catalog(cat)
     return added, refused
+
+
+def candidate_kinds(e):
+    """The kinds a catalogued clip is a candidate for (older entries carry one "candidate")."""
+    return e.get("candidates") or ([e["candidate"]] if e.get("candidate") else [])
+
+
+def earshot_for(e, kind):
+    """earshot's score for a clip as a candidate for `kind`, or {}."""
+    return (e.get("earshot_by_kind") or {}).get(kind) or e.get("earshot") or {}
 
 
 def set_role(key, kind):

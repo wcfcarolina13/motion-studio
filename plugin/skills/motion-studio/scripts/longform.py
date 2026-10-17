@@ -360,6 +360,19 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
 
 
 SFX_GAP = {"buzz": 0.6, "ping": 0.35, "pin": 0.12, "thud": 0.5}    # same-kind sounds closer than this are dropped
+SFX_MAX = {"buzz": 0.9, "ping": 1.2, "pin": 0.4, "thud": 0.8, "whoosh": 1.0}   # seconds a cue may ring; longer clips are cut
+
+
+def trim_clip(x, kind, sr=48000, fade=0.06):
+    """Cut a recording to the time its kind may ring (a 3 s vibration loop is one buzz, not three), fading the cut."""
+    import numpy as np
+    n = int(SFX_MAX.get(kind, 1.5) * sr)
+    if len(x) <= n:
+        return x
+    x = x[:n].copy()
+    f = int(fade * sr)
+    x[-f:] *= np.linspace(1, 0, f)
+    return x
 
 
 def recorded_sfx(kind):
@@ -369,7 +382,7 @@ def recorded_sfx(kind):
         lib, cat = audio.library_dir(), audio.catalog()
     except SystemExit:
         return []
-    return [(k, audio.load(lib / v["file"])) for k, v in sorted(cat["sfx"].items())
+    return [(k, trim_clip(audio.load(lib / v["file"]), kind)) for k, v in sorted(cat["sfx"].items())
             if v.get("role") == kind and (lib / v["file"]).exists()]
 
 
@@ -533,7 +546,9 @@ def cmd_mix(a):
         base = len(inputs) // 2
         inputs += ["-i", str(whoosh[1])]
         cuts = [ch["t0"] for ch in tl["chapters"][1:]]
-        filt.append(f"[{base}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=-10dB,asplit={len(cuts)}" +
+        wmax = SFX_MAX["whoosh"]
+        filt.append(f"[{base}:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=0:{wmax},afade=t=out:st={wmax - 0.06}:d=0.06,"
+                    f"volume=-10dB,asplit={len(cuts)}" +
                     "".join(f"[w{i}]" for i in range(len(cuts))))
         for i, c in enumerate(cuts):
             ms = int(max(0, c - 0.25) * 1000)
