@@ -10,6 +10,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py init <film>                       copy the engine (film.html, kit.js, figure.js) into the folder
   longform.py lines <film> [--json]             each segment's narration (feed to TTS, one file per id; --json adds speaker, mono)
   longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
+  longform.py upscale <film> [--size 2304x1296]   Real-ESRGAN 4x then Lanczos to cover the size -> panels-hd/ (timeline uses it)
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
@@ -101,6 +102,7 @@ def cmd_panels(a):
             p["prompt"] = d["prompt"]
     for p in panels.values():
         p["exists"] = (film / p["image"]).exists()
+        p["upscaled"] = bool(hd_path(film, p["image"]))
         if not p["prompt"]:
             print(f"PROBLEM: {p['image']} (beats {', '.join(p['beats'])}): no prompt")
     out = film / "out" / "panels.json"
@@ -108,6 +110,59 @@ def cmd_panels(a):
     out.write_text(json.dumps({"panels": list(panels.values()), "characters": sc.get("characters", {})}, indent=1, ensure_ascii=False) + "\n")
     missing = [p for p in panels.values() if not p["exists"]]
     print(f"{len(panels)} unique panels for {sum(len(p['beats']) for p in panels.values())} panel beats; {len(missing)} still to generate -> {out}")
+
+
+PANEL_HD = "panels-hd"      # upscaled copies of the panel images, same relative paths; timeline prefers them
+
+
+def image_size(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                          "-of", "csv=p=0", str(path)], capture_output=True, text=True, check=True).stdout.strip()
+    w, h = out.split(",")[:2]
+    return int(w), int(h)
+
+
+def hd_path(film, img):
+    """The upscaled copy of a panel image, if `upscale` made one and it is newer than its source."""
+    src, hd = film / img, film / PANEL_HD / Path(img).with_suffix(".png")
+    return hd if hd.exists() and (not src.exists() or hd.stat().st_mtime >= src.stat().st_mtime) else None
+
+
+def cmd_upscale(a):
+    """Panels are drawn at the image model's size (1344x768 for klein) and the frame is 1920x1080. Upscale each with
+    Real-ESRGAN (realesrgan-ncnn-vulkan, BSD-3; the anime model keeps ink lines clean), then Lanczos down to cover --size
+    and centre-crop. The default size is the frame times the deepest camera push (ECU 1.2), so a push-in still shows
+    one image pixel per screen pixel. A native large render was tested slower (1,541 s against 7.5 s) and softer."""
+    import shutil as sh
+    import tempfile
+    film = Path(a.film).resolve()
+    W, H = (int(x) for x in a.size.lower().split("x"))
+    binary = sh.which(a.bin) or (a.bin if Path(a.bin).exists() else None)
+    if not binary:
+        raise SystemExit(f"{a.bin} not found: install realesrgan-ncnn-vulkan (github.com/xinntao/Real-ESRGAN releases, BSD-3) "
+                         "or pass --bin /path/to/realesrgan-ncnn-vulkan")
+    imgs = sorted({(s.get("data") or {}).get("image") for s in load_script(film)["segments"] if s.get("type") == "panel"} - {None})
+    done = skipped = 0
+    for img in imgs:
+        src = film / img
+        if not src.exists():
+            print(f"  missing {img}"); continue
+        if hd_path(film, img) and not a.redo:
+            skipped += 1; continue
+        dest = film / PANEL_HD / Path(img).with_suffix(".png")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        w, h = image_size(src)
+        with tempfile.TemporaryDirectory() as td:
+            big = Path(td) / "x4.png"
+            if w < W or h < H:
+                run([binary, "-i", str(src), "-o", str(big), "-n", a.model, "-s", "4"], capture_output=True)
+            else:
+                big = src                                   # already large enough: only fit it
+            run(["ffmpeg", "-v", "error", "-y", "-i", str(big), "-vf",
+                 f"scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H}", str(dest)])
+        done += 1
+        print(f"  {img}: {w}x{h} -> {dest.relative_to(film)} ({W}x{H})")
+    print(f"{done} upscaled, {skipped} already current, {len(imgs)} panels")
 
 
 def cmd_align(a):
@@ -188,6 +243,12 @@ def cmd_timeline(a):
             seg["words"] = [[x["w"], round(t + x["t0"], 3), round(t + x["t1"], 3)] for x in w["words"]]
         elif s.get("narration") and allwords:
             problems.append(f"{s['id']}: narration changed since `align`; run align again")
+        if seg.get("type") == "panel" and (seg.get("data") or {}).get("image"):
+            hd = hd_path(film, seg["data"]["image"])
+            if hd:
+                seg["data"] = dict(seg["data"], image=str(hd.relative_to(film)))
+            elif (film / seg["data"]["image"]).exists() and image_size(film / seg["data"]["image"])[0] < 1920:
+                problems.append(f"{s['id']}: panel {seg['data']['image']} is under 1920 wide and has no upscale; run `upscale`")
         resolve_cues(seg.get("data", {}), seg.get("words"), seg, problems, cues)
         if seg.get("sfx"):      # drama foley: "sfx": ["paper slap", {"kind": "low hit", "at": "envelope"}]
             seg["sfx"] = [dict(x, kind=kind_key(x["kind"])) if isinstance(x, dict) else {"kind": kind_key(x)} for x in seg["sfx"]]
@@ -959,6 +1020,9 @@ def main():
     p = sp.add_parser("init"); p.add_argument("film"); p.set_defaults(fn=cmd_init)
     p = sp.add_parser("lines"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lines)
     p = sp.add_parser("panels"); p.add_argument("film"); p.set_defaults(fn=cmd_panels)
+    p = sp.add_parser("upscale"); p.add_argument("film"); p.add_argument("--size", default="2304x1296")
+    p.add_argument("--model", default="realesrgan-x4plus-anime"); p.add_argument("--bin", default="realesrgan-ncnn-vulkan")
+    p.add_argument("--redo", action="store_true"); p.set_defaults(fn=cmd_upscale)
     p = sp.add_parser("align"); p.add_argument("film"); p.add_argument("--redo", action="store_true"); p.set_defaults(fn=cmd_align)
     p = sp.add_parser("timeline"); p.add_argument("film"); p.add_argument("--pad", type=float, default=0.45)
     p.add_argument("--lead", type=float, default=0.3); p.add_argument("--tail", type=float, default=1.5); p.set_defaults(fn=cmd_timeline)
