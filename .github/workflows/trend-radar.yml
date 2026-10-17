@@ -87,7 +87,12 @@ jobs:
             if [ -n "$WATCHLIST" ]; then cat "$WATCHLIST" >> "$RUNNER_TEMP/watch.txt"; fi
             if [ ! -s "$RUNNER_TEMP/watch.txt" ]; then echo "::error::give handles or a watchlist"; exit 1; fi
           fi
-      - run: python -m pip install -q -U yt-dlp
+      # curl-cffi lets yt-dlp impersonate a browser: tiktokuser:<secUid> lines failed on the runner without it and worked
+      # on a Mac with it (2026-10-17). curl_cffi is MIT; its bundled curl-impersonate build carries curl, BoringSSL,
+      # nghttp2/3, ngtcp2, brotli, zlib, zstd (permissive) and libidn2 (LGPL-3+/GPL-2+), used here only at run time.
+      - run: |
+          python -m pip install -q -U "yt-dlp[default,curl-cffi]"
+          echo "::notice::yt-dlp $(python -m yt_dlp --version), impersonation targets: $(python -m yt_dlp --list-impersonate-targets 2>/dev/null | grep -c curl_cffi)"
         if: inputs.source != 'youtube'
       - name: Scan
         env:
@@ -112,12 +117,19 @@ jobs:
           fi
           set -e
           python - <<'PY'
-          import glob, json, os
-          vids = [v for f in glob.glob(os.environ["RUNNER_TEMP"] + "/out/*.json") for v in json.load(open(f))]
-          ms = float(os.environ["MIN_SCORE"])
-          hits = [v for v in vids if v.get("in_query", True) and (v.get("score") or 0) >= ms]   # youtube baseline videos are not results
-          creators = {v["creator"] for v in vids}
-          print(f"::notice::{os.environ['NICHE']}: {len(vids)} videos from {len(creators)} creators, {len(hits)} breakouts at {ms}x or more")
+          import glob, json, os, sys
+          sys.path.insert(0, "plugin/skills/motion-studio/scripts")
+          from trends import breakouts
+          ms, age = float(os.environ["MIN_SCORE"]), float(os.environ["MAX_AGE"] or 0) or None
+          total = 0
+          for f in sorted(glob.glob(os.environ["RUNNER_TEMP"] + "/out/*.json")):   # one file per query (youtube) or per run (tiktok)
+              vids = json.load(open(f))
+              hits = breakouts([v for v in vids if v.get("in_query", True)], ms, age)   # youtube baseline videos are not results
+              total += len(hits)
+              label = os.path.basename(f)[len("trends-") + 11:-len(".json")]
+              print(f"::notice::{label}: {len(vids)} videos from {len({v['creator'] for v in vids})} creators, "
+                    f"{len(hits)} breakouts at {ms:g}x or more" + (f" in the last {age:g} days" if age else ""))
+          print(f"::notice::{os.environ['NICHE']}: {total} breakouts in all")
           PY
           bot=$(grep -c '^  ! \[bot-check\]' "$RUNNER_TEMP/out/stderr.txt" || true)
           other=$(grep -c '^  ! \[other\]' "$RUNNER_TEMP/out/stderr.txt" || true)

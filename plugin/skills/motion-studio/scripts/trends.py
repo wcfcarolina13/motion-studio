@@ -26,6 +26,7 @@ The radar picks topics. It never downloads videos; the factory makes original ep
 import argparse
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -113,8 +114,12 @@ def tiktok_list(url, limit):
     return out
 
 
+SECUID = re.compile(r"MS4wLjABAAAA[\w-]{64}")   # yt-dlp reads tiktokuser:<id> as a secUid only in this exact shape
+
+
 def handles(args):
-    """[(name, url)] from the command line and the watchlist; a tiktokuser:<secUid> on a line is used as its URL."""
+    """[(name, urls)] from the command line and the watchlist. A line's tiktokuser:<secUid> is tried first and its
+    @handle page second, so a secUid that fails costs nothing over a plain handle."""
     lines = list(args.users)
     if args.watchlist:
         lines += [l.split("#")[0].strip() for l in Path(args.watchlist).read_text().splitlines()]
@@ -124,8 +129,14 @@ def handles(args):
         if not parts:
             continue
         sec = next((x for x in parts if x.startswith("tiktokuser:")), None)
-        name = next((x.lstrip("@") for x in parts if not x.startswith("tiktokuser:")), sec)
-        out[name] = sec or f"https://www.tiktok.com/@{name}"
+        name = next((x.lstrip("@") for x in parts if not x.startswith("tiktokuser:")), None)
+        if sec and not SECUID.fullmatch(sec.split(":", 1)[1]):
+            print(f"  ! {sec[:40]}: not a secUid (MS4wLjABAAAA + 64 characters); yt-dlp would read it as a handle"
+                  + (f", using @{name}" if name else ", skipped"), file=sys.stderr)
+            sec = None
+        urls = ([sec] if sec else []) + ([f"https://www.tiktok.com/@{name}"] if name else [])
+        if urls:
+            out[name or sec] = urls
     return list(out.items())
 
 
@@ -156,8 +167,11 @@ def cmd_tiktok(a):
     if not names:
         raise SystemExit("name at least one @creator or pass --watchlist")
     videos = []
-    for n, url in names:
-        got = tiktok_list(url, a.per_creator)
+    for n, urls in names:
+        for url in urls:
+            got = tiktok_list(url, a.per_creator)
+            if got:
+                break
         print(f"  @{n}: {len(got)} videos", file=sys.stderr)
         videos += got
     if FAILS["bot-check"] and FAILS["bot-check"] >= len(names) / 2:
