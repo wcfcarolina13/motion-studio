@@ -13,6 +13,7 @@ the marked box with our own mask.
 """
 import html
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -195,14 +196,30 @@ GENERATORS = {      # mflux 0.23 CLIs; neither takes a mask, so the crop is redr
 CROP = 1024
 
 
-def repair(film, img, box, prompt, *, ref=None, model="klein", seeds=(1,), context=2.25, feather=6, gen_args=(), beats=(),
-           generate=None):
+def generator(model):
+    """The command for one edit model: the mflux binary (from "mflux": {"bin": "<venv>/bin"} in ~/.motion-studio.json or
+    $MFLUX_BIN, else PATH) and its model arguments ("mflux": {"klein": ["--model", "<local q8 folder>", "--base-model",
+    "flux2-klein-4b"]} replaces the defaults, so a local quantized build is used instead of downloading the full weights)."""
+    path = Path.home() / ".motion-studio.json"
+    cfg = (json.loads(path.read_text()).get("mflux") or {}) if path.exists() else {}
+    name, *args = GENERATORS[model]
+    bindir = os.environ.get("MFLUX_BIN") or cfg.get("bin")
+    exe = Path(bindir).expanduser() / name if bindir else shutil.which(name)
+    if not exe or not Path(exe).exists():
+        where = f"{bindir}/{name}" if bindir else f"{name} on PATH"
+        raise SystemExit(f"no {where}: install mflux 0.23 or later (pip install -U mflux, MIT), or set \"mflux\": "
+                         "{\"bin\": \"<venv>/bin\"} in ~/.motion-studio.json")
+    return [str(exe), *cfg.get(model, args)]
+
+
+def repair(film, img, box, prompt, *, ref=None, model="klein", seeds=(1,), context=2.25, feather=6, gen_args=(), beats=()):
     """Redraw one region of a panel. Writes repairs/<image path>/rNN/: crop.png (the 1024 square sent to the model), out_<seed>.png
     (what came back), candidate_<seed>.png (the whole panel with only the box changed) and compare_<seed>.png (the crop
     before and after), and logs the run in repairs/log.json. The panel itself is untouched until `accept`."""
     src = film / img
     if not src.exists():
         raise SystemExit(f"no panel image {img}")
+    gen = generator(model)
     W, H = size(src)
     b = parse_box(box, W, H)
     sx, sy, side = context_square(b, W, H, context)
@@ -215,16 +232,10 @@ def repair(film, img, box, prompt, *, ref=None, model="klein", seeds=(1,), conte
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf",
                     f"crop={side}:{side}:{sx}:{sy},scale={CROP}:{CROP}:flags=lanczos", "-frames:v", "1", str(crop)], check=True)
     images = [str(crop)] + ([str(Path(ref).resolve())] if ref else [])
-    cmd = [*GENERATORS[model], "--image-paths", *images, "--prompt", prompt, "--seed", *[str(s) for s in seeds],
+    cmd = [*gen, "--image-paths", *images, "--prompt", prompt, "--seed", *[str(s) for s in seeds],
            "--width", str(CROP), "--height", str(CROP), "--output", str(rdir / "out_{seed}.png"), *gen_args]
     t0 = time.time()
-    if generate:
-        generate(cmd)
-    else:
-        exe = shutil.which(cmd[0])
-        if not exe:
-            raise SystemExit(f"{cmd[0]} not found: install mflux 0.23 or later (pip install -U mflux, MIT)")
-        subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True)
     secs = round(time.time() - t0, 1)
     base = read_rgb(src)
     made = []
