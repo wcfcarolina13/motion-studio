@@ -1,4 +1,5 @@
-# Trend radar on a GitHub runner, run by hand (Actions > trend-radar > Run workflow, or the API), one niche per run.
+# Trend radar on a GitHub runner, run by hand (Actions > trend-radar > Run workflow, or the API), one niche per run:
+# TikTok creator watchlists, or YouTube searches through the Data API (the YT_API_KEY repository secret).
 # TikTok creator pages work from runners without a login; the owner's Mac IP got rate-limited, and runner IPs can be too.
 # This repo is public, so its run logs and artifacts are public. By default the log shows only counts and the results
 # leave the runner encrypted with the RADAR_KEY secret (decrypt: references/trends.md). output=public skips the
@@ -10,6 +11,18 @@ on:
       niche:
         description: "label for this run, e.g. money-scams"
         required: true
+      source:
+        description: "tiktok (creator watchlist) or youtube (search queries)"
+        type: choice
+        options: [tiktok, youtube]
+        default: tiktok
+      queries:
+        description: "youtube: search queries separated by ; (each search costs about 150 of 10,000 daily quota units)"
+        required: false
+        default: ""
+      days:
+        description: "youtube: how far back the search looks, in days"
+        default: "14"
       handles:
         description: "TikTok handles, comma separated; '@h tiktokuser:<secUid>' for a bot-checked page (or use a watchlist file)"
         required: false
@@ -49,37 +62,60 @@ jobs:
       MIN_SCORE: ${{ inputs.min_score }}
       MAX_AGE: ${{ inputs.max_age_days }}
       KEYWORDS: ${{ inputs.keywords }}
+      SOURCE: ${{ inputs.source }}
+      QUERIES: ${{ inputs.queries }}
+      DAYS: ${{ inputs.days }}
       RADAR_KEY: ${{ secrets.RADAR_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - name: Check inputs
+        env:
+          YT_KEY_SET: ${{ secrets.YT_API_KEY != '' }}
         run: |
           case "$NICHE" in *[!a-zA-Z0-9_-]*|"") echo "::error::niche must be letters, digits, - or _"; exit 1;; esac
-          case "$PER_CREATOR$MIN_SCORE$MAX_AGE" in *[!0-9.]*) echo "::error::per_creator and min_score must be numbers"; exit 1;; esac
+          case "$PER_CREATOR$MIN_SCORE$MAX_AGE$DAYS" in *[!0-9.]*) echo "::error::per_creator and min_score must be numbers"; exit 1;; esac
           if [ "$OUTPUT" = encrypted ] && [ -z "$RADAR_KEY" ]; then
             echo "::error::output=encrypted needs the RADAR_KEY repository secret (Settings > Secrets and variables > Actions)"; exit 1
           fi
-          echo "$HANDLES" | tr ',' '\n' | sed 's/^ *//; s/ *$//; /^$/d' > "$RUNNER_TEMP/watch.txt"
-          if [ -n "$WATCHLIST" ]; then cat "$WATCHLIST" >> "$RUNNER_TEMP/watch.txt"; fi
-          if [ ! -s "$RUNNER_TEMP/watch.txt" ]; then echo "::error::give handles or a watchlist"; exit 1; fi
+          if [ "$SOURCE" = youtube ]; then
+            if [ "$YT_KEY_SET" != true ]; then echo "::error::source=youtube needs the YT_API_KEY repository secret"; exit 1; fi
+            if [ -z "$(echo "$QUERIES" | tr -d ' ;')" ]; then echo "::error::source=youtube needs queries"; exit 1; fi
+          else
+            echo "$HANDLES" | tr ',' '\n' | sed 's/^ *//; s/ *$//; /^$/d' > "$RUNNER_TEMP/watch.txt"
+            if [ -n "$WATCHLIST" ]; then cat "$WATCHLIST" >> "$RUNNER_TEMP/watch.txt"; fi
+            if [ ! -s "$RUNNER_TEMP/watch.txt" ]; then echo "::error::give handles or a watchlist"; exit 1; fi
+          fi
       - run: python -m pip install -q -U yt-dlp
+        if: inputs.source != 'youtube'
       - name: Scan
+        env:
+          YT_API_KEY: ${{ inputs.source == 'youtube' && secrets.YT_API_KEY || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           set +e
-          python plugin/skills/motion-studio/scripts/trends.py tiktok --watchlist "$RUNNER_TEMP/watch.txt" \
-            --per-creator "$PER_CREATOR" --min-score "$MIN_SCORE" --max-age-days "$MAX_AGE" --keywords "$KEYWORDS" \
-            --out "$RUNNER_TEMP/out" \
-            > "$RUNNER_TEMP/out/stdout.txt" 2> "$RUNNER_TEMP/out/stderr.txt"
-          rc=$?
+          T=plugin/skills/motion-studio/scripts/trends.py
+          if [ "$SOURCE" = youtube ]; then
+            rc=0
+            IFS=';' read -ra QS <<< "$QUERIES"
+            for q in "${QS[@]}"; do
+              q="$(echo "$q" | sed 's/^ *//; s/ *$//')"; [ -z "$q" ] && continue
+              python $T youtube "$q" --days "$DAYS" --per-creator "$PER_CREATOR" --min-score "$MIN_SCORE" --max-age-days "$MAX_AGE" \
+                --out "$RUNNER_TEMP/out" >> "$RUNNER_TEMP/out/stdout.txt" 2>> "$RUNNER_TEMP/out/stderr.txt" || rc=$?
+            done
+          else
+            python $T tiktok --watchlist "$RUNNER_TEMP/watch.txt" \
+              --per-creator "$PER_CREATOR" --min-score "$MIN_SCORE" --max-age-days "$MAX_AGE" --keywords "$KEYWORDS" \
+              --out "$RUNNER_TEMP/out" > "$RUNNER_TEMP/out/stdout.txt" 2> "$RUNNER_TEMP/out/stderr.txt"
+            rc=$?
+          fi
           set -e
           python - <<'PY'
           import glob, json, os
           vids = [v for f in glob.glob(os.environ["RUNNER_TEMP"] + "/out/*.json") for v in json.load(open(f))]
           ms = float(os.environ["MIN_SCORE"])
-          hits = [v for v in vids if (v.get("score") or 0) >= ms]
+          hits = [v for v in vids if v.get("in_query", True) and (v.get("score") or 0) >= ms]   # youtube baseline videos are not results
           creators = {v["creator"] for v in vids}
           print(f"::notice::{os.environ['NICHE']}: {len(vids)} videos from {len(creators)} creators, {len(hits)} breakouts at {ms}x or more")
           PY
@@ -87,6 +123,7 @@ jobs:
           other=$(grep -c '^  ! \[other\]' "$RUNNER_TEMP/out/stderr.txt" || true)
           dropped=$(grep -c '^  dropped @' "$RUNNER_TEMP/out/stderr.txt" || true)
           echo "::notice::pages failed: $bot bot-checked, $other other; creators dropped as stale or off-niche: $dropped (exit $rc)"
+          if [ "$SOURCE" = youtube ]; then grep -h "quota units" "$RUNNER_TEMP/out/stderr.txt" | sed 's/^ *.*: /::notice::/' || true; fi
           if [ "$OUTPUT" = public ]; then cat "$RUNNER_TEMP/out/stdout.txt" "$RUNNER_TEMP/out/stderr.txt"; fi
       - name: Encrypt
         if: inputs.output == 'encrypted'

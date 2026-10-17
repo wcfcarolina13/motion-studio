@@ -201,10 +201,10 @@ used = [0]
 
 def yt(path, **params):
     used[0] += QUOTA.get(path, 1)
-    params["key"] = yt_key()
     url = f"https://www.googleapis.com/youtube/v3/{path}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"X-Goog-Api-Key": yt_key()})   # a header, so the key never sits in a URL or log
     try:
-        with urllib.request.urlopen(url, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise SystemExit(f"YouTube API {path} -> {e.code}: {e.read().decode()[:400]}")
