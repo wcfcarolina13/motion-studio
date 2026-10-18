@@ -176,16 +176,27 @@ def image_for(film, a):
 
 
 def cmd_repair(a):
-    """Redraw one region of a panel (a broken hand, a stray limb): crop a square around --box, scale it to 1024, redraw it
-    with an mflux edit model, scale back and paste in only the box with a feathered edge. mflux has no masked inpainting
-    for klein or Qwen-Edit, so the model redraws the whole crop and our mask confines the change. Candidates land in
-    repairs/<image>/rNN/; nothing touches the panel until `accept`."""
+    """Redraw one region of a panel (a broken hand, a stray limb): crop a square around --box, redraw it with an mflux edit
+    model, and paste back only the box plus --margin, blended inside that edge and colour-matched to the panel around it.
+    mflux has no masked inpainting for klein or Qwen-Edit, so the model redraws the whole crop and our mask confines the
+    change. Candidates land in repairs/<image>/rNN/; nothing touches the panel until `accept`."""
     film = Path(a.film).resolve()
     img, found = image_for(film, a)
     beats = found[0]["beats"] if found else []
-    rdir, made, secs = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=a.model, seeds=a.seeds, context=a.context,
-                                      feather=a.feather, gen_args=a.gen_args.split() if a.gen_args else [], beats=beats)
-    rid = f"{Path(img).with_suffix('').as_posix()}/{rdir.name}"
+    if a.feather > a.margin:
+        print(f"  note: --feather {a.feather} is wider than --margin {a.margin}, so the edge of the box itself keeps some of the old drawing")
+    rdir, made, secs, e = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=a.model, seeds=a.seeds, context=a.context,
+                                         margin=a.margin, feather=a.feather, color=not a.no_color_match, min_change=a.min_change, gen_size=a.gen_size,
+                                         gen_args=a.gen_args.split() if a.gen_args else [], beats=beats)
+    rid = e["id"]
+    cross = {k: v for k, v in e["crossings"].items() if v}
+    if cross:
+        print("  lines crossing the paste edge (they stay as drawn outside it; if the redraw moves them, they break there): "
+              + ", ".join(f"{k} {v}" for k, v in cross.items()))
+    print(f"  crop {e['crop'][2]} px, generated at {e['gen_size']} ({e['enlarged_with'] if e['enlarged_with'] != 'none' else 'native size'})")
+    for s, c in e["checks"].items():
+        print(f"  seed {s}: {c['change']:.0%} of the box changed, detail ratio {c['sharpness']}"
+              + (f"; {'; '.join(c['notes'])}" if c["notes"] else ""))
     print(f"{rid}: {len(made)} candidate(s) in {secs} s -> {rdir.relative_to(film)}/compare_<seed>.png")
     if made:
         print(f"look at the compare images, then: longform.py accept {a.film} {rid}" + (" --seed N" if len(made) > 1 else ""))
@@ -1121,10 +1132,16 @@ def main():
     p.add_argument("--box", required=True, help="x,y,w,h in panel pixels, or all four in 0-1 (as the review sheet gives them)")
     p.add_argument("--prompt", required=True, help='what to redraw, e.g. "Redraw the right hand in image 1 with five fingers ..."')
     p.add_argument("--ref", help="a second image, e.g. the sleeve and hand cropped from the character sheet")
-    p.add_argument("--model", choices=sorted(panelqa.GENERATORS), default="klein")
+    p.add_argument("--model", choices=sorted(panelqa.GENERATORS), default="qwen",
+                   help="qwen (default) redraws pose and anatomy; klein is about 4x faster but barely changes a large box")
     p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
     p.add_argument("--context", type=float, default=2.25, help="crop side as a multiple of the box's longer side")
-    p.add_argument("--feather", type=float, default=6, help="pixels of soft edge outside the box")
+    p.add_argument("--margin", type=int, default=32, help="pixels the paste reaches past the box, so a redraw that spills out is kept")
+    p.add_argument("--feather", type=float, default=16, help="pixels of blend inside the paste edge (keep it at most --margin)")
+    p.add_argument("--gen-size", type=int, help="generate at this size instead of the crop's own (enlarged with Real-ESRGAN when installed)")
+    p.add_argument("--no-color-match", action="store_true", help="paste the redraw's colours as they came back")
+    p.add_argument("--min-change", type=float, default=0.10,
+                   help="drop a seed that changed less than this share of the box by more than 60 levels (0 keeps all)")
     p.add_argument("--gen-args", help='extra mflux arguments, e.g. "-q 8" or "--lora-paths x.safetensors --steps 8"')
     p.set_defaults(fn=cmd_repair)
     p = sp.add_parser("accept"); p.add_argument("film"); p.add_argument("repair", help="the repair id, e.g. panels/p07/r02")
