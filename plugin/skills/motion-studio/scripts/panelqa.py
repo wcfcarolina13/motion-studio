@@ -233,10 +233,15 @@ def repair(film, img, box, prompt, *, ref=None, model="klein", seeds=(1,), conte
                     f"crop={side}:{side}:{sx}:{sy},scale={CROP}:{CROP}:flags=lanczos", "-frames:v", "1", str(crop)], check=True)
     images = [str(crop)] + ([str(Path(ref).resolve())] if ref else [])
     cmd = [*gen, "--image-paths", *images, "--prompt", prompt, "--seed", *[str(s) for s in seeds],
-           "--width", str(CROP), "--height", str(CROP), "--output", str(rdir / "out_{seed}.png"), *gen_args]
+           "--width", str(CROP), "--height", str(CROP), "--output", str(rdir / "out.png"), *gen_args]
     t0 = time.time()
     subprocess.run(cmd, check=True)
     secs = round(time.time() - t0, 1)
+    for x in seeds:     # mflux writes out.png for one seed and out_seed_<n>.png for several; name them out_<n>.png
+        for got in ([rdir / "out.png"] if len(seeds) == 1 else []) + [rdir / f"out_seed_{x}.png"]:
+            if got.exists():
+                got.rename(rdir / f"out_{x}.png")
+                break
     base = read_rgb(src)
     made = []
     for s in seeds:
@@ -274,10 +279,11 @@ def accept(film, rid, seed=None):
     log, log_path, e = _entry(film, rid)
     if e.get("status") == "accepted":
         raise SystemExit(f"{rid} is already in the panel; `revert` it first to accept another seed")
-    seed = seed if seed is not None else (e["candidates"][0] if len(e["candidates"]) == 1 else None)
-    if seed is None or seed not in e["candidates"]:
-        raise SystemExit(f"{rid} has candidates for seeds {e['candidates']}: pass --seed")
     rdir, src = film / "repairs" / rid, film / e["image"]
+    have = [x for x in e["seeds"] if (rdir / f"out_{x}.png").exists()]     # also outputs renamed by hand after a run
+    seed = seed if seed is not None else (have[0] if len(have) == 1 else None)
+    if seed is None or seed not in have:
+        raise SystemExit(f"{rid} has outputs for seeds {have}: pass --seed")
     shutil.copy2(src, rdir / ("before" + src.suffix))
     tmp = rdir / "accepted.png"
     write_rgb(composite(read_rgb(src), rdir / f"out_{seed}.png", e["crop"], e["box"], e["feather"]), tmp)
