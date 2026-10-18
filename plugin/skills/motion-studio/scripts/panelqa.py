@@ -3,12 +3,12 @@
 The rules come from K-factory's anatomy research (2026-10-17): small step-distilled image models break hands, limbs and
 multi-person scenes, no licence-safe automatic judge agrees with people better than about 60% of the time, and mflux has
 no masked inpainting for the commercially licensed edit models. So prompts are linted for the known failure patterns,
-a person marks faults on a contact sheet, and a fault is repaired by redrawing an upscaled crop and pasting back only
-the marked box with our own mask.
+a person marks faults on a contact sheet, and a fault is repaired by redrawing a crop and pasting back only the marked
+box (plus a margin) with our own mask and colour match.
 
   lint(items)                         warnings per panel prompt (no network, no model)
   review_page(film, panels, checks)   out/review/index.html: numbered panels, checker FAIL outlines, click and drag to mark
-  repair(...)                         crop, redraw with mflux, paste back -> candidates in repairs/<image>/rNN/
+  repair(...)                         crop, redraw with mflux, check, paste back -> candidates in repairs/<image>/rNN/
   accept(...) / revert(...)           put a candidate into the panel, or restore the panel from before it
 """
 import html
@@ -159,18 +159,31 @@ def parse_box(box, W, H):
     return x, y, min(w, W - x), min(h, H - y)
 
 
-def context_square(box, W, H, context):
-    """A square around the box, context times its longer side, moved (not shrunk) to stay inside the image."""
+def context_square(box, W, H, context, min_side=0):
+    """A square around the box, context times its longer side (at least min_side), moved (not shrunk) to stay inside the image."""
     x, y, w, h = box
-    side = int(min(max(w, h) * context, W, H))
+    side = int(min(max(max(w, h) * context, min_side), W, H))
     cx, cy = x + w / 2, y + h / 2
     sx = int(min(max(cx - side / 2, 0), W - side))
     sy = int(min(max(cy - side / 2, 0), H - side))
     return sx, sy, side
 
 
+def grow(box, margin, W, H):
+    x, y, w, h = box
+    x0, y0, x1, y1 = max(0, x - margin), max(0, y - margin), min(W, x + w + margin), min(H, y + h + margin)
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def open_sides(region, W, H):
+    """Sides of the region that lie on the panel border: there is nothing to blend into, so they get no ramp."""
+    x, y, w, h = region
+    return "".join(s for s, on in (("l", x == 0), ("t", y == 0), ("r", x + w == W), ("b", y + h == H)) if on)
+
+
 def feather_mask(h, w, box, feather):
-    """1 inside the box, falling linearly to 0 over `feather` pixels outside it (a hard core, a small feather)."""
+    """Repairs logged before 2026-10-18: 1 inside the box, falling linearly to 0 over `feather` pixels outside it. Kept so
+    `accept` reproduces those candidates exactly; new repairs use blend_mask."""
     x, y, bw, bh = box
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     dx = np.maximum(np.maximum(x - xx, xx - (x + bw - 1)), 0)
@@ -179,8 +192,105 @@ def feather_mask(h, w, box, feather):
     return np.clip(1 - d / max(feather, 1e-6), 0, 1)[..., None] if feather > 0 else (d == 0).astype(np.float32)[..., None]
 
 
+def blend_mask(h, w, region, feather, sides=""):
+    """0 at the region's edge, rising (smoothstep, so no visible ramp edge) to 1 at `feather` pixels inside it. The whole
+    blend is inside the region, so nothing outside it changes; with the default margin the marked box itself is fully replaced."""
+    x, y, bw, bh = region
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    far = np.full((h, w), 1e9, np.float32)
+    d = np.minimum.reduce([far if "l" in sides else xx - x + 0.5, far if "r" in sides else x + bw - 0.5 - xx,
+                           far if "t" in sides else yy - y + 0.5, far if "b" in sides else y + bh - 0.5 - yy])
+    if feather <= 0:
+        return (d > 0).astype(np.float32)[..., None]
+    t = np.clip(d / feather, 0, 1)
+    return (t * t * (3 - 2 * t))[..., None]
+
+
+def ring(h, w, region, width):
+    """Pixels outside the region and within `width` of it: what the model redrew but the paste keeps from the original."""
+    x, y, bw, bh = region
+    yy, xx = np.mgrid[0:h, 0:w]
+    near = (xx >= x - width) & (xx < x + bw + width) & (yy >= y - width) & (yy < y + bh + width)
+    inside = (xx >= x) & (xx < x + bw) & (yy >= y) & (yy < y + bh)
+    return near & ~inside
+
+
+def luma(a):
+    return a @ np.array([0.299, 0.587, 0.114], np.float32)
+
+
+def gradient(a):
+    l = luma(a)
+    gx, gy = np.zeros_like(l), np.zeros_like(l)
+    gx[:, 1:-1], gy[1:-1] = (l[:, 2:] - l[:, :-2]) / 2, (l[2:] - l[:-2]) / 2
+    return np.hypot(gx, gy)
+
+
+def sharpness_at(a, where):
+    """Variance of the Laplacian over a set of pixels: how much fine detail (line edges, grain) they hold."""
+    l = luma(a)
+    lap = np.zeros_like(l)
+    lap[1:-1, 1:-1] = 4 * l[1:-1, 1:-1] - l[:-2, 1:-1] - l[2:, 1:-1] - l[1:-1, :-2] - l[1:-1, 2:]
+    return float(lap[where].var())
+
+
+EDGE = 40           # luma gradient of an ink line (a black line on white reads about 120)
+RING = 20           # px outside the paste used to match colour (K-factory's measurement band)
+NO_EDIT = 60        # levels a pixel must move to count as changed
+
+
+def crossings(base, region):
+    """Strong lines in the original that cross each edge of the paste: where the redraw ends and the old drawing goes on."""
+    g = gradient(base) > EDGE
+    H, W = g.shape
+    x, y, w, h = region
+    lines = {"left": g[y:y + h, x] if x > 0 else None, "right": g[y:y + h, x + w - 1] if x + w < W else None,
+             "top": g[y, x:x + w] if y > 0 else None, "bottom": g[y + h - 1, x:x + w] if y + h < H else None}
+    return {k: int((v & ~np.concatenate([[False], v[:-1]])).sum()) for k, v in lines.items() if v is not None}
+
+
+def blur(a, r=2):
+    """A (2r+1)-pixel box blur, so a line the model moved by a pixel or two does not count as new content."""
+    out = a.copy()
+    for ax in (0, 1):
+        src = out.copy()
+        out = sum(np.roll(src, k, ax) for k in range(-r, r + 1)) / (2 * r + 1)
+    return out
+
+
+def color_match(new, old, band):
+    """Per-channel gain and offset that make the redraw's colours match the original on the band around the paste
+    (klein shifts a whole crop's colour, red by -6 to -18 in K-factory's runs). Fitted twice: the second fit leaves out
+    band pixels the model actually redrew, so new content there does not skew it. The gain is held to 0.8-1.25 so a
+    band full of lineart cannot stretch the contrast."""
+    ident = [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
+    use = band & (np.abs(blur(new) - blur(old)).max(-1) < 50)      # a colour cast is under 50; drawn content is not
+    for _ in range(2):
+        if use.sum() < 200:
+            return ident
+        g, o = new[use], old[use]
+        so, sg = o.std(0), g.std(0)
+        gain = np.where(np.minimum(so, sg) > 4, np.clip(so / np.maximum(sg, 1e-6), 0.8, 1.25), 1.0)    # flat band: shift only
+        off = o.mean(0) - gain * g.mean(0)
+        use = band & (np.abs(blur(new * gain + off) - blur(old)).max(-1) < 30)
+    return [round(float(v), 4) for v in gain], [round(float(v), 2) for v in off]
+
+
+def paste(base, new, crop, region, feather, sides):
+    """Blend a redrawn crop (panel scale, colour already matched) into a panel array inside the region only."""
+    sx, sy, side = crop
+    mask = blend_mask(side, side, (region[0] - sx, region[1] - sy, region[2], region[3]), feather, sides)
+    res = base.copy()
+    res[sy:sy + side, sx:sx + side] = res[sy:sy + side, sx:sx + side] * (1 - mask) + new * mask
+    return res
+
+
+def redrawn(out_png, side, gain=(1, 1, 1), off=(0, 0, 0)):
+    return read_rgb(out_png, side, side) * np.array(gain, np.float32) + np.array(off, np.float32)
+
+
 def composite(base, out_png, crop, box, feather):
-    """Paste the box (plus its feather) of a generated crop onto a panel array; everything else stays as it is."""
+    """The paste used for repairs logged before 2026-10-18 (feather outside the box, no colour match)."""
     sx, sy, side = crop
     new = read_rgb(out_png, side, side)
     mask = feather_mask(side, side, (box[0] - sx, box[1] - sy, box[2], box[3]), feather)
@@ -193,15 +303,20 @@ GENERATORS = {      # mflux 0.23 CLIs; neither takes a mask, so the crop is redr
     "klein": ["mflux-generate-flux2-edit", "--model", "flux2-klein-4b"],
     "qwen": ["mflux-generate-qwen-edit", "--model", "qwen-image-edit-2511", "-q", "6", "--low-ram"],
 }
-CROP = 1024
+CROP = 1024         # largest generation size; both models are trained around one megapixel
+MIN_SIDE = 640      # smallest crop; a smaller box gets more context rather than an enlarged crop
+
+
+def config():
+    path = Path.home() / ".motion-studio.json"
+    return json.loads(path.read_text()) if path.exists() else {}
 
 
 def generator(model):
     """The command for one edit model: the mflux binary (from "mflux": {"bin": "<venv>/bin"} in ~/.motion-studio.json or
     $MFLUX_BIN, else PATH) and its model arguments ("mflux": {"klein": ["--model", "<local q8 folder>", "--base-model",
     "flux2-klein-4b"]} replaces the defaults, so a local quantized build is used instead of downloading the full weights)."""
-    path = Path.home() / ".motion-studio.json"
-    cfg = (json.loads(path.read_text()).get("mflux") or {}) if path.exists() else {}
+    cfg = config().get("mflux") or {}
     name, *args = GENERATORS[model]
     bindir = os.environ.get("MFLUX_BIN") or cfg.get("bin")
     exe = Path(bindir).expanduser() / name if bindir else shutil.which(name)
@@ -212,28 +327,71 @@ def generator(model):
     return [str(exe), *cfg.get(model, args)]
 
 
-def repair(film, img, box, prompt, *, ref=None, model="klein", seeds=(1,), context=2.25, feather=6, gen_args=(), beats=()):
-    """Redraw one region of a panel. Writes repairs/<image path>/rNN/: crop.png (the 1024 square sent to the model), out_<seed>.png
-    (what came back), candidate_<seed>.png (the whole panel with only the box changed) and compare_<seed>.png (the crop
-    before and after), and logs the run in repairs/log.json. The panel itself is untouched until `accept`."""
+def esrgan():
+    """realesrgan-ncnn-vulkan (BSD-3), the same binary `upscale` uses: $REALESRGAN_BIN, "realesrgan" in
+    ~/.motion-studio.json, or PATH. None if absent."""
+    b = os.environ.get("REALESRGAN_BIN") or config().get("realesrgan") or shutil.which("realesrgan-ncnn-vulkan")
+    return str(Path(b).expanduser()) if b and Path(b).expanduser().exists() else None
+
+
+def make_crop(src, crop, gen, dest):
+    """The square the model sees, at gen x gen. A crop smaller than that is enlarged with Real-ESRGAN first when it is
+    installed: a Lanczos-enlarged crop is soft, and the model copies the softness into its redraw."""
+    sx, sy, side = crop
+    cut = f"crop={side}:{side}:{sx}:{sy}"
+    if side == gen:
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf", cut, "-frames:v", "1", str(dest)], check=True)
+        return "none"
+    binary = esrgan() if side * 1.2 < gen else None
+    if binary:
+        native, big = dest.with_name("crop-native.png"), dest.with_name("crop-x4.png")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf", cut, "-frames:v", "1", str(native)], check=True)
+        subprocess.run([binary, "-i", str(native), "-o", str(big), "-n", "realesrgan-x4plus-anime", "-s", "4"],
+                       capture_output=True, check=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(big), "-vf", f"scale={gen}:{gen}:flags=lanczos",
+                        "-frames:v", "1", str(dest)], check=True)
+        native.unlink(); big.unlink()
+        return "realesrgan"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf", f"{cut},scale={gen}:{gen}:flags=lanczos",
+                    "-frames:v", "1", str(dest)], check=True)
+    return "lanczos"
+
+
+def repair(film, img, box, prompt, *, ref=None, model="qwen", seeds=(1,), context=2.25, margin=32, feather=16,
+           color=True, min_change=0.10, gen_size=None, gen_args=(), beats=()):
+    """Redraw one region of a panel. The paste covers the box grown by `margin`, blends over `feather` px inside that, and
+    matches the redraw's colour to the original around it. Writes repairs/<image path>/rNN/: crop.png (the square sent
+    to the model), out_<seed>.png (what came back), compare_<seed>.png (the crop before and after) and, unless the seed
+    changed almost nothing, candidate_<seed>.png (the whole panel with only the region changed). Logs the run, with
+    per-seed checks, in repairs/log.json. The panel itself is untouched until `accept`."""
     src = film / img
     if not src.exists():
         raise SystemExit(f"no panel image {img}")
-    gen = generator(model)
+    gen_cmd = generator(model)
     W, H = size(src)
     b = parse_box(box, W, H)
-    sx, sy, side = context_square(b, W, H, context)
+    region = grow(b, margin, W, H)
+    sides = open_sides(region, W, H)
+    # The crop holds the region and the colour band around it. It is generated at its own size when it fits (any resize
+    # there and back halves the fine detail: a Lanczos round trip alone measured 0.48 on a klein panel), so a small box
+    # gets a wider crop instead of an enlarged one. Only a crop over CROP, or a forced gen_size, is resized.
+    sx, sy, side = context_square(b, W, H, context, max(max(region[2:]) + 2 * (RING + 4), MIN_SIDE))
+    if side <= CROP and not gen_size:
+        side = side // 16 * 16          # mflux sizes are multiples of 16; trimming a few pixels keeps the crop native
+        sx, sy = min(sx, W - side), min(sy, H - side)
+    gen = gen_size or min(CROP, side)
     key = Path(img).with_suffix("").as_posix()
     root = film / "repairs" / key
     n = 1 + max([int(p.name[1:]) for p in root.glob("r[0-9]*") if p.name[1:].isdigit()] or [0])
     rdir = root / f"r{n:02d}"
     rdir.mkdir(parents=True)
+    base = read_rgb(src)
+    cross = crossings(base, region)
     crop = rdir / "crop.png"
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf",
-                    f"crop={side}:{side}:{sx}:{sy},scale={CROP}:{CROP}:flags=lanczos", "-frames:v", "1", str(crop)], check=True)
+    enlarged = make_crop(src, (sx, sy, side), gen, crop)
     images = [str(crop)] + ([str(Path(ref).resolve())] if ref else [])
-    cmd = [*gen, "--image-paths", *images, "--prompt", prompt, "--seed", *[str(s) for s in seeds],
-           "--width", str(CROP), "--height", str(CROP), "--output", str(rdir / "out.png"), *gen_args]
+    cmd = [*gen_cmd, "--image-paths", *images, "--prompt", prompt, "--seed", *[str(s) for s in seeds],
+           "--width", str(gen), "--height", str(gen), "--output", str(rdir / "out.png"), *gen_args]
     t0 = time.time()
     subprocess.run(cmd, check=True)
     secs = round(time.time() - t0, 1)
@@ -242,25 +400,64 @@ def repair(film, img, box, prompt, *, ref=None, model="klein", seeds=(1,), conte
             if got.exists():
                 got.rename(rdir / f"out_{x}.png")
                 break
-    base = read_rgb(src)
-    made = []
+    old = base[sy:sy + side, sx:sx + side]
+    rc = (region[0] - sx, region[1] - sy, region[2], region[3])
+    band = ring(side, side, rc, RING)
+    near = ring(side, side, rc, 12)
+    bx, by = b[0] - sx, b[1] - sy
+    inbox = (slice(by, by + b[3]), slice(bx, bx + b[2]))
+    # detail is compared on the margin (pasted, but outside the fault, so old and new should show the same drawing)
+    rim = ring(side, side, (bx, by, b[2], b[3]), margin) & ~ring(side, side, rc, side) if margin >= 8 else np.zeros((side, side), bool)
+    rim = rim if rim.sum() >= 400 else np.zeros((side, side), bool)
+    rim[inbox] |= not rim.any()
+
+    def detail(a):
+        return round(sharpness_at(a, rim) / max(sharpness_at(old, rim), 1e-6), 2)
+
+    trip = None if gen == side else detail(read_rgb(crop, side, side))
+    made, checks = [], {}
     for s in seeds:
         out = rdir / f"out_{s}.png"
         if not out.exists():
             print(f"  seed {s}: the generator wrote no {out.name}")
             continue
-        write_rgb(composite(base, out, (sx, sy, side), b, feather), rdir / f"candidate_{s}.png")
+        gain, off = color_match(read_rgb(out, side, side), old, band) if color else ([1.0] * 3, [0.0] * 3)
+        new = redrawn(out, side, gain, off)
+        change = float((np.abs(new[inbox] - old[inbox]).max(-1) > NO_EDIT).mean())
+        # what the model drew just outside the paste: the paste drops it, so a shape there ends in a cut-off edge
+        overflow = float((np.abs(blur(new) - blur(old)).max(-1) > 50)[near].mean()) if near.any() else 0.0
+        sharp = detail(new)
+        notes = []
+        if min_change and change < min_change:
+            notes.append(f"no edit ({change:.0%} of the box changed)")
+        if overflow > 0.03:
+            notes.append(f"the redraw runs past the paste ({overflow:.0%} of the band just outside it is new): grow --box or --margin")
+        if not 0.7 <= sharp <= 1.4:
+            notes.append(f"{'softer' if sharp < 0.7 else 'sharper'} than the panel (detail ratio {sharp}"
+                         + (f"; the resize alone gives {trip}" if trip is not None else "") + ")")
+        checks[str(s)] = {"change": round(change, 3), "overflow": round(overflow, 3), "sharpness": sharp,
+                          "gain": gain, "offset": off, "notes": notes}
+        if min_change and change < min_change:     # kept for a look (the raw redraw beside the crop), not offered
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-i", str(out), "-filter_complex",
+                            f"[0]crop={side}:{side}:{sx}:{sy},scale=768:768[a];[1]scale=768:768[b];[a][b]hstack",
+                            "-frames:v", "1", str(rdir / f"compare_{s}.png")], check=True)
+            continue
+        cand = paste(base, new, (sx, sy, side), region, feather, sides)
+        write_rgb(cand, rdir / f"candidate_{s}.png")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-i", str(rdir / f"candidate_{s}.png"), "-filter_complex",
                         f"[0]crop={side}:{side}:{sx}:{sy},scale=768:768[a];[1]crop={side}:{side}:{sx}:{sy},scale=768:768[b];"
                         "[a][b]hstack", "-frames:v", "1", str(rdir / f"compare_{s}.png")], check=True)
         made.append(s)
     log_path = film / "repairs" / "log.json"
     log = json.loads(log_path.read_text()) if log_path.exists() else []
-    log.append({"id": f"{key}/r{n:02d}", "image": img, "beats": list(beats), "box": list(b), "crop": [sx, sy, side],
-                "prompt": prompt, "model": model, "ref": ref, "seeds": list(seeds), "candidates": made, "feather": feather,
-                "seconds": secs, "at": time.strftime("%Y-%m-%d %H:%M"), "status": "candidate" if made else "failed"})
+    entry = {"id": f"{key}/r{n:02d}", "image": img, "beats": list(beats), "box": list(b), "region": list(region),
+             "margin": margin, "feather": feather, "open_sides": sides, "crop": [sx, sy, side], "gen_size": gen, "resize_detail": trip,
+             "enlarged_with": enlarged, "color_match": color, "crossings": cross, "prompt": prompt, "model": model,
+             "ref": ref, "seeds": list(seeds), "candidates": made, "checks": checks, "seconds": secs,
+             "at": time.strftime("%Y-%m-%d %H:%M"), "status": "candidate" if made else "failed"}
+    log.append(entry)
     log_path.write_text(json.dumps(log, indent=1, ensure_ascii=False) + "\n")
-    return rdir, made, secs
+    return rdir, made, secs, entry
 
 
 def _entry(film, rid):
@@ -281,12 +478,27 @@ def accept(film, rid, seed=None):
         raise SystemExit(f"{rid} is already in the panel; `revert` it first to accept another seed")
     rdir, src = film / "repairs" / rid, film / e["image"]
     have = [x for x in e["seeds"] if (rdir / f"out_{x}.png").exists()]     # also outputs renamed by hand after a run
-    seed = seed if seed is not None else (have[0] if len(have) == 1 else None)
+    offered = [x for x in e.get("candidates", have) if x in have]
+    seed = seed if seed is not None else (offered[0] if len(offered) == 1 else None)
     if seed is None or seed not in have:
-        raise SystemExit(f"{rid} has outputs for seeds {have}: pass --seed")
+        raise SystemExit(f"{rid} has outputs for seeds {have} (candidates {offered}): pass --seed")
     shutil.copy2(src, rdir / ("before" + src.suffix))
     tmp = rdir / "accepted.png"
-    write_rgb(composite(read_rgb(src), rdir / f"out_{seed}.png", e["crop"], e["box"], e["feather"]), tmp)
+    base, out = read_rgb(src), rdir / f"out_{seed}.png"
+    if "region" not in e:       # logged before the inside feather
+        write_rgb(composite(base, out, e["crop"], e["box"], e["feather"]), tmp)
+    else:
+        sx, sy, side = e["crop"]
+        c = e.get("checks", {}).get(str(seed))
+        if c:
+            gain, off = c["gain"], c["offset"]
+        elif e.get("color_match"):      # an output added by hand: match it now
+            x, y, w, h = e["region"]
+            gain, off = color_match(read_rgb(out, side, side), base[sy:sy + side, sx:sx + side],
+                                    ring(side, side, (x - sx, y - sy, w, h), RING))
+        else:
+            gain, off = [1.0] * 3, [0.0] * 3
+        write_rgb(paste(base, redrawn(out, side, gain, off), e["crop"], e["region"], e["feather"], e.get("open_sides", "")), tmp)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(tmp), "-frames:v", "1",
                     *(["-q:v", "2"] if src.suffix.lower() in (".jpg", ".jpeg") else []), str(src)], check=True)
     seq = 1 + max([x.get("accepted_seq", 0) for x in log] or [0])
