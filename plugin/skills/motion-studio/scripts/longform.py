@@ -101,9 +101,9 @@ def panel_list(film, sc, problems=None):
             continue
         p = panels.setdefault(img, {"image": img, "beats": [], "shot": d.get("shot"), "char_in_frame": d.get("char_in_frame", []),
                                     "flashback": bool(d.get("flashback")), "prompt": d.get("prompt", ""), "seed": d.get("seed"),
-                                    "refs": d.get("refs", []), "plate": d.get("plate")})
+                                    "refs": d.get("refs", []), "plate": d.get("plate"), "size": d.get("size")})
         p["beats"].append(s["id"])
-        for k in ("prompt", "refs", "plate"):
+        for k in ("prompt", "refs", "plate", "size"):
             if d.get(k) and not p[k]:
                 p[k] = d[k]
     return list(panels.values())
@@ -212,6 +212,89 @@ def cmd_revert(a):
     film = Path(a.film).resolve()
     src = panelqa.revert(film, a.repair)
     print(f"{src.relative_to(film)} restored from before {a.repair}; run `upscale` again for this panel")
+
+
+def cmd_gemini_draw(a):
+    """Draw panels with Gemini (Nano Banana): the prompt plus role-labelled references, 16:9 at 2K, every call fresh.
+    Batch by default (half price, results within 24 h; fetch them with `gemini-collect`); --now draws interactively.
+    The run is priced first and refused whole past the cap in ~/.motion-studio.json ("gemini": {"cap_usd": 15})."""
+    import gemini
+    film = Path(a.film).resolve()
+    if a.jobs:
+        data = json.loads(Path(a.jobs).read_text())
+        items = data.get("panels", data) if isinstance(data, dict) else data
+    else:
+        items = panel_list(film, load_script(film))
+    if a.beats:
+        items = [p for p in items if set(p.get("beats", [])) & set(a.beats) or p.get("image") in a.beats]
+    if not a.redo:
+        items = [p for p in items if not (film / p["image"]).exists()]
+    if not items:
+        raise SystemExit("nothing to draw (every panel exists; --redo draws them again and moves the old ones to history/)")
+    jobs = gemini.make_jobs(film, items, model=a.model, size=a.size)
+    if a.dry_run:
+        cost = sum(gemini.estimate(j, not a.now) for j in jobs)
+        for j in jobs:
+            print(f"--- {j['image']} ({j['model']}, {len(j['refs'])} refs, ${gemini.estimate(j, not a.now):.4f})\n{gemini.prompt_text(j)}")
+        print(f"{len(jobs)} images, about ${cost:.2f} {'interactive' if a.now else 'batch'}; nothing sent")
+        return
+    run, cost, done, problems = gemini.draw(film, jobs, batch=not a.now)
+    for x in problems:
+        print("PROBLEM:", x)
+    if a.now:
+        print(f"run {run}: {len(done)} of {len(jobs)} panels drawn, about ${cost:.2f} committed; sidecars beside each panel")
+    else:
+        print(f"run {run}: {len(jobs)} panels in {len(done)} batch job(s), about ${cost:.2f} committed; "
+              f"`longform.py gemini-collect {a.film}` fetches them once done (target 24 h)")
+    print("spend: run ${:.2f}, this month ${:.2f}".format(*gemini.totals(run)))
+
+
+def cmd_gemini_collect(a):
+    import time
+    import gemini
+    film = Path(a.film).resolve()
+    while True:
+        written, problems, running = gemini.collect(film)
+        for p in written:
+            print(f"  {p.relative_to(film)}")
+        for x in problems:
+            print("PROBLEM:", x)
+        if not a.wait or not running:
+            break
+        time.sleep(a.every)
+    print(f"{len(written)} panels written" + (f"; still running: {', '.join(running)}" if running else "; no batch still running"))
+    if written:
+        print("run `upscale` for the new panels if they are smaller than the frame")
+
+
+def cmd_gemini_edit(a):
+    """Edit a whole panel with one instruction and a keep-list (for Gemini panels this replaces the crop repair):
+    "Move him up the bed against the headboard" --keep "the room" --keep "every face and outfit". The result is a
+    candidate in repairs/<image>/rNN/; `accept` puts it in the panel and `revert` undoes that."""
+    import gemini
+    film = Path(a.film).resolve()
+    img, found = image_for(film, a)
+    refs = [dict(zip(("path", "role"), r.split(":", 1))) if ":" in r else r for r in a.ref or []]
+    rdir, e, problem = gemini.edit(film, img, a.instruction, keep=a.keep or [], refs=refs, model=a.model, size=a.size,
+                                   beats=found[0]["beats"] if found else [])
+    if problem:
+        print("PROBLEM:", problem)
+    if e["candidates"]:
+        print(f"{e['id']}: candidate in {rdir.relative_to(film)}/ (${e['usd']:.3f}, {e['tries']} tr{'y' if e['tries'] == 1 else 'ies'}); "
+              f"look at compare_1.png, then: longform.py accept {a.film} {e['id']}")
+
+
+def cmd_gemini_spend(a):
+    import gemini
+    rows = gemini.ledger()
+    runs = sorted({r["run"] for r in rows if r.get("kind") == "estimate"})
+    for run in runs[-a.last:]:
+        n = sum(1 for r in rows if r.get("kind") == "estimate" and r["run"] == run)
+        print(f"  run {run}: {n} calls, ${gemini.totals(run)[0]:.2f}")
+    cfg = gemini.config()
+    month_cap = cfg.get("month_cap_usd", gemini.MONTH_CAP_USD)
+    print(f"this month ${gemini.totals()[1]:.2f}" + (f" of a ${float(month_cap):.2f} cap" if month_cap is not None else " (no monthly cap)")
+          + f"; per-run cap ${float(cfg.get('cap_usd', gemini.CAP_USD)):.2f}; ledger {gemini.ledger_path()}")
 
 
 PANEL_HD = "panels-hd"      # upscaled copies of the panel images, same relative paths; timeline prefers them
@@ -1144,6 +1227,23 @@ def main():
                    help="drop a seed that changed less than this share of the box by more than 60 levels (0 keeps all)")
     p.add_argument("--gen-args", help='extra mflux arguments, e.g. "-q 8" or "--lora-paths x.safetensors --steps 8"')
     p.set_defaults(fn=cmd_repair)
+    p = sp.add_parser("gemini-draw"); p.add_argument("film")
+    p.add_argument("--beats", nargs="+", help="only these beats (or panel image paths)")
+    p.add_argument("--jobs", help="a JSON list of {image, prompt, refs: [{path, role}], plate, model} instead of script.json")
+    p.add_argument("--model", help="flash (Nano Banana 2.1, default) or pro (Nano Banana Pro), or a model id")
+    p.add_argument("--size", choices=["1K", "2K", "4K"], help='default 1K (then `upscale`); a panel\'s own "size": "2K" wins')
+    p.add_argument("--now", action="store_true", help="interactive, at full price")
+    p.add_argument("--redo", action="store_true", help="also panels that exist (moved to history/ first)")
+    p.add_argument("--dry-run", action="store_true", help="print each prompt and the price; send nothing"); p.set_defaults(fn=cmd_gemini_draw)
+    p = sp.add_parser("gemini-collect"); p.add_argument("film"); p.add_argument("--wait", action="store_true")
+    p.add_argument("--every", type=int, default=300, help="seconds between checks with --wait"); p.set_defaults(fn=cmd_gemini_collect)
+    p = sp.add_parser("gemini-edit"); p.add_argument("film"); g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--beat"); g.add_argument("--image")
+    p.add_argument("--instruction", required=True, help='one change, verb first: "Move the man up the bed against the headboard"')
+    p.add_argument("--keep", action="append", help='what must stay exactly the same, e.g. --keep "the room" --keep "every face"')
+    p.add_argument("--ref", action="append", help="an extra image, path or path:role (e.g. plates/sickroom.png:the room plate)")
+    p.add_argument("--model"); p.add_argument("--size", choices=["1K", "2K", "4K"], help="default 1K"); p.set_defaults(fn=cmd_gemini_edit)
+    p = sp.add_parser("gemini-spend"); p.add_argument("--last", type=int, default=10); p.set_defaults(fn=cmd_gemini_spend)
     p = sp.add_parser("accept"); p.add_argument("film"); p.add_argument("repair", help="the repair id, e.g. panels/p07/r02")
     p.add_argument("--seed", type=int); p.set_defaults(fn=cmd_accept)
     p = sp.add_parser("revert"); p.add_argument("film"); p.add_argument("repair"); p.set_defaults(fn=cmd_revert)
