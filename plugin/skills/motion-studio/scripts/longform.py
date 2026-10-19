@@ -51,6 +51,19 @@ def run(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)
 
 
+_FILTER_FLAG = None
+
+
+def filter_file(path):
+    """ffmpeg args that read a filtergraph from a file: -filter_complex_script up to ffmpeg 8,
+    -/filter_complex on builds that dropped it (9.x). Decided from the help listing, so git builds work too."""
+    global _FILTER_FLAG
+    if _FILTER_FLAG is None:
+        helptext = subprocess.run(["ffmpeg", "-hide_banner", "-h", "long"], capture_output=True, text=True).stdout
+        _FILTER_FLAG = "-filter_complex_script" if "-filter_complex_script" in helptext else "-/filter_complex"
+    return [_FILTER_FLAG, str(path)]
+
+
 def duration(path):
     out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
                          capture_output=True, text=True, check=True).stdout
@@ -465,7 +478,7 @@ def cmd_timeline(a):
     if not clips:       # nothing spoken yet (a silent cut or a panel test): a silent bed of the right length
         inputs, graph = ["-f", "lavfi", "-i", f"anullsrc=r={sr}:cl=mono"], "[0:a]anull[out]"
     script.write_text(graph)
-    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex_script", str(script), "-map", "[out]",
+    run(["ffmpeg", "-v", "error", "-y", *inputs, *filter_file(script), "-map", "[out]",
          "-t", str(total), "-ar", str(sr), "-ac", "1", str(film / "out" / "narration.wav")])
     # YouTube chapters: first must be 0:00, each at least 10 s
     lines = []
@@ -973,7 +986,7 @@ def cmd_mix(a):
     script = film / "out" / "mix.filter"
     script.write_text(";".join(filt))
     pre = film / "out" / "premix.wav"
-    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex_script", str(script), "-map", "[pre]", "-ar", "48000", str(pre)])
+    run(["ffmpeg", "-v", "error", "-y", *inputs, *filter_file(script), "-map", "[pre]", "-ar", "48000", str(pre)])
     # two-pass loudness to -14 LUFS; -2.5 dBTP leaves room for the AAC encode's overshoot
     meas = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(pre), "-af", "loudnorm=I=-14:TP=-2.5:LRA=11:print_format=json", "-f", "null", "-"],
                           capture_output=True, text=True).stderr
