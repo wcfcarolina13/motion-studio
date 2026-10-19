@@ -477,6 +477,17 @@ def accept(film, rid, seed=None):
     if e.get("status") == "accepted":
         raise SystemExit(f"{rid} is already in the panel; `revert` it first to accept another seed")
     rdir, src = film / "repairs" / rid, film / e["image"]
+    if e.get("whole"):          # a whole-panel edit (the Gemini route): the candidate replaces the panel as it is
+        out = next((p for p in sorted(rdir.glob("out_1.*")) if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")), None)
+        if not out or (seed or 1) != 1:
+            raise SystemExit(f"{rid} has no output to accept")
+        shutil.copy2(src, rdir / ("before" + src.suffix))
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-frames:v", "1",
+                        *(["-q:v", "2"] if src.suffix.lower() in (".jpg", ".jpeg") else []), str(src)], check=True)
+        seq = 1 + max([x.get("accepted_seq", 0) for x in log] or [0])
+        e.update(status="accepted", accepted_seed=1, accepted_seq=seq, accepted_at=time.strftime("%Y-%m-%d %H:%M"))
+        log_path.write_text(json.dumps(log, indent=1, ensure_ascii=False) + "\n")
+        return src
     have = [x for x in e["seeds"] if (rdir / f"out_{x}.png").exists()]     # also outputs renamed by hand after a run
     offered = [x for x in e.get("candidates", have) if x in have]
     seed = seed if seed is not None else (offered[0] if len(offered) == 1 else None)
