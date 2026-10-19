@@ -30,6 +30,15 @@ LICENCES = {
 }
 
 
+def loudnorm_stats(stderr):
+    """The measurement block loudnorm prints with print_format=json. ffmpeg 9 logs more lines after it,
+    so take the last flat {...} block that has input_i rather than everything from the last brace."""
+    blocks = [b for b in re.findall(r"\{[^{}]*\}", stderr) if '"input_i"' in b]
+    if not blocks:
+        raise RuntimeError("loudnorm printed no measurement block:\n" + stderr[-2000:])
+    return json.loads(blocks[-1])
+
+
 # ── library + catalog ──────────────────────────────────────
 def library_dir():
     cfg = Path.home() / ".motion-studio.json"
@@ -480,7 +489,7 @@ class Mix:
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f64le", "-ar", str(SR), "-ac", "2", "-i", "-", str(raw)], input=mix.tobytes(), check=True)
         probe = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(raw), "-af", f"loudnorm=I={lufs}:TP={tp}:LRA=11:print_format=json", "-f", "null", "-"],
                                capture_output=True, text=True).stderr
-        m = json.loads(probe[probe.rindex("{"): probe.rindex("}") + 1])
+        m = loudnorm_stats(probe)
         flt = (f"loudnorm=I={lufs}:TP={tp}:LRA=11:measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
                f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(raw), "-af", flt, "-ar", str(SR), "-c:a", "pcm_s16le", str(dest)], check=True)
