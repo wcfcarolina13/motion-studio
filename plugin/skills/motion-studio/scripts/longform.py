@@ -101,9 +101,9 @@ def panel_list(film, sc, problems=None):
             continue
         p = panels.setdefault(img, {"image": img, "beats": [], "shot": d.get("shot"), "char_in_frame": d.get("char_in_frame", []),
                                     "flashback": bool(d.get("flashback")), "prompt": d.get("prompt", ""), "seed": d.get("seed"),
-                                    "refs": d.get("refs", []), "plate": d.get("plate")})
+                                    "refs": d.get("refs", []), "plate": d.get("plate"), "size": d.get("size")})
         p["beats"].append(s["id"])
-        for k in ("prompt", "refs", "plate"):
+        for k in ("prompt", "refs", "plate", "size"):
             if d.get(k) and not p[k]:
                 p[k] = d[k]
     return list(panels.values())
@@ -292,7 +292,8 @@ def cmd_gemini_spend(a):
         n = sum(1 for r in rows if r.get("kind") == "estimate" and r["run"] == run)
         print(f"  run {run}: {n} calls, ${gemini.totals(run)[0]:.2f}")
     cfg = gemini.config()
-    print(f"this month ${gemini.totals()[1]:.2f}" + (f" of a ${cfg['month_cap_usd']} cap" if cfg.get("month_cap_usd") else "")
+    month_cap = cfg.get("month_cap_usd", gemini.MONTH_CAP_USD)
+    print(f"this month ${gemini.totals()[1]:.2f}" + (f" of a ${float(month_cap):.2f} cap" if month_cap is not None else " (no monthly cap)")
           + f"; per-run cap ${float(cfg.get('cap_usd', gemini.CAP_USD)):.2f}; ledger {gemini.ledger_path()}")
 
 
@@ -1230,7 +1231,8 @@ def main():
     p.add_argument("--beats", nargs="+", help="only these beats (or panel image paths)")
     p.add_argument("--jobs", help="a JSON list of {image, prompt, refs: [{path, role}], plate, model} instead of script.json")
     p.add_argument("--model", help="flash (Nano Banana 2.1, default) or pro (Nano Banana Pro), or a model id")
-    p.add_argument("--size", default="2K", choices=["1K", "2K", "4K"]); p.add_argument("--now", action="store_true", help="interactive, at full price")
+    p.add_argument("--size", choices=["1K", "2K", "4K"], help='default 1K (then `upscale`); a panel\'s own "size": "2K" wins')
+    p.add_argument("--now", action="store_true", help="interactive, at full price")
     p.add_argument("--redo", action="store_true", help="also panels that exist (moved to history/ first)")
     p.add_argument("--dry-run", action="store_true", help="print each prompt and the price; send nothing"); p.set_defaults(fn=cmd_gemini_draw)
     p = sp.add_parser("gemini-collect"); p.add_argument("film"); p.add_argument("--wait", action="store_true")
@@ -1240,7 +1242,7 @@ def main():
     p.add_argument("--instruction", required=True, help='one change, verb first: "Move the man up the bed against the headboard"')
     p.add_argument("--keep", action="append", help='what must stay exactly the same, e.g. --keep "the room" --keep "every face"')
     p.add_argument("--ref", action="append", help="an extra image, path or path:role (e.g. plates/sickroom.png:the room plate)")
-    p.add_argument("--model"); p.add_argument("--size", default="2K", choices=["1K", "2K", "4K"]); p.set_defaults(fn=cmd_gemini_edit)
+    p.add_argument("--model"); p.add_argument("--size", choices=["1K", "2K", "4K"], help="default 1K"); p.set_defaults(fn=cmd_gemini_edit)
     p = sp.add_parser("gemini-spend"); p.add_argument("--last", type=int, default=10); p.set_defaults(fn=cmd_gemini_spend)
     p = sp.add_parser("accept"); p.add_argument("film"); p.add_argument("repair", help="the repair id, e.g. panels/p07/r02")
     p.add_argument("--seed", type=int); p.set_defaults(fn=cmd_accept)

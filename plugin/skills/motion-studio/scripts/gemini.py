@@ -38,6 +38,8 @@ PRICES = {
 TOKENS_PER_IMAGE = 560      # Google's figure for an input image
 MAX_REFS = 14               # the API's limit; Nano Banana 2.1 takes up to 4 character references among them
 CAP_USD = 15.0              # per run, unless "gemini": {"cap_usd": N} in ~/.motion-studio.json
+MONTH_CAP_USD = 80.0        # per calendar month, unless "month_cap_usd" (null turns it off)
+SIZE = "1K"                 # 16:9 at 1K is 1376x768; `upscale` takes it to the frame. "size": "2K" per panel for the exceptions
 UNCHANGED = 0.005           # an output with under 0.5% of pixels moved from an input counts as handed back unchanged
 FILE_TTL = 24 * 3600        # uploaded references are reused for 24 h (the Files API keeps them 48 h; a batch can take 24 h)
 LICENCE = "Gemini API output (paid tier): usable commercially under Google's API terms, no ownership claimed, SynthID watermark"
@@ -248,7 +250,7 @@ def totals(run=None):
 
 def check_cap(run, extra):
     cfg = config()
-    cap, month_cap = float(cfg.get("cap_usd", CAP_USD)), cfg.get("month_cap_usd")
+    cap, month_cap = float(cfg.get("cap_usd", CAP_USD)), cfg.get("month_cap_usd", MONTH_CAP_USD)
     spent, month = totals(run)
     if spent + extra > cap + 1e-9:
         return f"this run would reach ${spent + extra:.2f}, over its ${cap:.2f} cap (\"gemini\": {{\"cap_usd\"}} in ~/.motion-studio.json)"
@@ -259,7 +261,7 @@ def check_cap(run, extra):
 
 # ---- jobs ----
 
-def make_jobs(film, items, model=None, size="2K", aspect="16:9"):
+def make_jobs(film, items, model=None, size=None, aspect="16:9"):
     """Jobs from panel records ({"image", "prompt", "refs", "plate"}, as `longform.py panels` writes them, or a jobs
     file with "refs": [{"path", "role"}] and an optional per-panel "model": "pro")."""
     jobs = []
@@ -272,7 +274,7 @@ def make_jobs(film, items, model=None, size="2K", aspect="16:9"):
                 raise SystemExit(f"{it['image']}: no reference image {r['path']}")
         jobs.append({"key": it["image"], "image": it["image"], "prompt": it["prompt"], "refs": refs,
                      "model": model_id(it.get("model") or model or config().get("model") or DEFAULT_MODEL),
-                     "size": it.get("size") or size, "aspect": it.get("aspect") or aspect, "beats": it.get("beats", [])})
+                     "size": it.get("size") or size or SIZE, "aspect": it.get("aspect") or aspect, "beats": it.get("beats", [])})
     return jobs
 
 
@@ -453,20 +455,20 @@ def collect(film):
     return written, problems, running
 
 
-def edit(film, image, instruction, keep=(), refs=(), model=None, size="2K", aspect="16:9", beats=()):
+def edit(film, image, instruction, keep=(), refs=(), model=None, size=None, aspect="16:9", beats=()):
     """One interactive edit of a whole panel. The result is a repair candidate (repairs/<image>/rNN/candidate_1.<ext>),
     logged like a crop repair, so the review sheet, `accept` and `revert` work the same way."""
     src = film / image
     if not src.exists():
         raise SystemExit(f"no panel image {image}")
     job = {"key": image + "#edit", "image": image, "base": image, "instruction": instruction, "keep": list(keep),
-           "refs": ref_list(refs), "model": model_id(model or config().get("model") or DEFAULT_MODEL), "size": size, "aspect": aspect}
+           "refs": ref_list(refs), "model": model_id(model or config().get("model") or DEFAULT_MODEL), "size": size or SIZE, "aspect": aspect}
     run = run_id()
     cost = estimate(job, False)
     note = check_cap(run, cost)
     if note:
         raise SystemExit(f"refused: about ${cost:.3f}; {note}")
-    record(kind="estimate", run=run, key=job["key"], film=str(film), image=image, model=job["model"], size=size, batch=False, usd=cost)
+    record(kind="estimate", run=run, key=job["key"], film=str(film), image=image, model=job["model"], size=job["size"], batch=False, usd=cost)
     t0 = time.time()
     data, mime_type, usage, why = call(job, film)
     ok, problem = finish(film, run, job, data, mime_type, usage, why, False, prompt_text(job))
