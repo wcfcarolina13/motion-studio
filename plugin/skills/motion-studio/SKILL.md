@@ -46,6 +46,7 @@ Films are one HTML file where every style is a pure function of time (`window.se
 9. **Draft, then final.** `draft` and read its per-beat contact sheet; `final` must pass verify.
 10. **Blind read.** `blindpack`, dispatch one or two fresh readers who see only the packet, compare their thesis to the contract, fix what they couldn't read, repeat with a new packet and new readers. → `references/panel.md`
 11. **Panel on request** (or a first cut of a new kind of film): a motion-design reviewer, a creative-director reviewer and an advisor. → `references/panel.md`
+   **AI-tells check on the words, always** (Bradley's films): before voicing narration or locking on-screen text, write them to a text file and run `/usr/bin/python3 ~/pontus/vault/copilot/skills/ai-tells-check/scripts/check_tells.py words.txt --register essay` (on the Mac; it is deterministic and costs no model calls). Fix HARD hits before `lines` records any voice. Off the Mac, check the words against the rules block in *Writing Rules - AI Tells* in the Notion Content Mirror. Rules live in the Pontus vault, not here.
 12. **Deliver.** Send the final file to the user; append the ledger row; record "as built" and the blind-read verdicts in the storyboard. Don't post or publish anything: that's the user's call.
 
 ## Long-form narrated films (YouTube explainers)
