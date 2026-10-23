@@ -24,11 +24,13 @@
   K.eout = x => 1 - Math.pow(1 - x, 3);
   K.ein = x => x * x * x;
   K.smooth = x => x * x * (3 - 2 * x);
-  // closed-form spring step 0 → 1; z < 1 overshoots
+  // closed-form spring step 0 → 1; z < 1 overshoots. Once the ringing can no longer exceed 0.15 % it is exactly 1,
+  // so a settled item (and its text) stops moving instead of shifting by fractions of a pixel for seconds
   K.step = (t, t0, w = 14, z = 0.62) => {
     if (t <= t0) return 0;
-    const d = t - t0, wd = w * Math.sqrt(1 - z * z);
-    return 1 - Math.exp(-z * w * d) * (Math.cos(wd * d) + (z * w / wd) * Math.sin(wd * d));
+    const d = t - t0, wd = w * Math.sqrt(1 - z * z), env = Math.exp(-z * w * d);
+    if (env * (1 + z * w / wd) < 0.0015) return 1;
+    return 1 - env * (Math.cos(wd * d) + (z * w / wd) * Math.sin(wd * d));
   };
   // keyframes [[t, v], ...], eased between neighbours; kfLog interpolates in log space (use it for zoom)
   K.kf = (t, keys, ease = K.eio) => {

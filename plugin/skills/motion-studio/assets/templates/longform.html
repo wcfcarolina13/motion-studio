@@ -391,7 +391,7 @@ function bubble(g) {   // a speech or thought bubble that pops from a point; tex
   const lines = [0, 1, 2, 3].map(() => K.text("", { "font-family": SANS, "font-size": 30, fill: C.BG, "text-anchor": "middle" }, g));
   return { box, tail, lines, set(str, x, y, p, kind) {
     const ls = wrapWords(str || "", 24).slice(0, 4), w = Math.max(...ls.map(l => l.length), 6) * 15.5 + 50, h = ls.length * 38 + 30;
-    const sc = Math.max(0, Math.min(1.08, p)), cxb = Math.min(Math.max(x, w / 2 + 20), W - w / 2 - 20), bx = cxb - w / 2 * sc, by = y - (h + 40) * sc;   // the box stays in frame; the tail still points at the head
+    const sc = Math.max(0, Math.min(1.08, p)), cxb = Math.min(Math.max(x, w / 2 + 20), W - w / 2 - 20), bx = Math.round(cxb - w / 2 * sc), by = Math.round(y - (h + 40) * sc);   // the box stays in frame, on whole pixels; the tail still points at the head
     K.set(box, K.rect(bx, by, w * sc, h * sc, kind === "think" ? 40 * sc : 20 * sc));
     tail.setAttribute("d", kind === "think" ? `M ${x - 6 * sc} ${y - 30 * sc} a ${9 * sc} ${9 * sc} 0 1 0 0.1 0 M ${x - 18 * sc} ${y - 8 * sc} a ${5 * sc} ${5 * sc} 0 1 0 0.1 0`
                                             : `M ${x - 18 * sc} ${y - 41 * sc} L ${x} ${y - 6 * sc} L ${x + 12 * sc} ${y - 41 * sc} Z`);
@@ -461,12 +461,13 @@ B.stage = (s, g) => {
     });
     // the camera leans in toward whoever acted last
     const last = beats.filter(b => b.T <= t && b.who && cast[b.who]).pop(), focus = last ? cast[last.who].c : (d.cast || [])[0];
-    const fxp = focus ? focus.x * W : W / 2, p = K.eio(K.prog(t, s.t0, s.t1));
-    // an upright frame has no width to spare: hold the camera centred and barely push, or figures at the edges are cut
-    const lean = H > W ? 0 : 0.35, push = H > W ? 0.03 : 0.09;
+    const fxp = focus ? focus.x * W : W / 2;
+    // an upright frame has no width to spare: hold the camera centred, or figures at the edges are cut. No slow push or rise
+    // in either: bubble text under a slow zoom is re-rasterised every frame and shimmers, and a slow pan steps a pixel at a time
+    const lean = H > W ? 0 : 0.35;
     const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
     void fxp; void o;
-    g.__cam = { cx: fx, cy: K.lerp(H / 2, gy - 330, 0.25 * p), z: 1 + push * p };
+    g.__cam = { cx: fx, cy: H / 2, z: 1 };
   };
 };
 
@@ -540,9 +541,8 @@ B.board = (s, g) => {
       K.set(stamp.box, { x: -w / 2, y: -62, width: w, height: 100 }); K.set(stamp.tx, { x: 0, y: 18 });
       stamp.sg.setAttribute("transform", `translate(${on.x + 30} ${on.y + (on.h || 0) * 0.55}) rotate(-12) scale(${sc})`);   // low on the card, so its title stays readable
     }
-    const z = 1.0 + 0.05 * K.eio(K.prog(t, s.t0, s.t1));
-    void fx; void fy; void shown; void shake;
-    g.__cam = { cx: fx, cy: fy + shake, z };
+    void shown;
+    g.__cam = { cx: fx, cy: fy + shake, z: 1 };   // no push: card text under a slow zoom shimmers; the lean is a pan
   };
 };
 
@@ -718,7 +718,7 @@ B.capture = (s, g) => {
     const keys = ms.map(q => { const [mx, my, mw, mh] = q.m.box, at = (full - vh) * K.lerp(sr[0], sr[1], K.eio(K.prog(q.T, s.t0 + 0.4, s.t1 - 0.6)));
       return [q.T, lean((vx + (mx + mw / 2) * vw - W / 2) * 0.3, 80), lean((vy - at + (my + mh / 2) * full - (by + bh / 2)) * 0.3, 50)]; });
     const dx = K.kf(t, camKeys(s.t0, 0, keys.map(k => [k[0], k[1]]))), dy = K.kf(t, camKeys(s.t0, 0, keys.map(k => [k[0], k[2]])));
-    g.__cam = { cx: W / 2 + dx, cy: H / 2 + dy, z: 1 + 0.04 * K.eio(K.prog(t, s.t0, s.t1)) };
+    g.__cam = { cx: W / 2 + dx, cy: H / 2 + dy, z: 1 };   // no push: a screenshot's text is pixels, and scaling makes it shimmer
   };
 };
 
@@ -804,9 +804,11 @@ K.run(t => {
     }
     if (on) {
       b.fn(t);
-      // slow drift so nothing sits still (1.0 → 1.03), or the scene's own camera if it set one
-      const cam = b.g.__cam, z = cam ? cam.z : K.lerp(1, 1.03, K.prog(t, b.s.t0, b.s.t1));
-      b.g.setAttribute("transform", `translate(${W / 2} ${H / 2}) scale(${z}) translate(${-(cam ? cam.cx : W / 2)} ${-(cam ? cam.cy : H / 2)})`);
+      // the scene's own camera if it set one. No slow zoom drift otherwise: text re-rasterised at a new scale every frame
+      // shimmers (line gaps jitter by up to 2 px), and an unscaled pan lands on whole pixels so its text keeps its shape
+      const cam = b.g.__cam, z = cam ? cam.z : 1, cx = cam ? cam.cx : W / 2, cy = cam ? cam.cy : H / 2;
+      b.g.setAttribute("transform", z === 1 ? `translate(${Math.round(W / 2 - cx)} ${Math.round(H / 2 - cy)})`
+                                            : `translate(${W / 2} ${H / 2}) scale(${z}) translate(${-cx} ${-cy})`);
       src = b.s.source || ""; chap = FULL.has(b.s.type) || VERT ? "" : b.s.chapter || "";   // a drama panel (and a Short) carries no chapter label
     }
   });
