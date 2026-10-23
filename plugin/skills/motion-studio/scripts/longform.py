@@ -608,7 +608,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "grade", "moods") if k in sc}
+    out = {k: sc[k] for k in ("palette", "grade", "moods", "ui_sounds") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
@@ -1013,7 +1013,10 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
             kinds.setdefault(kind_key(x["kind"]), recorded_sfx(x["kind"]))
     # script.json "ui_sounds": {"ping": false, "buzz": {"gain": 0.2, "lowpass": 2500}} sets a film's default per kind
     tuned = load_script(film).get("ui_sounds") or {}
-    off = {kind_key(k) for k, v in tuned.items() if v is False}
+    unknown = [k for k in tuned if kind_key(k) not in kinds]
+    if unknown:                         # a misspelt kind would otherwise leave the sound playing with no word said
+        print(f"  ui_sounds: no such sound kind {', '.join(map(repr, unknown))} (kinds here: {', '.join(sorted(kinds))})")
+    off = {kind_key(k) for k, v in tuned.items() if v is False and kind_key(k) in kinds}
     for k, v in tuned.items():
         k = kind_key(k)
         if isinstance(v, dict) and kinds.get(k):
