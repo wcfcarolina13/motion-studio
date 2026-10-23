@@ -42,11 +42,13 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None):
     dec = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "null", "-"], capture_output=True, text=True)
     report(dec.returncode == 0 and not dec.stderr.strip(), "clean decode")
 
-    # frame 0 background, decoded back to full range: catches the limited-range grey lift
+    # frame 0 background, decoded back to full range: catches the limited-range grey lift. The commonest colour, not a corner:
+    # a vignette darkens the corners, which hides on a black ground but not on a light one
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vf", "select=eq(n\\,0),scale=in_range=tv:out_range=pc,format=rgb24",
                           "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
-    px = tuple(raw[:3])
-    report(all(abs(p - q) <= 4 for p, q in zip(px, bg)), f"frame-0 corner {px} ≈ background {bg}")
+    cols, counts = np.unique(np.frombuffer(raw, np.uint8).reshape(-1, 3), axis=0, return_counts=True)
+    px = tuple(int(c) for c in cols[counts.argmax()])
+    report(all(abs(p - q) <= 4 for p, q in zip(px, bg)), f"frame-0 background {px} ≈ {bg}")
 
     if a:
         loud = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(video), "-af", "ebur128=peak=true", "-vn", "-f", "null", "-"], capture_output=True, text=True).stderr
