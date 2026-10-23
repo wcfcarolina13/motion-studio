@@ -1235,19 +1235,28 @@ def cmd_credits(a):
         print(f"  not in the catalog, check their licence by hand: {', '.join(unknown)}")
 
 
+def film_bg(film):
+    """The ground colour the film itself paints (window.STUDIO.bg), so a light-paper film's first frame isn't judged against house black."""
+    import render
+    with render.Film(film) as f:
+        h = ((f.studio or {}).get("bg") or "#0b0b0b").lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
 def cmd_final(a):
     import verify
     film = Path(a.film).resolve()
     out = film / "out" / f"{film.name}.mp4"
     run(["ffmpeg", "-v", "error", "-y", "-i", str(film / "out" / "silent.mp4"), "-i", str(film / "out" / "mix.wav"),
          "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-shortest", "-movflags", "+faststart", str(out)])
-    # scene wipes and stamps are meant to hit: don't call them pops
+    # scene wipes, stamps and drama panels' hard cuts are meant to hit: don't call them pops
     tl = load_timeline(film)
     allow = [(sg["t0"], sg["t0"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
     allow += [(sg["t1"], sg["t1"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
+    allow += [(t, t + 0.1) for sg in tl["segments"] if sg["type"] == "panel" for t in (sg["t0"], sg["t1"])]
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
-    ok = verify.verify(out, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=allow)
+    ok = verify.verify(out, bpm=None, sheet_dest=None, bg=film_bg(film), allow=allow)
     print(out)
     sys.exit(0 if ok else 1)
 
