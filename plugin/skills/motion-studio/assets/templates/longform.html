@@ -144,30 +144,59 @@ B.statement = (s, g) => {
   };
 };
 
+// data: { left: {title, icon?, items: [text | {text, at}]}, right: {…same}, strike?: true (cross out a left item as its
+//         right item lands, for "instead of" pairs), accent?: "left"|"right" (default right) }
+// Both columns are up within the first second (icon and heading), and their items land row by row, left then right, so the
+// viewer compares pairs with both sides on screen for most of the segment. icon: a name from ICONS (phone, bank, card, person,
+// money, web, doc); it sits in a ring above the heading.
 B.compare = (s, g) => {
-  const L = s.data.left, R = s.data.right;
-  const hl = maskText(L.title, { "font-family": SANS, "font-size": 30, fill: C.GREY, "letter-spacing": 4 }, g);
-  const hr = maskText(R.title, { "font-family": SANS, "font-size": 30, fill: C.ACCENT, "letter-spacing": 4 }, g);
-  const li = L.items.map(x => maskText(txt(x), { "font-size": V(44, 48), fill: C.GREY }, g));
-  const ri = R.items.map(x => maskText(txt(x), { "font-size": V(44, 48), fill: C.INK }, g));
+  const d = s.data, L = d.left, R = d.right, acc = d.accent === "left" ? 0 : 1;
+  const IS = Math.round(V(62, 46) * TS), IL = pitch(IS, 1.2), HS = Math.max(READ, Math.round(V(44, 34) * TS));
+  const colW = V(W * 0.4, SAFE.x1 - SAFE.x0 - 80);
+  const col = (side, k) => {
+    const hot = k === acc, ink = hot ? C.INK : C.GREY;
+    const ring = side.icon ? K.el("circle", { fill: "none", stroke: hot ? C.ACCENT : C.GREY, "stroke-width": 4 }, g) : null;
+    const icon = side.icon ? K.el("path", { d: ICONS[side.icon] || ICONS.doc, fill: "none", stroke: hot ? C.ACCENT : C.GREY, "stroke-width": 3.5,
+                                            "stroke-linejoin": "round", "stroke-linecap": "round" }, g) : null;
+    const head = maskText(side.title, { "font-family": SANS, "font-weight": 700, "font-size": HS, fill: hot ? C.ACCENT : C.GREY, "letter-spacing": 3 }, g);
+    const items = side.items.map(x => wrapWords(txt(x), fit(colW, IS, 0.5)).map(l => maskText(l, { "font-size": IS, fill: ink }, g)));
+    return { side, ring, icon, head, items };
+  };
+  const cols = [col(L, 0), col(R, 1)], n = Math.max(L.items.length, R.items.length);
   const div = K.el("rect", { fill: "#2c2c2a" }, g);
-  const strikes = L.items.map(() => K.el("rect", { fill: C.ACCENT }, g));
+  const strikes = d.strike ? cols[0].items.map(ms => ms.map(() => K.el("rect", { fill: C.ACCENT }, g))) : [];   // one line per wrapped line
   [L.title, R.title, ...L.items, ...R.items].forEach(x => K.label(txt(x), s.t0, s.t1, "two columns"));
+  const hasIcon = !!(L.icon || R.icon);
+  // row k's height is its taller side
+  const rowH = [...Array(n)].map((_, k) => Math.max(1, ...cols.map(c => (c.items[k] || []).length)) * IL + V(34, 24));
+  // reveal times: row k left, then row k right, across the first 70% of the segment unless cued
+  const T = cols.map((c, ci) => c.side.items.map((x, k) => cueT(x, revealAt(s, 2 * k + ci, 2 * n, 0.7, 0.9))));
   return t => {
-    // wide: two columns side by side; tall: the left column above the right, split by a horizontal rule
-    const e = env(t, s), o = 1 - e.o, n = Math.max(li.length, ri.length);
-    const xl = V(W * 0.27, W / 2), xr = V(W * 0.73, W / 2), step = V(90, Math.min(80, (SH / 2 - 150) / Math.max(1, n)));
-    const yl = V(300, SAFE.y0 + 50), yr = V(300, SMID + 70), first = V(110, 90);
-    placeMask(hl, xl, yl, e.i * o); placeMask(hr, xr, yr, K.eout(K.prog(t, s.t0 + 0.2, s.t0 + 0.6)) * o);
+    // wide: two columns side by side; tall: the left column above the right, split by a rule
+    const e = env(t, s), o = 1 - e.o, iconH = hasIcon ? V(160, 120) : 0;
+    const colH = HS + 40 + rowH.reduce((a, b) => a + b, 0);
+    const xs = V([W * 0.27, W * 0.73], [W / 2, W / 2]);
+    const top = V(Math.max(120, (H - colH - iconH) / 2 + 20), 0);
+    const ys = V([top + iconH, top + iconH], [SAFE.y0 + 30 + iconH, SMID + 50 + iconH]);
     const dp = K.eio(K.prog(t, s.t0, s.t0 + 0.8)) * o;
-    K.set(div, VERT ? K.rect(W / 2 - (W - 240) * dp / 2, SMID, (W - 240) * dp, 2) : K.rect(W / 2 - 1, 230, 2, (H - 380) * dp));
-    li.forEach((m, k) => { const tk = cueT(L.items[k], revealAt(s, k, n, 0.35, 0.3)); placeMask(m, xl, yl + first + k * step, K.eout(K.prog(t, tk, tk + 0.35)) * o); });
-    ri.forEach((m, k) => {
-      const tk = cueT(R.items[k], revealAt(s, k, n, 0.5, 0.3) + (s.t1 - s.t0) * 0.35);
-      placeMask(m, xr, yr + first + k * step, K.eout(K.prog(t, tk, tk + 0.35)) * o);
-      const sl = strikes[k];
-      if (sl) { const bb = li[k].t.getComputedTextLength(), sw = bb * K.eio(K.prog(t, tk - 0.2, tk + 0.2)) * o;
-        K.set(sl, K.rect(xl - bb / 2, yl + first + k * step - 15, sw, 4)); }
+    K.set(div, VERT ? K.rect(W / 2 - (W - 240) * dp / 2, SMID, (W - 240) * dp, 2) : K.rect(W / 2 - 1, top, 2, (H - 2 * top) * dp));
+    cols.forEach((c, ci) => {
+      const x = xs[ci], y = ys[ci], h0 = s.t0 + 0.15 * ci;
+      const ip = Math.min(1.1, K.step(t, h0, 14, 0.6)) * o;
+      if (c.ring) { K.set(c.ring, { cx: x, cy: y - iconH / 2 - 20, r: Math.max(0, V(48, 38) * ip) });
+        c.icon.setAttribute("transform", `translate(${x} ${y - iconH / 2 - 20}) scale(${Math.max(0, V(1.3, 1.05) * ip)})`); }
+      placeMask(c.head, x, y + HS * 0.4, K.eout(K.prog(t, h0 + 0.1, h0 + 0.5)) * o);
+      let ry = y + HS + 40 + IS * 0.8;
+      for (let k = 0; k < n; k++) {
+        const ms = c.items[k] || [], tk = T[ci][k];
+        ms.forEach((m, j) => placeMask(m, x, ry + j * IL, K.eout(K.prog(t, tk + j * 0.06, tk + 0.35 + j * 0.06)) * o));
+        if (ci === 1 && strikes[k]) {
+          const y0 = VERT ? ys[0] + HS + 40 + IS * 0.8 + rowH.slice(0, k).reduce((a, b) => a + b, 0) : ry, sp = K.eio(K.prog(t, tk - 0.2, tk + 0.2)) * o;
+          cols[0].items[k].forEach((m, j) => { const bb = m.t.getComputedTextLength();
+            K.set(strikes[k][j], K.rect(xs[0] - bb / 2, y0 + j * IL - IS * 0.3, bb * sp, 4)); });
+        }
+        ry += rowH[k];
+      }
     });
   };
 };
