@@ -24,13 +24,15 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
 ## script.json
 
 ```json
-{"title": "…", "moods": {"Intro": "mystery", "The trick": "tension"}, "captions": false,
+{"title": "…", "moods": {"Intro": "mystery", "The trick": "tension"}, "captions": false, "type_scale": 1,
  "segments": [
   {"id": "s01", "chapter": "Intro", "type": "stage", "source": "…", "narration": "You've probably had this text…",
    "data": {"set": "room", "cast": [{"id": "you", "x": 0.36, "skin": 2, "hair": "short", "shirt": "#e8772e"}],
             "beats": [{"who": "you", "at": "text", "pose": "phone", "glow": true, "notify": "TOLL NOTICE: …"},
                       {"who": "you", "at": "late fee", "pose": "read", "emote": "!"}]}}]}
 ```
+
+**Text size.** Reading text in every scene type is at least `READ` (56 px wide, 40 px in a Short), so it holds up on a phone, and `check` fails anything smaller. `"type_scale": 1.2` scales that floor and the list size for one film. The list carries the advice, so its items are 66 px. A text message is drawn at a phone's proportions, so once it lands the camera pushes in (and holds still) until the message reads at the floor. A stage notification sits beside the phone hand at head height, or the nearest clear spot (lower, higher, the other side, overhead) that covers no one else's body, bubble or the kicker. Trade-offs: bigger text means fewer words per line, so long list items and board cards wrap onto more lines, and board cards are larger (440 px wide); a board with many cards needs more room between them.
 
 **Word cues.** Any object inside `data` with `"at": "<word or phrase>"` gets an absolute time `t` when `timeline` runs (`"nth": 2` for a repeat, `"offset": -0.1` to lead). Things that must be read land 0.05 s before their word. `timeline` prints a PROBLEM line for any cue word that isn't in the narration. List items, flow nodes, hub spokes, compare items and statement lines accept `{"text": …, "at": …}` in place of a plain string; `stat` and `sms` take `"at"` on their data to start the count or the message on a word, and `stat` takes `"notes": [{"text", "at"}]`, follow-up lines under the label, so a long stat scene doesn't sit still after the count.
 
