@@ -143,6 +143,19 @@
   };
   const rot = (x, y, cx, cy, a) => { const c = Math.cos(a * D), s = Math.sin(a * D); return [cx + (x - cx) * c + (y - cy) * s, cy - (x - cx) * s + (y - cy) * c]; };
 
+  // the head's centre in figure units, from the hips, crouch and lean; tl is the torso length
+  const headPoint = (p, tl) => {
+    const hipY = -40 + p.crouch * 17, hipX = p.crouch * -5;
+    const [shX, shY] = rot(hipX, hipY - tl, hipX, hipY, -p.lean);
+    return rot(shX + 0.6, shY - 3 - 10.5, hipX, hipY, -p.lean);
+  };
+  // where the head sits in a pose with no idle, walk or shake on it: a steady anchor for speech bubbles and notifications,
+  // so their text follows a pose change or a walk across the frame but not the breathing and sway
+  F.headAt = (x, y, h, pose, face = "right") => {
+    const [hx, hy] = headPoint(resolve(pose), 27), u = h / 92;
+    return [x + (face === "left" ? -hx : hx) * u, y + hy * u];
+  };
+
   // place and pose: (x, y) is the ground point between the feet; h is the figure's full height in px
   F.place = (fig, x, y, h, pose, opts = {}) => {
     const p = resolve(pose), g = fig.g, face = opts.face || fig.o.face;
@@ -167,7 +180,7 @@
     // neck and head
     const [nx, ny] = rot(shX, shY - 3, hipX, hipY, -lean);
     K.set(g.neck, { x: nx - 2, y: ny - 2, width: 4, height: 6, rx: 1.5 });
-    const hr = 10.5, [hx, hy] = rot(shX + 0.6, shY - 3 - hr, hipX, hipY, -lean);
+    const hr = 10.5, [hx, hy] = headPoint(p, tl);
     g.head.setAttribute("transform", `translate(${hx} ${hy}) rotate(${p.head + lean * 0.5}) scale(${hr})`);
     if (g.hairBack) g.hairBack.setAttribute("d", fig.o.hair === "hood" ? "M -1.3 1.2 C -1.5 0 -1.2 -1.2 0 -1.35 C 1.1 -1.3 1.5 -0.4 1.3 1.2 Z" : "M -1.0 0.2 C -1.2 0.8 -1.1 1.4 -0.6 1.55 C -0.3 1.6 0 1.5 0.1 1.3 L -0.3 0.1 Z");
     if (!fig.sil) {
