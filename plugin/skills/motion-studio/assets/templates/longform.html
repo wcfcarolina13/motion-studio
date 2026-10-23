@@ -438,11 +438,13 @@ B.stage = (s, g) => {
         if (t >= b.T) { if (p < 1) { walking = 1; face = x1 > x ? "right" : "left"; } x = K.lerp(x, x1, K.smooth(p)); }
       });
       let pose = F.at(t, keys);
+      const rest = pose;                                 // the held pose, before breathing, sway and walk are added
       pose = Object.assign(F.idle(t, A.seed, pose), {});
       if (walking) pose = F.walk(t * 2.4, pose);
       const buzz = glow > 0.6 ? Math.sin(t * 90) * 1.5 : 0;
-      const pts = F.place(A.fig, x + buzz, gy, h, pose, { face, glow });
-      const hx = pts.head[0], hy = pts.head[1] - h * 0.13;
+      F.place(A.fig, x + buzz, gy, h, pose, { face, glow });
+      // bubbles, emotes and notifications hang from the held pose's head, not the live one, so their text stays still to read
+      const [hx, hy0] = F.headAt(x, gy, h, rest, face), hy = hy0 - h * 0.13;
       bubbles[id].set(say, hx + (face === "left" ? -60 : 60), hy - 10, say ? K.step(t, sayT, 14, 0.62) : 0, kind);
       const ep = emote && t - emoT < 1.4 ? K.step(t, emoT, 16, 0.5) * (1 - K.ein(K.prog(t, emoT + 1.1, emoT + 1.4))) : 0;
       emotes[id].textContent = ep > 0.02 ? (EMOTE[emote] || emote) : "";
@@ -450,9 +452,9 @@ B.stage = (s, g) => {
       const N = notes[id], np = note ? Math.min(1.06, K.step(t, noteT, 15, 0.65)) : 0;
       if (np > 0.01) {
         const ls = wrapWords(note, 25).slice(0, 4), nw = 390, nh = 52 + ls.length * 30, side = face === "left" ? -1 : 1;
-        const ax = pts.hand[0] + side * 40, nx = Math.min(Math.max(side > 0 ? ax : ax - nw, 20), W - nw - 20), ny = pts.head[1] - nh / 2 - 20;
+        const ax = x + side * (0.2 * h + 40), ay = gy - 0.6 * h, nx = Math.min(Math.max(side > 0 ? ax : ax - nw, 20), W - nw - 20), ny = hy0 - nh / 2 - 20;
         K.show(N.g, true);
-        N.g.setAttribute("transform", `translate(${ax} ${pts.hand[1]}) scale(${np}) translate(${-ax} ${-pts.hand[1]})`);
+        N.g.setAttribute("transform", `translate(${ax} ${ay}) scale(${np}) translate(${-ax} ${-ay})`);
         K.set(N.box, K.rect(nx, ny, nw, nh, 18)); N.from.textContent = noteFrom; K.set(N.from, { x: nx + 20, y: ny + 30 });
         N.lines.forEach((l, k) => { l.textContent = ls[k] || ""; K.set(l, { x: nx + 20, y: ny + 62 + k * 30 }); });
       } else K.show(N.g, false);
