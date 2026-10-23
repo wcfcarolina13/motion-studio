@@ -460,9 +460,11 @@ B.stage = (s, g) => {
     // the camera leans in toward whoever acted last
     const last = beats.filter(b => b.T <= t && b.who && cast[b.who]).pop(), focus = last ? cast[last.who].c : (d.cast || [])[0];
     const fxp = focus ? focus.x * W : W / 2, p = K.eio(K.prog(t, s.t0, s.t1));
-    const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, 0.35)])));
+    // an upright frame has no width to spare: hold the camera centred and barely push, or figures at the edges are cut
+    const lean = H > W ? 0 : 0.35, push = H > W ? 0.03 : 0.09;
+    const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
     void fxp; void o;
-    g.__cam = { cx: fx, cy: K.lerp(H / 2, gy - 330, 0.25 * p), z: 1 + 0.09 * p };
+    g.__cam = { cx: fx, cy: K.lerp(H / 2, gy - 330, 0.25 * p), z: 1 + push * p };
   };
 };
 
