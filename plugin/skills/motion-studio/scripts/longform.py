@@ -1404,9 +1404,8 @@ def film_bg(film):
 def cmd_final(a):
     import verify
     film = Path(a.film).resolve()
-    out = film / "out" / f"{film.name}.mp4"
-    run(["ffmpeg", "-v", "error", "-y", "-i", str(film / "out" / "silent.mp4"), "-i", str(film / "out" / "mix.wav"),
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-shortest", "-movflags", "+faststart", str(out)])
+    import render
+    out = render.mux(film / "out" / "silent.mp4", film / "out" / "mix.wav", film / "out" / f"{film.name}.mp4")
     # scene wipes, stamps and drama panels' hard cuts are meant to hit: don't call them pops
     tl = load_timeline(film)
     allow = [(sg["t0"], sg["t0"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]

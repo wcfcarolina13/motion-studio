@@ -127,7 +127,43 @@ def film(project, dest, scale=1.0, sub=1, fps=FPS):
     return dest
 
 
+# A lossy encode can overshoot its source: ffmpeg's own AAC turned a mix peaking at -2.5 dBFS into a +4.7 dBFS spike
+# (an audible click, toll-text 2026-10-23). The delivered track must decode at or under this, which also leaves room for
+# YouTube's own re-encode.
+CEILING_DB = -1.0
+# encodes tried in order until one decodes under the ceiling: (bitrate, limit in dBFS on the 4x-oversampled mix or None)
+MUX_LADDER = [("192k", None), ("256k", None), ("256k", -2.0), ("256k", -3.0)]
+
+
+def aac_encoder():
+    """AudioToolbox's AAC where ffmpeg has it (macOS), which held -2.3 dBTP on the mix that clicked; else ffmpeg's own."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+    return "aac_at" if any(line.split()[1:2] == ["aac_at"] for line in out.splitlines()) else "aac"
+
+
+def decoded_peak(path):
+    """(highest sample in dBFS, samples over full scale) of the file's audio as a player decodes it."""
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0", "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    x = np.abs(np.frombuffer(raw, dtype=np.float32))
+    return 20 * np.log10(max(float(x.max(initial=0)), 1e-9)), int((x > 1).sum())
+
+
 def mux(silent, mix, dest):
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(silent), "-i", str(mix), "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                    "-ar", "48000", "-shortest", "-movflags", "+faststart", str(dest)], check=True)
-    return dest
+    """Video copied, mix encoded to AAC, then decoded and measured: the first encode on MUX_LADDER that stays under
+    CEILING_DB is kept. A limit is applied only when plain encodes overshoot, and only to the peaks."""
+    enc = aac_encoder()
+    for i, (rate, limit) in enumerate(MUX_LADDER):
+        af = [] if limit is None else ["-af", f"aresample=192000,alimiter=limit={10 ** (limit / 20):.4f}:level=false:attack=1:release=50,aresample=48000"]
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(silent), "-i", str(mix), "-c:v", "copy", *af, "-c:a", enc,
+                        "-b:a", rate, "-ar", "48000", "-shortest", "-movflags", "+faststart", str(dest)], check=True)
+        peak, over = decoded_peak(dest)
+        how = f"{enc} {rate}" + (f" with a {limit:.0f} dBFS limit" if limit is not None else "")
+        if peak <= CEILING_DB:
+            if i:
+                print(f"audio: kept {how}, decodes at {peak:+.1f} dBFS", flush=True)
+            return dest
+        print(f"audio: {how} decodes at {peak:+.1f} dBFS ({over} sample(s) over full scale), over the {CEILING_DB:.0f} dBFS ceiling",
+              flush=True)
+    raise SystemExit(f"{dest}: every encode overshoots {CEILING_DB:.0f} dBFS; lower the mix's peaks (master to -3 dBTP) and run again")
