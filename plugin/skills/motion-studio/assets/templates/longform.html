@@ -704,7 +704,7 @@ B.capture = (s, g) => {
   const sr = d.scroll || [0, 0];
   return t => {
     const e = env(t, s), o = 1 - e.o;
-    const off = (full - vh) * K.lerp(sr[0], sr[1], K.eio(K.prog(t, s.t0 + 0.4, s.t1 - 0.6)));
+    const off = Math.round((full - vh) * K.lerp(sr[0], sr[1], K.eio(K.prog(t, s.t0 + 0.4, s.t1 - 0.6))));   // a scroll steps whole pixels, so the page's text keeps its shape
     inner.setAttribute("transform", `translate(0 ${(1 - e.i) * 60})`); inner.setAttribute("opacity", e.i * o);
     K.set(img, { y: vy - off });
     ms.forEach(q => {
