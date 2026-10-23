@@ -1098,7 +1098,7 @@ def cmd_mix(a):
     narr = film / "out" / "narration.wav"
     sounds = {}                                          # what the mix used, for `credits`
     inputs = ["-i", str(narr)]
-    filt = ["[0:a]aformat=sample_rates=48000:channel_layouts=stereo,asplit=2[voice][key]"]
+    filt = []
     if a.plan:
         plan = json.loads((film / "out" / "music_plan.json").read_text())
         sounds["music"] = list(dict.fromkeys(r["track"] for r in plan["runs"]))
@@ -1124,6 +1124,9 @@ def cmd_mix(a):
         mix_in = ["[voice]", "[ducked]"]
     else:
         mix_in = ["[voice]"]
+    # the voice also keys the ducking, so it is split only when there is a bed to duck: an unused split output fails the graph
+    key = ",asplit=2[voice][key]" if "[ducked]" in mix_in else "[voice]"
+    filt.insert(0, "[0:a]aformat=sample_rates=48000:channel_layouts=stereo" + key)
     whoosh = None
     if a.whoosh and Path(a.whoosh).exists():
         whoosh = (a.whoosh, Path(a.whoosh))
