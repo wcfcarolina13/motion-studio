@@ -990,7 +990,8 @@ def cmd_mix(a):
     # two-pass loudness to -14 LUFS; -2.5 dBTP leaves room for the AAC encode's overshoot
     meas = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(pre), "-af", "loudnorm=I=-14:TP=-2.5:LRA=11:print_format=json", "-f", "null", "-"],
                           capture_output=True, text=True).stderr
-    j = json.loads(meas[meas.rfind("{"):])
+    import audio
+    j = audio.loudnorm_stats(meas)
     ln = (f"loudnorm=I=-14:TP=-2.5:LRA=11:measured_I={j['input_i']}:measured_TP={j['input_tp']}:measured_LRA={j['input_lra']}:"
           f"measured_thresh={j['input_thresh']}:offset={j['target_offset']}:linear=true")
     run(["ffmpeg", "-v", "error", "-y", "-i", str(pre), "-af", ln, "-ar", "48000", str(film / "out" / "mix.wav")])
