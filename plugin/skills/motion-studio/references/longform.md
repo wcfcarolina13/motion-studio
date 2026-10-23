@@ -17,6 +17,7 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
 | critic | `python3 $L check <film>` | `review/check.txt` (see `critic.md`) |
 | upload | `python3 ${CLAUDE_SKILL_DIR}/scripts/youtube.py upload … --privacy private` | private video; `captions` adds the VTT |
 | share a draft | `python3 $L share <film>` | `out/share/`: a page that streams the cut, to publish as a private artifact (below) |
+| Short | `python3 $L short <film> <short> --from s05 --to s09`, then lay it out, `timeline`, `stills`, `render`, `final` in the Short's folder | a 9:16 film that reuses the long-form voice and sound (below) |
 
 `align` needs `pip install pocketsphinx` (its English model ships in the wheel, no download). Without it, words are spread across each clip by spoken weight between measured pauses, good to about 0.15 s. Numbers, money and years are expanded the way a narrator says them ("$4.12" → four dollars twelve cents) before aligning; words the dictionary doesn't know take the gap between their neighbours. A year is tried both as "twenty twenty-five" and "two thousand twenty-five" (voices differ), keeping the reading whose word starts land on the measured pauses, and word edges are then snapped onto measured silence (the aligner otherwise hands leading silence to the first word).
 
@@ -37,6 +38,7 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
 
 Text-led (use sparingly; `check` flags a film that is more than 40% these): `title`, `chapter`, `statement`, `quote`, `list`.
 Diagrams: `compare`, `stat`, `bars`, `flow`, `hub`, `sms` (a phone with a message).
+Evidence: `capture`, a captured screenshot of a real page or message (below, under real things on screen). `data.real` names the capture. `frame` is `browser` (the default, with the page's address in the bar), `phone` or `none`. `scroll: [from, to]` moves down a tall capture over the segment (0 to 1 of what doesn't fit). `marks: [{box: [x, y, w, h], at, label}]` draws accent boxes on the image (0 to 1 of the image) on their words, and the camera leans toward the newest one. The footer shows the segment's `source`, or else the capture's `credit`, or else the site's domain.
 People and evidence (their own set; they wipe on and off left to right instead of cutting):
 
 - **`stage`**: rigged figures on a set (`room`, `street`, `desk`, `blank`). Cast entries take figure options (below) plus `x` (0–1), `h` (px, default 540), `pose`, `enter: "left"|"right"` (walks in). Beats: `pose`, `face`, `emote` (`? ! $ … x`), `say` / `think` (bubble), `notify` (a message card beside the phone; `from` changes its "MESSAGES · now" header, e.g. for a browser or an app), `glow` (the phone lights and buzzes), `move` (walk to a new x). The camera leans toward whoever acted last. `kicker` is a fixed label top left.
@@ -65,9 +67,37 @@ People and evidence (their own set; they wipe on and off left to right instead o
 
 Write `"source"` on every segment that states a fact; it shows bottom left.
 
+## Real things on screen
+
+A scene that shows a real thing (a scam text, a company's site, a headline, an agency page) must show a capture of it. It must never show a convincing drawing of one. Captures are listed in `sources/captures.json`:
+
+```json
+{"ftc-toll-alert": {"file": "sources/ftc-toll-alert.png", "url": "https://consumer.ftc.gov/…", "captured": "2026-10-19",
+                    "licence": "Public domain (US federal government work)", "credit": "FTC.gov"}}
+```
+
+`file`, `url`, `captured` (YYYY-MM-DD) and `licence` are required. For a page that isn't public domain, `licence` holds the fair-use note: commentary or news reporting, cropped to the part being discussed, credited. `credit` is optional. Show a capture with the `capture` scene, or point a drawn element at one with `"real": "<id>"`. Elements that look real are an `sms` scene, a stage beat with `notify`, and a board card with a `web`, `doc`, `phone`, `bank` or `card` icon (a `kind: "note"` card is exempt). Each of these needs a `real` id or `"illustrative": true`. `illustrative` can go on the element, on the scene's `data`, or on the segment, and it is for things that are clearly made up, such as an example text written for the film. `timeline` and `render` stop and list every element that has neither marker, or whose capture is unlisted, missing a field or missing its file. There is no switch to skip the check.
+
+This supports the Longtok rule: complaints are attributed to the agency or outlet that published them, so the capture is the attribution. Never name a company as a scam.
+
+Trade-offs: every real-looking element needs either a capture or an explicit "made up" mark, so older scripts stop at `timeline` until they are marked. Most sites can't be reached from the cloud, so captures are taken on the Mac (a browser screenshot saved to `sources/`). A `real` id on a drawn `sms` records where the message came from, but the drawing is still a recreation; use `capture` to show the message itself.
+
 ## Captions
 
-Long-form ships its captions as uploaded caption tracks, not burned in (decided 2026-10-17: the channel adds Spanish and Portuguese dubs as extra audio tracks on the same video, and burned English text would sit under them). `timeline` writes `out/captions.vtt` from the word times, with inner monologue in `<i>` and no speaker labels (no name badge is burned in either). For another language, write the translated lines as `{"<segment id>": "line"}` and run `longform.py captions <film> --lang es --text es.json`: each translation spans its segment's spoken words in the English read, split into pages of at most 42 characters that share the time by length, written to `out/captions.es.vtt`. It stops if a spoken segment has no line. `youtube.py captions <id> out/captions.es.vtt --language es --name Español` attaches a track. `"captions": true` still burns word-lit pages into the picture (about four words a page, spoken words turn from grey to ink, the current word is accent) for a cut that will never carry a dub. Shorts keep burned-in captions; they are made outside this pipeline. Anything else drawn as text in the picture (a panel's `caption_card`, a chart label) stays in English under every dub, so keep it to names, places and dates.
+Long-form ships its captions as uploaded caption tracks, not burned in (decided 2026-10-17: the channel adds Spanish and Portuguese dubs as extra audio tracks on the same video, and burned English text would sit under them). `timeline` writes `out/captions.vtt` from the word times, with inner monologue in `<i>` and no speaker labels (no name badge is burned in either). For another language, write the translated lines as `{"<segment id>": "line"}` and run `longform.py captions <film> --lang es --text es.json`: each translation spans its segment's spoken words in the English read, split into pages of at most 42 characters that share the time by length, written to `out/captions.es.vtt`. It stops if a spoken segment has no line. `youtube.py captions <id> out/captions.es.vtt --language es --name Español` attaches a track. `"captions": true` still burns word-lit pages into the picture (about four words a page, spoken words turn from grey to ink, the current word is accent) for a cut that will never carry a dub. Shorts always burn them in (below). Anything else drawn as text in the picture (a panel's `caption_card`, a chart label) stays in English under every dub, so keep it to names, places and dates.
+
+## Shorts
+
+A Short is a 9:16 film re-laid-out from a run of a long-form film's segments. It is never a crop of the 16:9 render. `longform.py short <film> <short> --from s05 --to s09 [--title …]` makes a new film folder. It copies those segments' script entries, voice clips, word times, panel stills and `sources/`, and writes a `script.json` with `"format": "9x16"`, `"captions": true` and `"short_of"` (the long-form film and the segment range). It prints the Short's length and warns when it passes 3 minutes, YouTube's limit for a Short.
+
+Then lay it out in the Short's own `script.json`, which is never overwritten. Put fewer things on screen at once (fewer list items, compare rows, board cards and hub spokes), give it its own camera (panel `focus` and `camera`, board card `x`/`y`, stage cast `x`), and cut text that the narration already says.
+
+- **Layout.** Every scene type has a 9:16 layout. Text is larger and wraps narrower; `compare` stacks its columns with a rule between them; `flow` runs top to bottom with labels to the right; `bars` puts each label above its bar; `hub` becomes an upright oval; and the crowd pulls back until every seat fits. Board card positions (0 to 1) map onto the safe area. The panel still keeps its 16:9 shape, so a 9:16 frame sees about a third of it, and `focus`/`camera` choose which third.
+- **Safe area.** YouTube's Shorts controls cover the bottom ~22% and a right rail, so what must be read stays inside x 60–960 and y 220–1220. Captions sit just under that, at y 1260. The source line moves to the top, and there is no chapter label. These numbers are the long-form engine's own; `studio.py`'s 9x16 format still puts captions at y 1560.
+- **Sound.** `timeline` checks that every segment lasts exactly as long as it does in the long-form film, then cuts the Short's `out/mix.wav` from the long-form mix: 0.3 s before the first line through the end of the last segment, a 0.4 s fade, then 0.8 s of silence. It also copies the long-form film's `sounds_used.json`, so `credits` works. Run `mix` on the long-form film first. If you changed `--pad` or `--lead` there, use the same values here, or `timeline` prints a PROBLEM. `mix` on a Short refuses unless you pass `--remix`.
+- **Review before render.** `render` on a 9:16 film stops until a `stills` contact sheet newer than `timeline.js` exists in `review/`. Look at it before rendering.
+
+Trade-offs: each Short needs a layout and review pass instead of a free crop. A Short has to be a contiguous run of segments, because its sound is one cut from the long-form mix. A panel still is enlarged to 1920 tall, so a 9:16 panel is softer than the same panel in 16:9; draw panels meant for Shorts at 2K. The safe-area numbers are from YouTube's layout as of 2026-10 and may change.
 
 ## Music by mood
 

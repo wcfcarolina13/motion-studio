@@ -16,6 +16,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py accept|revert <film> panels/p07/r02 [--seed 2]   put a repair into the panel, or take it back out
   longform.py upscale <film> [--size 2304x1296]   Real-ESRGAN 4x then Lanczos to cover the size -> panels-hd/ (timeline uses it)
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
+  longform.py short <film> <short> --from s05 --to s09   a 9:16 film from those segments: same voice and sound, its own layout
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
@@ -32,6 +33,7 @@ Every file stays in the film folder; nothing is uploaded from here.
 import argparse
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -76,6 +78,67 @@ def load_script(film):
 
 def load_timeline(film):
     return json.loads((film / "timeline.js").read_text().split("=", 1)[1].rstrip().rstrip(";"))
+
+
+# ── real things on screen need a real capture ───────────────
+# A scene that shows a real thing (a scam text, a company site, a headline, an agency page) points at a capture:
+# "real": "<id>" in sources/captures.json, {"<id>": {"file", "url", "captured": "YYYY-MM-DD", "licence", "credit"?}}.
+# Elements that look real but are made up say so with "illustrative": true. Unmarked, they stop timeline and render.
+CAPTURE_FIELDS = ("file", "url", "captured", "licence")
+REAL_ICONS = {"web", "doc", "phone", "bank", "card"}     # board cards drawn as evidence (a plain note is exempt)
+
+
+def load_captures(film):
+    m = film / "sources" / "captures.json"
+    return json.loads(m.read_text()) if m.exists() else {}
+
+
+def real_things(seg):
+    """(where, what, element) for everything in a segment that names a capture or looks like a real artifact."""
+    d = seg.get("data") or {}
+    out = []
+    if seg.get("type") in ("sms", "capture"):
+        out.append((seg["id"], "text message" if seg["type"] == "sms" else "screenshot", d))
+    for k, b in enumerate(d.get("beats") or []):
+        if isinstance(b, dict) and (b.get("notify") or "real" in b):
+            out.append((f"{seg['id']} beat {k + 1}", "phone notification", b))
+    for c in d.get("cards") or []:
+        if isinstance(c, dict) and ((c.get("icon") in REAL_ICONS and c.get("kind") != "note") or "real" in c):
+            out.append((f"{seg['id']} card {c.get('id', '?')}", f"{c.get('icon') or 'evidence'} card", c))
+    return out
+
+
+def real_asset_problems(film, segs):
+    caps, missing = load_captures(film), []
+    for seg in segs:
+        made_up = seg.get("illustrative") or (seg.get("data") or {}).get("illustrative")
+        for where, what, el in real_things(seg):
+            if seg.get("type") != "capture" and (made_up or el.get("illustrative")):
+                continue                        # a capture scene shows a captured file by definition: it can't be made up
+            rid = el.get("real")
+            if not rid:
+                missing.append(f"{where}: a real-looking {what} with no \"real\" capture id; "
+                               "point it at sources/captures.json or mark it \"illustrative\": true")
+                continue
+            entry = caps.get(rid)
+            if not entry:
+                missing.append(f"{where}: capture \"{rid}\" is not listed in sources/captures.json")
+                continue
+            gaps = [f for f in CAPTURE_FIELDS if not str(entry.get(f) or "").strip()]
+            if gaps:
+                missing.append(f"{where}: capture \"{rid}\" has no {', '.join(gaps)}")
+            elif not (film / entry["file"]).exists():
+                missing.append(f"{where}: capture \"{rid}\" file {entry['file']} is missing")
+            elif not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(entry["captured"])):
+                missing.append(f"{where}: capture \"{rid}\" date {entry['captured']!r} is not YYYY-MM-DD")
+    return missing
+
+
+def gate_real_assets(film, segs, step):
+    missing = real_asset_problems(film, segs)
+    if missing:
+        raise SystemExit(f"{step} stopped: {len(missing)} real-looking element(s) without a listed capture\n  "
+                         + "\n  ".join(missing))
 
 
 def cmd_init(a):
@@ -434,7 +497,7 @@ def cmd_timeline(a):
             dur = d + a.pad + s.get("extra", 0.0)
         else:
             dur = s.get("hold", 3.0)
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3))
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -447,6 +510,12 @@ def cmd_timeline(a):
                 seg["data"] = dict(seg["data"], image=str(hd.relative_to(film)))
             elif (film / seg["data"]["image"]).exists() and image_size(film / seg["data"]["image"])[0] < 1920:
                 problems.append(f"{s['id']}: panel {seg['data']['image']} is under 1920 wide and has no upscale; run `upscale`")
+        if seg.get("type") == "capture":        # a captured screenshot: the file, its size and its credit come from the manifest
+            cap = load_captures(film).get((seg.get("data") or {}).get("real"), {})
+            if cap.get("file") and (film / cap["file"]).exists():
+                iw, ih = image_size(film / cap["file"])
+                seg["data"] = dict(seg["data"], image=cap["file"], iw=iw, ih=ih, url=cap.get("url", ""))
+                seg.setdefault("source", cap.get("credit") or re.sub(r"^https?://(www\.)?([^/]+).*", r"\2", cap.get("url", "")))
         resolve_cues(seg.get("data", {}), seg.get("words"), seg, problems, cues)
         if seg.get("sfx"):      # drama foley: "sfx": ["paper slap", {"kind": "low hit", "at": "envelope"}]
             seg["sfx"] = [dict(x, kind=kind_key(x["kind"])) if isinstance(x, dict) else {"kind": kind_key(x)} for x in seg["sfx"]]
@@ -459,12 +528,17 @@ def cmd_timeline(a):
                 chapters[-1]["t1"] = round(t, 3)
             chapters.append({"title": s["chapter"], "t0": round(t, 3), "mood": s.get("mood") or moods.get(s["chapter"])})
         t += dur
-    total = round(t + a.tail, 3)
+    gate_real_assets(film, segs, "timeline")
+    fmt = sc.get("format", "16x9")
+    short = sc.get("short_of")
+    total = round(t + (SHORT_TAIL if short else a.tail), 3)
     if chapters:
         chapters[-1]["t1"] = total
-    tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs,
-          "chapters": chapters, "captions": bool(sc.get("captions", False)) and any("words" in s for s in segs),
+    tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs, "format": fmt,
+          "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues}
+    if short:
+        problems += short_audio(film, short, segs, a.lead)
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
     # narration bed: every clip placed at its segment start
     sr = 48000
@@ -485,7 +559,7 @@ def cmd_timeline(a):
     for k, ch in enumerate(chapters):
         s0 = 0 if k == 0 else int(ch["t0"])
         lines.append(f"{s0 // 60}:{s0 % 60:02d} {ch['title']}")
-        if k and ch["t0"] - chapters[k - 1]["t0"] < 10:
+        if k and ch["t0"] - chapters[k - 1]["t0"] < 10 and fmt != "9x16":      # Shorts have no chapter list
             problems.append(f"chapter \"{chapters[k - 1]['title']}\" is under 10 s; YouTube will ignore the chapter list")
     (film / "out" / "chapters.txt").write_text("\n".join(lines) + "\n")
     if any("words" in s for s in segs):
@@ -494,6 +568,94 @@ def cmd_timeline(a):
     print("\n".join(lines))
     for p in problems:
         print("PROBLEM:", p)
+
+
+# ── Shorts: a 9:16 film re-laid-out from a run of a long-form film's segments ──
+SHORT_TAIL = 0.8        # seconds of silence after a Short's last line (the long-form tail would carry the next line)
+
+
+def cmd_short(a):
+    """A new 9:16 film folder from segments --from..--to of a long-form film. It reuses their script, voice clips,
+    word times and (at `timeline`) a cut of the long-form mix, and gets its own layout, burned-in captions and review."""
+    import copy
+    film, dest = Path(a.film).resolve(), Path(a.dest).resolve()
+    sc = load_script(film)
+    ids = [x["id"] for x in sc["segments"]]
+    if a.first not in ids or a.last not in ids or ids.index(a.first) > ids.index(a.last):
+        raise SystemExit(f"--from {a.first} --to {a.last}: both must be segment ids of {film.name}, in film order")
+    if (dest / "script.json").exists():
+        raise SystemExit(f"{dest}/script.json exists; a Short's script is edited by hand, so it is never overwritten")
+    segs = copy.deepcopy(sc["segments"][ids.index(a.first):ids.index(a.last) + 1])
+    for d in ("narration", "out", "review", "sources"):
+        (dest / d).mkdir(parents=True, exist_ok=True)
+    shutil.copy(TEMPLATE, dest / "film.html")
+    for f in ("kit.js", "figure.js"):
+        shutil.copy(HERE / f, dest / f)
+    keep = {x["id"] for x in segs}
+    for x in segs:
+        clip = film / "narration" / f"{x['id']}.mp3"
+        if clip.exists():
+            shutil.copy2(clip, dest / "narration" / clip.name)
+    wj = film / "narration" / "words.json"
+    if wj.exists():
+        words = {k: v for k, v in json.loads(wj.read_text()).items() if k in keep}
+        (dest / "narration" / "words.json").write_text(json.dumps(words, indent=1, ensure_ascii=False) + "\n")
+    if (film / "sources").is_dir():
+        shutil.copytree(film / "sources", dest / "sources", dirs_exist_ok=True)
+    for x in segs:                          # panel stills and their upscaled copies, at the same relative paths
+        img = (x.get("data") or {}).get("image")
+        for src in ([film / img, hd_path(film, img)] if img else []):
+            if src and src.exists():
+                (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest / src.relative_to(film))
+    out = {k: sc[k] for k in ("palette", "grade", "moods") if k in sc}
+    out.update(title=a.title or sc["title"], format="9x16", captions=True,
+               short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
+    (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
+    print(f"{len(segs)} segments -> {dest}")
+    tlp = film / "timeline.js"
+    if tlp.exists():
+        span = {x["id"]: x for x in load_timeline(film)["segments"]}
+        secs = span[a.last]["t1"] - span[a.first]["t0"] + SHORT_TAIL
+        print(f"length about {secs:.0f} s" + ("; over 3 minutes, YouTube won't treat it as a Short" if secs > 180 else ""))
+    print("Now lay it out for 9:16 in its script.json: fewer things on screen at once, larger type, its own camera "
+          "(panel focus and camera, board card x/y, stage cast x). Then timeline, stills (look at the sheet), render, final.")
+
+
+def short_audio(film, short, segs, lead):
+    """Cut the Short's sound from its long-form mix: lead-in, its segments, a fade, then SHORT_TAIL of silence.
+    Returns problems; the cut is only right while every segment lasts exactly as long as it does in the long-form film."""
+    parent = (film / short["film"]).resolve()
+    problems = []
+    if not (parent / "timeline.js").exists():
+        return [f"long-form film {parent} has no timeline.js; run timeline there first"]
+    ptl = load_timeline(parent)
+    pseg = {x["id"]: x for x in ptl["segments"]}
+    for x in segs:
+        p = pseg.get(x["id"])
+        if not p:
+            problems.append(f"{x['id']} is not in the long-form film any more")
+        elif abs((p["t1"] - p["t0"]) - (x["t1"] - x["t0"])) > 0.02:
+            problems.append(f"{x['id']} lasts {x['t1'] - x['t0']:.2f} s here and {p['t1'] - p['t0']:.2f} s in the long-form "
+                            "film; run timeline with the long-form film's --pad and --lead, or its sound won't line up")
+    mix = parent / "out" / "mix.wav"
+    if not mix.exists() or mix.stat().st_mtime < (parent / "timeline.js").stat().st_mtime:
+        return problems + [f"{mix} is missing or older than its timeline; run mix on the long-form film, then timeline here again"]
+    if problems or not segs:
+        return problems
+    p0, p1 = pseg[segs[0]["id"]]["t0"], pseg[segs[-1]["id"]]["t1"]
+    start, delay = p0 - lead, 0.0
+    if start < 0:
+        start, delay = 0.0, -start
+    span = p1 - start
+    af = (f"atrim=start={start:.3f}:duration={span:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.08,"
+          f"afade=t=out:st={max(0.0, span - 0.4):.3f}:d=0.4,adelay={int(delay * 1000)}:all=1,apad=pad_dur={SHORT_TAIL}")
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(mix), "-af", af, "-ar", "48000", str(film / "out" / "mix.wav")])
+    used = parent / "out" / "sounds_used.json"
+    if used.exists():
+        shutil.copy2(used, film / "out" / "sounds_used.json")
+    print(f"sound: {p0 - lead:.2f}-{p1:.2f} s of {parent.name}'s mix -> out/mix.wav (credits copied)")
+    return problems
 
 
 def write_vtt(segs, dest, max_words=9, max_chars=42):
@@ -614,6 +776,13 @@ def _render_chunk(args):
 def cmd_render(a):
     film = Path(a.film).resolve()
     tl = load_timeline(film)
+    gate_real_assets(film, tl["segments"], "render")
+    if tl.get("format") == "9x16":          # a Short is a new layout: look at its own contact sheet before spending a render on it
+        made = (film / "timeline.js").stat().st_mtime
+        sheets = [p for p in (film / "review").glob("stills-*.png") if p.stat().st_mtime >= made]
+        if not sheets:
+            raise SystemExit("render stopped: a 9:16 film needs its own contact sheet first. Run `stills` and look at "
+                             "review/stills-segments.png (or stills-every.png); it must be newer than timeline.js")
     n = math.ceil(tl["duration"] * FPS)
     parts = film / "out" / "parts"
     shutil.rmtree(parts, ignore_errors=True)
@@ -921,6 +1090,9 @@ def library_whoosh():
 def cmd_mix(a):
     """Narration on top; the music bed ducked under the voice; an optional whoosh at each chapter start."""
     film = Path(a.film).resolve()
+    if load_script(film).get("short_of") and not a.remix:
+        raise SystemExit("this is a Short: `timeline` already cut its sound from the long-form mix (out/mix.wav). "
+                         "Pass --remix to build a separate mix for it instead")
     tl = load_timeline(film)
     total = tl["duration"]
     narr = film / "out" / "narration.wav"
@@ -1281,7 +1453,12 @@ def main():
     p.add_argument("--sfx", action=argparse.BooleanOptionalAction, default=True,
                    help="UI sounds from the timeline: phone buzz, message ping, card pin, stamp (on by default; --no-sfx)")
     p.add_argument("--sfx-drawn", action="store_true", help="fill kinds with no recorded clip with code-drawn placeholders")
-    p.add_argument("--sfx-db", type=float, default=-12); p.set_defaults(fn=cmd_mix)
+    p.add_argument("--sfx-db", type=float, default=-12)
+    p.add_argument("--remix", action="store_true", help="on a Short: build its own mix instead of the one cut from its long-form film")
+    p.set_defaults(fn=cmd_mix)
+    p = sp.add_parser("short"); p.add_argument("film", help="the long-form film"); p.add_argument("dest", help="the new Short's folder")
+    p.add_argument("--from", dest="first", required=True, help="first segment id"); p.add_argument("--to", dest="last", required=True, help="last segment id")
+    p.add_argument("--title"); p.set_defaults(fn=cmd_short)
     p = sp.add_parser("credits"); p.add_argument("film"); p.set_defaults(fn=cmd_credits)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)

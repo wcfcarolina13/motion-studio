@@ -49,5 +49,5 @@ Used once: Bayer-dither dissolve (smoke test). Not yet used (candidates for the 
 ## Techniques from the source threads
 
 - Name a reference style rather than describing one; without a reference the model falls back to centred text on a gradient.
-- Real components beat invented ones (21st.dev for product UI; real screenshots for real material).
+- Real components beat invented ones (21st.dev for product UI; real screenshots for real material). In long-form films this is enforced: a real-looking element needs a listed capture or an `illustrative` mark (longform.md, real things on screen).
 - Stills per scene before anything moves; director notes in camera words ("hard cut here", "slow this push to 0.7x").
