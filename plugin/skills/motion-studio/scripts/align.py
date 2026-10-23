@@ -67,14 +67,29 @@ def spoken(token):
     return [w for w in re.split(r"[^a-z0-9']+", t) if w]
 
 
-def tokens(text):
-    """Written tokens as they should appear in a caption, each with its spoken words."""
-    out = []
-    for tok in text.replace("—", " — ").split():
-        words = spoken(tok)
+def tokens(text, say_map=None):
+    """Written tokens as they should appear in a caption, each with its spoken words. A phrase in `say_map` (written ->
+    spoken, see say.py) takes its spoken words from the spoken form: word for word when the counts match, else all on
+    the phrase's first token."""
+    import say
+    out, pos = [], []
+    for m in re.finditer(r"\S+", text.replace("—", " — ")):
+        tok = m.group(0)
         if tok in ("—", "–"):
             continue
-        out.append({"w": tok, "say": words})
+        out.append({"w": tok, "say": spoken(tok)}); pos.append(m.start())
+    for a, b, sp in say.spans(text.replace("—", " — "), say_map):
+        idx = [i for i, p in enumerate(pos) if a <= p < b]
+        if not idx:
+            continue
+        parts = sp.split()
+        if len(parts) == len(idx):
+            for i, w in zip(idx, parts):
+                out[i]["say"] = spoken(w)
+        else:
+            out[idx[0]]["say"] = [w for p in parts for w in spoken(p)]
+            for i in idx[1:]:
+                out[i]["say"] = []
     return out
 
 
@@ -146,13 +161,13 @@ def _snap(words, gaps, dur):
     return words
 
 
-def align_clip(clip, text, work=None):
-    """Align `text` to `clip`; returns (words, method)."""
+def align_clip(clip, text, work=None, say_map=None):
+    """Align `text` to `clip`; returns (words, method). `say_map`: phrases the voice was given in another form."""
     clip = Path(clip)
     work = Path(work or clip.parent)
     wav = work / f".{clip.stem}.16k.wav"
     to_wav16k(clip, wav)
-    toks = tokens(text)
+    toks = tokens(text, say_map)
     gaps, dur = pauses(wav)
     try:
         words = _sphinx(toks, wav)

@@ -2,13 +2,14 @@
 """Long-form narrated films (YouTube explainers, 5-20 minutes) on the motion-studio engine.
 
 A film folder holds script.json and narration/<id>.mp3 (one clip per segment, from any TTS or a human read).
-script.json: {"title", "palette"?, "captions"?: false, "type_scale"?: 1, "moods"?: {"<chapter>": "tension"}, "segments": [
+script.json: {"title", "palette"?, "captions"?: false, "type_scale"?: 1, "say"?: {"John Does": "John Doughs"}, "moods"?: {"<chapter>": "tension"}, "segments": [
   {"id", "chapter", "type", "data", "narration", "source"?, "mood"?}]}.
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
 
   longform.py init <film>                       copy the engine (film.html, kit.js, figure.js) into the folder
-  longform.py lines <film> [--json]             each segment's narration (feed to TTS, one file per id; --json adds speaker, mono)
+  longform.py lines <film> [--json]             what the voice says per segment, "say" map applied (feed to TTS, one file per id;
+                                                --json adds speaker, mono); likely misreads go to stderr as SAY: lines
   longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
   longform.py lint <film | prompts.json>        warn on prompt patterns that break hands, limbs and busy scenes
   longform.py review <film> [--checks c.json]   out/review/index.html: numbered panels to mark by click, regions by drag
@@ -151,15 +152,36 @@ def cmd_init(a):
     print(film)
 
 
+def say_map(sc, s):
+    import say
+    return say.merged(sc.get("say"), s.get("say"))
+
+
+def spoken_lines(sc):
+    """(segment, the text the voice gets) for every narrated segment: the narration with the film's "say" map applied."""
+    import say
+    return [(s, say.apply(s["narration"], say_map(sc, s))) for s in sc["segments"] if s.get("narration")]
+
+
+def say_problems(sc):
+    """What the voice is likely to misread, in the text it will be given (so a "say" entry that fixes it clears it)."""
+    import say
+    return [f"{s['id']}: \"{w}\": {why}" + (f"; try \"say\": {{\"{w}\": \"{fix}\"}}" if fix else "")
+            for s, text in spoken_lines(sc) for w, why, fix in say.lint(text)]
+
+
 def cmd_lines(a):
     film = Path(a.film).resolve()
-    segs = [s for s in load_script(film)["segments"] if s.get("narration")]
+    sc = load_script(film)
+    lines = spoken_lines(sc)
+    for p in say_problems(sc):
+        print("SAY:", p, file=sys.stderr)
     if a.json:      # a drama: one voice per speaker, inner monologue read closer and quieter
-        print(json.dumps([{"id": s["id"], "speaker": s.get("speaker", "narrator"), "mono": bool(s.get("mono")), "text": s["narration"]}
-                          for s in segs], indent=1, ensure_ascii=False))
+        print(json.dumps([{"id": s["id"], "speaker": s.get("speaker", "narrator"), "mono": bool(s.get("mono")), "text": text,
+                           **({"shown": s["narration"]} if text != s["narration"] else {})} for s, text in lines], indent=1, ensure_ascii=False))
         return
-    for s in segs:
-        print(f"{s['id']}\t{s['narration']}")
+    for s, text in lines:
+        print(f"{s['id']}\t{text}")
 
 
 def panel_list(film, sc, problems=None):
@@ -431,15 +453,17 @@ def cmd_align(a):
     film = Path(a.film).resolve()
     out_path = film / "narration" / "words.json"
     words = json.loads(out_path.read_text()) if out_path.exists() and not a.redo else {}
-    methods = {}
-    for s in load_script(film)["segments"]:
-        if not s.get("narration") or (s["id"] in words and words[s["id"]].get("text") == s["narration"]):
+    methods, sc = {}, load_script(film)
+    for s in sc["segments"]:
+        sm = say_map(sc, s)
+        if not s.get("narration") or (s["id"] in words and words[s["id"]].get("text") == s["narration"]
+                                      and (words[s["id"]].get("say") or {}) == sm):
             continue
         clip = film / "narration" / f"{s['id']}.mp3"
         if not clip.exists():
             raise SystemExit(f"missing narration clip {clip}")
-        ws, method = align.align_clip(clip, s["narration"], work=film / "out")
-        words[s["id"]] = {"text": s["narration"], "method": method, "words": ws}
+        ws, method = align.align_clip(clip, s["narration"], work=film / "out", say_map=sm)
+        words[s["id"]] = {"text": s["narration"], "method": method, "words": ws, **({"say": sm} if sm else {})}
         methods[method] = methods.get(method, 0) + 1
     out_path.write_text(json.dumps(words, indent=1, ensure_ascii=False))
     print(f"words -> {out_path} ({', '.join(f'{v} {k}' for k, v in methods.items()) or 'nothing new'})")
@@ -1469,6 +1493,10 @@ def cmd_check(a):
             items.sort()
             flags.append(f"{sid} ({ty}): text under {floor:.0f} px: " + "; ".join(f"\"{t}\" {px:.0f} px" for px, t in items[:3])
                          + (f" and {len(items) - 3} more" if len(items) > 3 else ""))
+    # pronunciation: what the voice will likely misread in the text it was given
+    sp = say_problems(load_script(film))
+    report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
+    flags += ["say " + p for p in sp]
     print("\n".join(report))
     print(f"\n{len(flags)} flag(s)" + (":" if flags else ""))
     for f in flags:
