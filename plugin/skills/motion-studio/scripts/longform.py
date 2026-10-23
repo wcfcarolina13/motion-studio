@@ -608,7 +608,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "grade", "moods") if k in sc}
+    out = {k: sc[k] for k in ("palette", "grade", "moods", "ui_sounds") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
@@ -910,6 +910,14 @@ def trim_clip(x, kind, sr=48000, fade=0.06):
     return x
 
 
+def shape_clip(x, gain=1.0, lowpass=None, sr=48000):
+    """A film's own take on a kind: scale it and roll off its top (a buzz under a voice wants to be felt, not heard)."""
+    if lowpass:
+        from scipy.signal import butter, sosfilt
+        x = sosfilt(butter(4, float(lowpass) / (sr / 2), output="sos"), x)
+    return x * float(gain)
+
+
 def recorded_sfx(kind, trim=True):
     """Library clips catalogued with "role": <kind> (studio.py role <id> <kind>); trim=False keeps a bed's full length."""
     import audio
@@ -1003,7 +1011,19 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
     for sg in tl["segments"]:           # foley a segment asks for by name: recorded clips only, never drawn
         for x in sg.get("sfx", []):
             kinds.setdefault(kind_key(x["kind"]), recorded_sfx(x["kind"]))
-    missing = [k for k, c in kinds.items() if not c]
+    # script.json "ui_sounds": {"ping": false, "buzz": {"gain": 0.2, "lowpass": 2500}} sets a film's default per kind
+    tuned = load_script(film).get("ui_sounds") or {}
+    unknown = [k for k in tuned if kind_key(k) not in kinds]
+    if unknown:                         # a misspelt kind would otherwise leave the sound playing with no word said
+        print(f"  ui_sounds: no such sound kind {', '.join(map(repr, unknown))} (kinds here: {', '.join(sorted(kinds))})")
+    off = {kind_key(k) for k, v in tuned.items() if v is False and kind_key(k) in kinds}
+    for k, v in tuned.items():
+        k = kind_key(k)
+        if isinstance(v, dict) and kinds.get(k):
+            kinds[k] = [(c, shape_clip(x, v.get("gain", 1.0), v.get("lowpass"), sr)) for c, x in kinds[k]]
+    for k in off:
+        kinds[k] = []
+    missing = [k for k, c in kinds.items() if not c and k not in off]
     events = []
     for sg in tl["segments"]:
         d = sg.get("data") or {}
@@ -1023,7 +1043,8 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
             events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
         events += [(x.get("t", sg["t0"] + 0.1), kind_key(x["kind"])) for x in sg.get("sfx", [])]
     skipped = sum(1 for _, k in events if k in missing)
-    events = sorted(e for e in events if e[1] not in missing)
+    muted = sum(1 for _, k in events if k in off)
+    events = sorted(e for e in events if e[1] not in missing and e[1] not in off)
     kept, last = [], {}
     for t, k in events:
         if t - last.get(k, -9) >= SFX_GAP.get(k, 0.3):
@@ -1064,6 +1085,8 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
         w.writeframes((np.clip(out, -1, 1) * 32767).astype("<i2").tobytes())
     print(f"sfx: {len(events)} sounds ({', '.join(f'{k} {used[k]}' for k in kinds)})" + (f", {dropped} too close to the last one dropped" if dropped else ""))
+    if muted:
+        print(f"  {muted} cues off by script.json ui_sounds: {', '.join(sorted(off))}")
     if skipped:
         print(f"  {skipped} cues silent: no library clip has role {', '.join(repr(k) for k in missing)} (sound.md, long-form UI sounds)")
     for k, clips in kinds.items():
