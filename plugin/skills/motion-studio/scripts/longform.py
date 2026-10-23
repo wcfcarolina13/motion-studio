@@ -832,9 +832,21 @@ def cmd_music(a):
     print("plan ->", film / "out" / "music_plan.json", "(edit `track` per run to override)")
 
 
+def plan_problems(tl, plan):
+    """Ways a music plan no longer matches the film: chapters added, dropped or renamed, or the chapters retimed."""
+    out, chs, runs = [], tl["chapters"], plan.get("runs") or []
+    have, want = [c for r in runs for c in r.get("chapters", [])], [c["title"] for c in chs]
+    if have != want:
+        out.append(f"it covers chapters {have}, the film has {want}")
+    if runs and chs and abs(runs[-1]["t1"] - chs[-1]["t1"]) > 0.5:
+        out.append(f"its music ends at {runs[-1]['t1']:.1f} s, the last chapter at {chs[-1]['t1']:.1f} s")
+    return out
+
+
 def build_bed(film, plan, total, sr=48000, xfade=3.0):
     """The music bed from a plan: each run plays its track from the top (looping on a crossfade if the run is longer);
-    the last run is back-timed so the track's own ending lands on the film's end."""
+    the last run reaches the film's end (past its last chapter, under the tail or an end screen) and is back-timed so the
+    track's own ending lands there."""
     import numpy as np
     import audio
     cat = audio.catalog()["tracks"]
@@ -847,7 +859,7 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
         if e is not None:
             x = x * 10 ** ((-20.0 - e) / 20)
         a0 = max(0.0, r["t0"] - (xfade / 2 if k else 0))
-        a1 = min(total, r["t1"] + (xfade / 2 if k < len(runs) - 1 else 0))
+        a1 = min(total, r["t1"] + xfade / 2) if k < len(runs) - 1 else total
         need = int((a1 - a0) * sr)
         last = k == len(runs) - 1
         if last and len(x) >= need:
@@ -876,6 +888,17 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
         i0 = int(a0 * sr)
         bed[i0:i0 + n] += seg * env[:, None]
     bed = bed[:int(total * sr)]
+    # the bed must still be playing at the end: a plan made before the film grew, or a track that dies early, leaves the
+    # ending (often the end screen) bare, which the owner heard as a flat outro
+    # ("silent" = 30 dB under the bed's typical level; a track's own ending may decay over its last 3 s)
+    hop = int(0.05 * sr)
+    rms = np.sqrt((bed[:len(bed) // hop * hop] ** 2).mean(axis=1).reshape(-1, hop).mean(axis=1))
+    loud = np.nonzero(rms > np.median(rms[rms > 1e-5]) * 10 ** (-30 / 20))[0] if (rms > 1e-5).any() else []
+    last_heard = (loud[-1] + 1) * hop / sr if len(loud) else 0.0
+    if total - last_heard > 3.0:
+        raise SystemExit(f"music bed goes quiet at {last_heard:.1f} s, {total - last_heard:.1f} s before the film ends "
+                         f"({runs[-1].get('title') or runs[-1]['track']} is the last track): pick a longer track for the last run "
+                         f"in out/music_plan.json, or run `music` again")
     import wave
     dest = film / "out" / "bed.wav"
     pcm = (np.clip(bed, -1, 1) * 32767).astype("<i2")
@@ -1124,6 +1147,10 @@ def cmd_mix(a):
     filt = []
     if a.plan:
         plan = json.loads((film / "out" / "music_plan.json").read_text())
+        stale = plan_problems(tl, plan)
+        if stale:
+            raise SystemExit("out/music_plan.json is out of date with the timeline: " + "; ".join(stale) +
+                             ". Run `music` again (redo any track you picked by hand in the plan)")
         sounds["music"] = list(dict.fromkeys(r["track"] for r in plan["runs"]))
         bed = build_bed(film, plan, total)
         inputs += ["-i", str(bed)]
