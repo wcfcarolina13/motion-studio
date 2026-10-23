@@ -11,6 +11,7 @@ The blind read asks whether the film still makes its point. The critic asks whet
 - **per chapter**: events per minute and the share of still frames, so a flat chapter stands out from the others.
 - **cue landings**: every word cue should produce a visible change within -0.2 to +0.8 s of its word. A change in any small block above the caption band counts (`--local`), so a small reveal such as a spoke label registers.
 - **one-frame flashes**: a frame that differs from both neighbours while they match each other (back-to-back pops that verify's single-frame check misses).
+- **text size**: every piece of reading text on screen, measured in the page at the end of each segment and just after each word cue, after the scene's camera. Under `--min-text` (56 px at 1920 wide, scaled to the frame's width: 32 px in a 9:16 Short) flags. A 16:9 video in a phone held upright is about 6.5 cm wide, so 56 px is about 11 pt; the owner watches on phones and asked for the information to be bigger (2026-10-23). Labels a viewer need not read (chapter and source lines, kickers, the sender line, attributions) carry `data-aux` in the template and are exempt. It needs no render, only `timeline`.
 
 ## 2. A fresh critic, not the builder
 

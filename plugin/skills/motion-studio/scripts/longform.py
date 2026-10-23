@@ -2,7 +2,7 @@
 """Long-form narrated films (YouTube explainers, 5-20 minutes) on the motion-studio engine.
 
 A film folder holds script.json and narration/<id>.mp3 (one clip per segment, from any TTS or a human read).
-script.json: {"title", "palette"?, "captions"?: false, "moods"?: {"<chapter>": "tension"}, "segments": [
+script.json: {"title", "palette"?, "captions"?: false, "type_scale"?: 1, "moods"?: {"<chapter>": "tension"}, "segments": [
   {"id", "chapter", "type", "data", "narration", "source"?, "mood"?}]}.
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
@@ -25,7 +25,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py credits <film>                    out/credits.txt: the attribution lines for every sound the mix used
   longform.py render <film> [--workers 4] [--scale 1.0]
   longform.py final <film>                      mux render + mix, verify
-  longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes
+  longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes, text size
   longform.py share <film>                      out/share/: a page that streams the cut (publish it as a private artifact)
 
 Every file stays in the film folder; nothing is uploaded from here.
@@ -536,7 +536,7 @@ def cmd_timeline(a):
         chapters[-1]["t1"] = total
     tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs, "format": fmt,
           "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
-          "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues}
+          "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1)}
     if short:
         problems += short_audio(film, short, segs, a.lead)
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
@@ -608,7 +608,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "grade", "moods", "ui_sounds") if k in sc}
+    out = {k: sc[k] for k in ("palette", "grade", "moods", "ui_sounds", "type_scale") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
@@ -1286,6 +1286,65 @@ def frame_diffs(video, fps=10, w=192, h=108, local=False):
     return (np.array(d), np.array(loc)) if local else np.array(d)
 
 
+MEASURE_TEXT = """() => {
+  const st = document.getElementById('stage').getBoundingClientRect(), out = [];
+  document.querySelectorAll('#svg text').forEach(el => {
+    const s = el.textContent.trim();
+    if (!/[A-Za-z0-9]/.test(s)) return;
+    let o = 1;
+    for (let n = el; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) {
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      o *= +cs.opacity;
+    }
+    if (o < 0.5) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.right < 0 || r.bottom < 0 || r.left > st.width || r.top > st.height) return;
+    // text that rises out of a mask line is unseen until it has risen: count it only when most of it is inside its clip
+    const cg = el.parentNode.getAttribute && el.parentNode.getAttribute('clip-path');
+    if (cg) {
+      const c = document.getElementById(cg.slice(5, -1)), cr = c && c.querySelector('rect'), b = el.getBBox();
+      if (cr) { const y0 = +cr.getAttribute('y'), y1 = y0 + +cr.getAttribute('height');
+        if (Math.min(y1, b.y + b.height) - Math.max(y0, b.y) < 0.6 * b.height) return; }
+    }
+    const m = el.getScreenCTM(), k = Math.hypot(m.a, m.b);
+    out.push([s.slice(0, 50), Math.round(parseFloat(getComputedStyle(el).fontSize) * k * 10) / 10, el.closest('[data-aux]') ? 1 : 0]);
+  });
+  return out;
+}"""
+
+
+def text_sizes(film, segs):
+    """The on-screen size of every visible piece of text, per segment: sampled once the segment's reveals are done and
+    a beat after each of its word cues (a bubble or a notification can come and go mid-segment)."""
+    import render
+    seen = {}
+    with render.Film(film) as f:
+        for s in segs:
+            ts = {max(s["t0"] + 0.5, s["t1"] - 0.4)}
+            ts |= {c["t"] + 0.7 for c in walk_cues(s.get("data")) if s["t0"] < c["t"] + 0.7 < s["t1"] - 0.3}
+            for t in sorted(ts):
+                f.page.evaluate(f"window.seek({t:.3f})")
+                for txt, px, aux in f.page.evaluate(MEASURE_TEXT):
+                    key = (s["id"], txt)
+                    if key not in seen or px < seen[key][1]:
+                        seen[key] = (s["type"], px, aux)
+        w = f.w
+    return seen, w
+
+
+def walk_cues(d):
+    """Every object in a segment's data that `timeline` gave a word time."""
+    if isinstance(d, dict):
+        if isinstance(d.get("t"), (int, float)) and "at" in d:
+            yield d
+        for v in d.values():
+            yield from walk_cues(v)
+    elif isinstance(d, list):
+        for v in d:
+            yield from walk_cues(v)
+
+
 def cmd_check(a):
     """Dead air, text-only stretches, cue landings and one-frame flashes, measured from the timeline and the render."""
     import numpy as np
@@ -1367,6 +1426,22 @@ def cmd_check(a):
         report.append(f"one-frame flashes: {len(flashes)}")
         for t in flashes:
             flags.append(f"one-frame flash at {t:.2f} s ({seg_at(t)})")
+    # 5. text size: what a viewer must read has to survive a phone. A 16:9 video in a phone held upright is about 6.5 cm
+    # wide, so 56 px of a 1920 frame is about 11 pt, the smallest comfortable reading size (scaled to the frame's width)
+    if a.min_text:
+        seen, w = text_sizes(film, segs)
+        floor = a.min_text * w / 1920
+        small = {}
+        for (sid, txt), (ty, px, aux) in seen.items():
+            if not aux and px < floor - 0.5:
+                small.setdefault(sid, (ty, []))[1].append((px, txt))
+        info = [px for (ty, px, aux) in seen.values() if not aux]
+        report.append(f"text size: smallest reading text {min(info, default=0):.0f} px (floor {floor:.0f} px); "
+                      f"{len(small)} segment(s) under it")
+        for sid, (ty, items) in small.items():
+            items.sort()
+            flags.append(f"{sid} ({ty}): text under {floor:.0f} px: " + "; ".join(f"\"{t}\" {px:.0f} px" for px, t in items[:3])
+                         + (f" and {len(items) - 3} more" if len(items) > 3 else ""))
     print("\n".join(report))
     print(f"\n{len(flags)} flag(s)" + (":" if flags else ""))
     for f in flags:
@@ -1501,6 +1576,7 @@ def main():
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
+    p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, default=60, help="seconds per streamed file")
     p.set_defaults(fn=cmd_share)
