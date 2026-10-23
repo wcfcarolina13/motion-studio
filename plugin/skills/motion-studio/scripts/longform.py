@@ -2,7 +2,7 @@
 """Long-form narrated films (YouTube explainers, 5-20 minutes) on the motion-studio engine.
 
 A film folder holds script.json and narration/<id>.mp3 (one clip per segment, from any TTS or a human read).
-script.json: {"title", "palette"?, "captions"?: false, "type_scale"?: 1, "say"?: {"John Does": "John Doughs"}, "moods"?: {"<chapter>": "tension"}, "segments": [
+script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?, "captions"?: false, "type_scale"?: 1, "say"?: {"John Does": "John Doughs"}, "moods"?: {"<chapter>": "tension"}, "segments": [
   {"id", "chapter", "type", "data", "narration", "source"?, "mood"?}]}.
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
@@ -10,6 +10,8 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py init <film>                       copy the engine (film.html, kit.js, figure.js) into the folder
   longform.py lines <film> [--json]             what the voice says per segment, "say" map applied (feed to TTS, one file per id;
                                                 --json adds speaker, mono); likely misreads go to stderr as SAY: lines
+  longform.py voiced <film> [ids] [--speed 1.0]  after voicing: record each clip's voice, pack, speed, words and hash
+                                                (narration/voice.json; timeline stops on a clip that doesn't match the film)
   longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
   longform.py lint <film | prompts.json>        warn on prompt patterns that break hands, limbs and busy scenes
   longform.py review <film> [--checks c.json]   out/review/index.html: numbered panels to mark by click, regions by drag
@@ -170,14 +172,112 @@ def say_problems(sc):
             for s, text in spoken_lines(sc) for w, why, fix in say.lint(text)]
 
 
+# ── one voice per film ───────────────────────────────────────
+# A film is voiced by one voice, one model pack and one speed (a drama: one per speaker, "voices": {speaker: {...}}).
+# Whoever voices a clip records it with `voiced`, in narration/voice.json: {id: {engine, pack, name, speed, text, sha1}}.
+# timeline stops when a clip is unrecorded, was changed after it was recorded, was voiced for other words, or was voiced
+# with another voice, pack or speed: a re-voice at 1.17 slipped into the toll-text film (2026-10-23).
+VOICE = {"engine": "kokoro", "pack": "v1.0", "name": "am_michael", "speed": 1.0}   # the owner's pick (2026-10-23)
+VOICE_KEYS = ("engine", "pack", "name", "speed")
+
+
+def voice_for(sc, s):
+    v = dict(VOICE, **(sc.get("voice") or {}))
+    sp = s.get("speaker")
+    if sp and sp != "narrator":
+        v = dict(v, **((sc.get("voices") or {}).get(sp) or {}))
+    return {k: v[k] for k in VOICE_KEYS}
+
+
+def sha1(path):
+    import hashlib
+    return hashlib.sha1(Path(path).read_bytes()).hexdigest()
+
+
+def voice_problems(film, sc):
+    vj = film / "narration" / "voice.json"
+    rec = json.loads(vj.read_text()) if vj.exists() else {}
+    out, used = [], {}
+    for s, text in spoken_lines(sc):
+        clip, want, e = film / "narration" / f"{s['id']}.mp3", voice_for(sc, s), rec.get(s["id"])
+        if not clip.exists():
+            continue                                    # timeline reports missing clips itself
+        if not e:
+            out.append(f"{s['id']}: no record of how it was voiced (run `voiced` after voicing it)")
+            continue
+        got = {k: e.get(k) for k in VOICE_KEYS}
+        if got["engine"] == want["engine"] == "human":
+            continue
+        diff = [f"{k} {got[k]!r} (film: {want[k]!r})" for k in VOICE_KEYS if got[k] != want[k]]
+        if diff:
+            out.append(f"{s['id']}: voiced with " + ", ".join(diff))
+        if e.get("sha1") != sha1(clip):
+            out.append(f"{s['id']}: the clip changed after it was recorded as voiced (re-voiced by hand?); voice it again and run `voiced`")
+        elif e.get("text") != text:
+            out.append(f"{s['id']}: voiced for other words than the script now has; voice it again")
+        used.setdefault((s.get("speaker") or "narrator", got["pack"], got["speed"]), []).append(s["id"])
+    by_speaker = {}
+    for (sp, pack, speed), ids in used.items():
+        by_speaker.setdefault(sp, []).append(f"pack {pack} at speed {speed}: {', '.join(ids[:6])}" + (" …" if len(ids) > 6 else ""))
+    for sp, mixes in by_speaker.items():
+        if len(mixes) > 1:
+            out.append(f"{sp} is voiced with more than one pack or speed: " + "; ".join(mixes))
+    return out
+
+
+def cmd_voiced(a):
+    """Record how clips were voiced (after voicing them): the film's voice unless overridden, the words, the file's hash."""
+    film = Path(a.film).resolve()
+    sc = load_script(film)
+    vj = film / "narration" / "voice.json"
+    rec = json.loads(vj.read_text()) if vj.exists() else {}
+    over = {k: v for k, v in (("engine", a.engine), ("pack", a.pack), ("name", a.name), ("speed", a.speed)) if v is not None}
+    n = 0
+    for s, text in spoken_lines(sc):
+        if a.ids and s["id"] not in a.ids:
+            continue
+        clip = film / "narration" / f"{s['id']}.mp3"
+        if not clip.exists():
+            print(f"  {s['id']}: no clip yet, skipped")
+            continue
+        rec[s["id"]] = dict(voice_for(sc, s), **over, text=text, sha1=sha1(clip))
+        n += 1
+    vj.write_text(json.dumps(rec, indent=1, ensure_ascii=False) + "\n")
+    print(f"{n} clip(s) recorded -> {vj}")
+    for p in voice_problems(film, sc):
+        print("VOICE:", p)
+
+
+def speed_outliers(film, segs, tol=0.15):
+    """Clips spoken noticeably faster or slower than the film's median (spoken letters per second, from the word
+    times): a speed slip shows here even without a record. Sentences vary by about ±10% on their own (more with spread
+    timing), so only a larger gap is flagged; a 1.17 re-voice showed as +37% on the test film."""
+    import statistics
+    import align
+    rates = {}
+    for s in segs:
+        ws = s.get("words") or []
+        if len(ws) >= 6:
+            speech = ws[-1][2] - ws[0][1]                # first word on to last word off: pauses inside count, as speed stretches them too
+            if speech > 1.5:
+                rates[s["id"]] = sum(len("".join(align.spoken(w[0]))) for w in ws) / speech   # spoken letters per second
+    if len(rates) < 4:
+        return []
+    med = statistics.median(rates.values())
+    return [f"{sid}: spoken {r / med - 1:+.0%} against the film's median pace; check its voice speed"
+            for sid, r in rates.items() if abs(r / med - 1) > tol]
+
+
 def cmd_lines(a):
     film = Path(a.film).resolve()
     sc = load_script(film)
     lines = spoken_lines(sc)
     for p in say_problems(sc):
         print("SAY:", p, file=sys.stderr)
+    v = voice_for(sc, {})
+    print(f"VOICE: {v['engine']} {v['name']}, pack {v['pack']}, speed {v['speed']}; run `voiced` after voicing", file=sys.stderr)
     if a.json:      # a drama: one voice per speaker, inner monologue read closer and quieter
-        print(json.dumps([{"id": s["id"], "speaker": s.get("speaker", "narrator"), "mono": bool(s.get("mono")), "text": text,
+        print(json.dumps([{"id": s["id"], "speaker": s.get("speaker", "narrator"), "mono": bool(s.get("mono")), "voice": voice_for(sc, s), "text": text,
                            **({"shown": s["narration"]} if text != s["narration"] else {})} for s, text in lines], indent=1, ensure_ascii=False))
         return
     for s, text in lines:
@@ -553,6 +653,9 @@ def cmd_timeline(a):
             chapters.append({"title": s["chapter"], "t0": round(t, 3), "mood": s.get("mood") or moods.get(s["chapter"])})
         t += dur
     gate_real_assets(film, segs, "timeline")
+    vp = voice_problems(film, sc)
+    if vp:
+        raise SystemExit("timeline stopped: the narration is not one consistent voice\n  " + "\n  ".join(vp))
     fmt = sc.get("format", "16x9")
     short = sc.get("short_of")
     total = round(t + (SHORT_TAIL if short else a.tail), 3)
@@ -624,6 +727,10 @@ def cmd_short(a):
     if wj.exists():
         words = {k: v for k, v in json.loads(wj.read_text()).items() if k in keep}
         (dest / "narration" / "words.json").write_text(json.dumps(words, indent=1, ensure_ascii=False) + "\n")
+    vj = film / "narration" / "voice.json"           # the clips are the same files, so their voice record carries over
+    if vj.exists():
+        rec = {k: v for k, v in json.loads(vj.read_text()).items() if k in keep}
+        (dest / "narration" / "voice.json").write_text(json.dumps(rec, indent=1, ensure_ascii=False) + "\n")
     if (film / "sources").is_dir():
         shutil.copytree(film / "sources", dest / "sources", dirs_exist_ok=True)
     for x in segs:                          # panel stills and their upscaled copies, at the same relative paths
@@ -632,7 +739,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "grade", "moods", "ui_sounds", "type_scale") if k in sc}
+    out = {k: sc[k] for k in ("palette", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
@@ -1493,6 +1600,8 @@ def cmd_check(a):
             items.sort()
             flags.append(f"{sid} ({ty}): text under {floor:.0f} px: " + "; ".join(f"\"{t}\" {px:.0f} px" for px, t in items[:3])
                          + (f" and {len(items) - 3} more" if len(items) > 3 else ""))
+    # voice pace: a clip spoken noticeably faster or slower than the rest was likely voiced at another speed
+    flags += ["voice " + p for p in speed_outliers(film, segs)]
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -1555,6 +1664,9 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("init"); p.add_argument("film"); p.set_defaults(fn=cmd_init)
     p = sp.add_parser("lines"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lines)
+    p = sp.add_parser("voiced"); p.add_argument("film"); p.add_argument("ids", nargs="*", help="segment ids (default: every clip)")
+    p.add_argument("--engine"); p.add_argument("--pack"); p.add_argument("--name"); p.add_argument("--speed", type=float)
+    p.set_defaults(fn=cmd_voiced)
     p = sp.add_parser("panels"); p.add_argument("film"); p.set_defaults(fn=cmd_panels)
     p = sp.add_parser("lint"); p.add_argument("source", help="a film folder, or a JSON list of panel prompts")
     p.add_argument("--boiler", help="regex: sentences to leave out of the word count (reference lines and a shared last sentence already are)")
