@@ -83,14 +83,22 @@ function said(s, phrase, nth = 1) {
   return s.t0 + 0.5;
 }
 // camera keys from event times: sorted, at least `gap` s apart, so the camera never jumps between two keys at once
-function camKeys(t0, v0, evs, gap = 0.8) {
+function camKeys(t0, v0, evs, gap = 0.8, glide = 0.9) {
   const keys = [[t0, v0]];
   evs.slice().sort((a, b) => a[0] - b[0]).forEach(([t, v]) => {
     const last = keys[keys.length - 1];
     if (t < last[0] + gap) { if (t <= last[0] + 1e-6 && keys.length > 1) { last[1] = v; return; } t = last[0] + gap; }
     keys.push([t, v]);
   });
-  return keys;
+  // hold, then glide into each key over at most `glide` s. Easing across a long gap crawls at a fraction of a pixel per frame,
+  // and with the camera on whole pixels (so text keeps its shape) that crawl shows as a one-pixel stutter
+  const out = [keys[0]];
+  for (let i = 1; i < keys.length; i++) {
+    const [t, v] = keys[i], [tp, vp] = keys[i - 1];
+    if (t - glide > tp + 1e-6) out.push([t - glide, vp]);
+    out.push([t, v]);
+  }
+  return out;
 }
 function fmtNum(v, dec) { return v.toLocaleString("en-US", { minimumFractionDigits: dec, maximumFractionDigits: dec }); }
 // enter/leave envelope for a segment: in over 0.45 s, out over 0.3 s (a push, not a fade)
