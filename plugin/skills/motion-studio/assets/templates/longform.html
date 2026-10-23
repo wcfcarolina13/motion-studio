@@ -381,17 +381,32 @@ B.title = (s, g) => {   // the cold-open title card
 };
 
 // ── people: stage scenes with rigged figures (figure.js) ─────────────
-// data: { set: "street"|"room"|"desk"|"blank", kicker?, cast: [{id, x: 0..1, h?, skin, hair, hairColor, shirt, pants,
+// data: { set: "street"|"room"|"desk"|"blank", screen?: {url, title?, lines?} (what the desk's monitor shows), kicker?, cast: [{id, x: 0..1, h?, skin, hair, hairColor, shirt, pants,
 //         kind: "person"|"silhouette", face, pose, enter: "left"|"right"}],
 //         beats: [{at, who, pose?, face?, emote?: "?"|"!"|"$"|"…", say?, think?, notify?, move?: x, glow?: true}] }
 // Every beat with "at" fires on its spoken word; a beat without one fires at `time` (0..1 of the segment).
-function drawSet(kind, g) {
+// Each set names its place at a glance with a few props, drawn flat in the scene's palette. Returns the ground line and
+// the boxes a notification should keep clear of (the monitor's screen).
+function drawSet(kind, g, d = {}) {
   const gy = V(900, SAFE.y1 - 40), sx = W / 1920, X = v => v * sx;   // tall: the ground sits low in the safe area, furniture squeezes in
+  const occ = [], wood = "#2b2724", dark = "#1b1918", line = "#33363a";
   if (kind !== "blank") K.el("rect", { x: -300, y: -300, width: W + 600, height: gy + 300, fill: kind === "street" ? "#0d0e10" : "#100f0e" }, g);
   const floor = K.el("rect", { fill: "#131312" }, g);
   K.set(floor, K.rect(-200, gy, W + 400, H - gy + 200));
   K.el("rect", { x: -200, y: gy - 2, width: W + 400, height: 3, fill: "#2a2a28" }, g);
   const r = K.rng(kind.length * 7 + 3);
+  const plant = (x, s = 1) => {                          // a potted plant: pot and five leaves
+    K.el("path", { d: `M ${x - 34 * s} ${gy - 70 * s} L ${x + 34 * s} ${gy - 70 * s} L ${x + 26 * s} ${gy} L ${x - 26 * s} ${gy} Z`, fill: "#5a3a2a" }, g);
+    [[-40, -150, -0.5], [-14, -190, -0.15], [14, -195, 0.15], [40, -155, 0.5], [0, -140, 0]].forEach(([dx, dy, k]) =>
+      K.el("path", { d: `M ${x} ${gy - 70 * s} Q ${x + dx * s * 1.6} ${gy + (dy + 40) * s} ${x + dx * s} ${gy + dy * s} Q ${x + dx * s * 0.3} ${gy + (dy + 70) * s} ${x} ${gy - 70 * s} Z`,
+                     fill: k ? "#2f5a3a" : "#3a6b45" }, g));
+  };
+  const lamp = (x, y, h) => {                            // a lamp with a lit shade and a soft pool of light
+    K.el("ellipse", { cx: x, cy: y - h + 40, rx: 150, ry: 110, fill: "#3a3222", opacity: 0.25 }, g);
+    K.el("rect", { x: x - 4, y: y - h + 40, width: 8, height: h - 40, fill: dark }, g);
+    K.el("rect", { x: x - 40, y: y - 8, width: 80, height: 8, rx: 4, fill: dark }, g);
+    K.el("path", { d: `M ${x - 34} ${y - h + 50} L ${x - 54} ${y - h + 110} L ${x + 54} ${y - h + 110} L ${x + 34} ${y - h + 50} Z`, fill: "#c9a45c" }, g);
+  };
   if (kind === "street") {
     for (let i = 0; i < 9; i++) {
       const bw = X(140 + r() * 160), bh = 220 + r() * 300, bx = X(-60 + i * 240 + r() * 40);
@@ -401,18 +416,54 @@ function drawSet(kind, g) {
     }
     K.el("rect", { x: X(1500), y: gy - 430, width: 10, height: 430, fill: "#2a2a28" }, g);
     K.el("rect", { x: X(1500) - 40, y: gy - 440, width: 70, height: 14, rx: 7, fill: "#2a2a28" }, g);
+    K.el("ellipse", { cx: X(1505), cy: gy - 420, rx: 120, ry: 60, fill: "#3a3222", opacity: 0.3 }, g);   // the street lamp's glow
   } else if (kind === "room") {
     K.el("rect", { x: X(220), y: gy - 670, width: X(360), height: 300, rx: 6, fill: "#151a20", stroke: "#2a2a28", "stroke-width": 8 }, g);
     K.el("rect", { x: X(400) - 4, y: gy - 670, width: 8, height: 300, fill: "#2a2a28" }, g);
+    K.el("circle", { cx: X(520), cy: gy - 610, r: 22, fill: "#d9d2bd", opacity: 0.8 }, g);                 // the moon in the window
+    K.el("rect", { x: X(820), y: gy - 640, width: X(200), height: 150, fill: "#1d1b18", stroke: "#4a3d2c", "stroke-width": 10 }, g);   // a framed picture
+    K.el("path", { d: `M ${X(840)} ${gy - 505} L ${X(890)} ${gy - 580} L ${X(930)} ${gy - 540} L ${X(960)} ${gy - 575} L ${X(1000)} ${gy - 505} Z`, fill: "#3a4a3e" }, g);
     K.el("rect", { x: X(1240), y: gy - 170, width: X(520), height: 120, rx: 26, fill: "#24211f" }, g);
-    K.el("rect", { x: X(1220), y: gy - 230, width: X(560), height: 90, rx: 30, fill: "#2b2724" }, g);
-    K.el("rect", { x: X(1250), y: gy - 50, width: 18, height: 50, fill: "#1b1918" }, g); K.el("rect", { x: X(1750) - 18, y: gy - 50, width: 18, height: 50, fill: "#1b1918" }, g);
+    K.el("rect", { x: X(1220), y: gy - 230, width: X(560), height: 90, rx: 30, fill: wood }, g);
+    K.el("rect", { x: X(1250), y: gy - 50, width: 18, height: 50, fill: dark }, g); K.el("rect", { x: X(1750) - 18, y: gy - 50, width: 18, height: 50, fill: dark }, g);
+    K.el("rect", { x: X(1300), y: gy - 210, width: 90, height: 70, rx: 14, fill: "#7a3b2b" }, g);          // a cushion
+    lamp(X(1840), gy, 420);
+    plant(X(1100), 0.9);
   } else if (kind === "desk") {
-    K.el("rect", { x: X(1060), y: gy - 300, width: X(640), height: 22, rx: 4, fill: "#2b2724" }, g);
-    K.el("rect", { x: X(1090), y: gy - 278, width: 16, height: 278, fill: "#221f1d" }, g); K.el("rect", { x: X(1670) - 16, y: gy - 278, width: 16, height: 278, fill: "#221f1d" }, g);
-    K.el("path", { d: `M ${X(1300)} ${gy - 300} L ${X(1330)} ${gy - 470} L ${X(1560)} ${gy - 470} L ${X(1590)} ${gy - 300} Z`, fill: "#1b1d20", stroke: "#33363a", "stroke-width": 4 }, g);
+    const dx0 = X(980), dx1 = X(1780), top = gy - 300, cx = (dx0 + dx1) / 2;
+    K.el("rect", { x: dx0, y: top, width: dx1 - dx0, height: 22, rx: 4, fill: wood }, g);
+    K.el("rect", { x: dx0 + 30, y: top + 22, width: 16, height: 278, fill: "#221f1d" }, g);
+    K.el("rect", { x: dx1 - 190, y: top + 22, width: 160, height: 200, rx: 4, fill: "#221f1d" }, g);      // a drawer unit
+    [70, 140].forEach(y => K.el("rect", { x: dx1 - 135, y: top + 22 + y - 30, width: 50, height: 8, rx: 4, fill: line }, g));
+    // the monitor at a monitor's size beside a person: bezel, lit screen, neck and foot. data.screen puts a browser page on
+    // it, as set dressing: its text is too small to read, so say what matters in a notification or bubble too
+    const sw = 380, sh = 230, sxl = cx - sw / 2, syt = top - 70 - sh;
+    K.el("rect", { x: cx - 14, y: top - 72, width: 28, height: 60, fill: line }, g);
+    K.el("rect", { x: cx - 80, y: top - 14, width: 160, height: 14, rx: 6, fill: line }, g);
+    K.el("rect", { x: sxl - 14, y: syt - 14, width: sw + 28, height: sh + 28, rx: 14, fill: "#0e0f11", stroke: line, "stroke-width": 3 }, g);
+    K.el("rect", { x: sxl, y: syt, width: sw, height: sh, rx: 4, fill: d.screen ? "#e9e6df" : "#1f2a36" }, g);
+    if (d.screen) {
+      const sc = d.screen, us = Math.min(24, Math.floor((sw - 70) / (0.55 * Math.max(8, (sc.url || "").length))));
+      K.el("rect", { x: sxl, y: syt, width: sw, height: 40, rx: 4, fill: "#cfcbc2" }, g);
+      [0, 1, 2].forEach(k => K.el("circle", { cx: sxl + 14 + k * 16, cy: syt + 20, r: 4, fill: "#9a958b" }, g));
+      K.el("rect", { x: sxl + 62, y: syt + 8, width: sw - 74, height: 24, rx: 12, fill: "#f4f2ed" }, g);
+      K.text(sc.url || "", { ...AUX, "font-family": SANS, "font-size": us, fill: "#1d1a17", x: sxl + 74, y: syt + 20 + us * 0.36 }, g);
+      if (sc.title) K.text(sc.title, { ...AUX, "font-family": SANS, "font-weight": 700, "font-size": 30, fill: "#1d1a17", x: sxl + 20, y: syt + 84 }, g);
+      for (let k = 0; k < (sc.lines ?? 4); k++)
+        K.el("rect", { x: sxl + 20, y: syt + (sc.title ? 104 : 60) + k * 26, width: (sw - 40) * (k % 3 === 2 ? 0.6 : 0.9), height: 10, rx: 5, fill: "#bdb8ad" }, g);
+      if (sc.url) K.label(sc.url + (sc.title ? " — " + sc.title : ""), 0, 1e9, "screen on the desk");
+      occ.push({ x0: sxl - 14, x1: sxl + sw + 14, y0: syt - 14, y1: syt + sh + 14 });
+    } else {
+      K.el("path", { d: `M ${sxl + 30} ${syt + sh - 30} L ${sxl + sw * 0.4} ${syt + 40} L ${sxl + sw * 0.55} ${syt + 40} L ${sxl + 60} ${syt + sh - 30} Z`, fill: "#2a3846", opacity: 0.8 }, g);   // a sheen
+    }
+    K.el("rect", { x: cx - 150, y: top - 16, width: 230, height: 14, rx: 4, fill: "#3a3d42" }, g);         // keyboard
+    K.el("rect", { x: dx0 + 70, y: top - 56, width: 44, height: 56, rx: 6, fill: "#b8562f" }, g);         // a mug
+    K.el("path", { d: `M ${dx0 + 114} ${top - 46} q 22 4 0 30`, fill: "none", stroke: "#b8562f", "stroke-width": 7 }, g);
+    K.el("rect", { x: dx1 - 170, y: top - 12, width: 120, height: 12, fill: "#d9d2bd" }, g);              // papers
+    K.el("rect", { x: dx1 - 160, y: top - 20, width: 110, height: 8, fill: "#c4bca5" }, g);
+    plant(X(1880), 0.8);
   }
-  return gy;
+  return { gy, occ };
 }
 function bubble(g) {   // a speech or thought bubble that pops from a point; text wraps inside
   const box = K.el("rect", { fill: C.INK }, g), tail = K.el("path", { fill: C.INK }, g);
@@ -430,7 +481,7 @@ function bubble(g) {   // a speech or thought bubble that pops from a point; tex
 }
 const EMOTE = { "?": "?", "!": "!", "$": "$", "…": "…", "x": "✕" };
 B.stage = (s, g) => {
-  const d = s.data, gy = drawSet(d.set || "blank", g);
+  const d = s.data, set = drawSet(d.set || "blank", g, d), gy = set.gy;
   const kick = d.kicker ? maskText(d.kicker, { ...AUX, "font-family": SANS, "font-size": 28, fill: C.ACCENT, "letter-spacing": 5 }, s.ov) : null;
   const cast = {}, order = [];
   (d.cast || []).forEach((c, i) => { cast[c.id] = { c, fig: F.figure(g, c), seed: i * 3 + 1 }; order.push(c.id); });
@@ -451,7 +502,7 @@ B.stage = (s, g) => {
     // shimmers, and a slow pan steps a pixel at a time
     const lean = H > W ? 0 : 0.35;
     const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
-    const occ = [], pend = [], sx = Math.round(fx - W / 2);   // what is on screen (bodies, bubbles, the kicker) in scene units, so a notification sits clear of it
+    const occ = [...set.occ], pend = [], sx = Math.round(fx - W / 2);   // what is on screen (bodies, bubbles, the kicker) in scene units, so a notification sits clear of it
     if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50) });
     order.forEach(id => {
       const A = cast[id], c = A.c, h = c.h || V(540, 600);
