@@ -1508,6 +1508,8 @@ MEASURE_TEXT = """() => {
 # 60% of the frame (vignette, grade, a wipe), or marked data-over (a strike-through meant to cross the words). Text
 # under or over other visible text at a probe is reported either way round. Probes, not boxes: hit-testing follows the
 # real glyph cells, so a tilted stamp's loose bounding box near a word doesn't count. A collision needs 2 of the 75 probes, so a thin stroke across a word counts.
+# Text drawn inside the box of a visible data-clear element (a hand-built stage layer marked keep-clear) fails too, even
+# on top of it, unless the text is part of that element.
 OVERLAP = """() => {
   const st = document.getElementById('stage').getBoundingClientRect(), frame = st.width * st.height;
   const opac = n => { let o = 1;
@@ -1533,6 +1535,8 @@ OVERLAP = """() => {
     }
     texts.push([el, s.slice(0, 50), r]);
   });
+  const clears = [...document.querySelectorAll('#svg [data-clear]')].filter(c => opac(c) >= 0.15)
+    .map(c => [c, c.getBoundingClientRect(), c.getAttribute('data-clear') || 'a keep-clear layer']).filter(([, b]) => b.width * b.height > 0);
   const out = [];
   texts.forEach(([el, s, r]) => {
     const hits = {};
@@ -1540,6 +1544,8 @@ OVERLAP = """() => {
       const x = r.left + r.width * (0.05 + 0.9 * i / 14), y = r.top + r.height * (0.2 + 0.6 * j / 4);
       const stack = document.elementsFromPoint(x, y), at = stack.findIndex(e => e === el || el.contains(e));
       if (at < 0) continue;   // between lines, or outside the text's clip: nothing of it is drawn here
+      clears.forEach(([c, b, nm]) => { if (!c.contains(el) && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) {
+        const k = 'inside keep-clear ' + nm; hits[k] = (hits[k] || 0) + 1; } });
       stack.slice(at + 1).forEach(e => { const u = e.closest('text');
         if (u && u !== el && opac(u) >= 0.5) { const k = 'overlaps ' + name(u); hits[k] = (hits[k] || 0) + 1; } });
       for (const e of stack.slice(0, at)) {
@@ -1549,7 +1555,7 @@ OVERLAP = """() => {
         const k = name(e); hits[k] = (hits[k] || 0) + 1; break;
       }
     }
-    Object.entries(hits).forEach(([k, n]) => { if (n >= 2) out.push([s, k.startsWith('overlaps') ? k : 'covered by ' + k, n]); });
+    Object.entries(hits).forEach(([k, n]) => { if (n >= 2) out.push([s, /^(overlaps|inside)/.test(k) ? k : 'covered by ' + k, n]); });
   });
   return out;
 }"""

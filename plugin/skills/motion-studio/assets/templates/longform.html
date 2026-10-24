@@ -512,6 +512,23 @@ function bubble(g) {   // a speech or thought bubble that pops from a point; tex
     return str && sc > 0 ? { x0: cxb - w / 2, x1: cxb + w / 2, y0: by, y1: by + h + 40 } : null;
   } };
 }
+// a hand-built layer in a stage scene marks what notifications must keep clear of with a data-clear attribute on any
+// element (a group, a path, a label), drawn in the scene's group g or in s.ov. Each is measured every frame, so a moving
+// layer works too, and returned as a box in the scene units the placement uses (before the camera's pan). check's
+// overlap test fails any text that lands on one, unless the text belongs to it
+function keepClear(g, ov, sx) {
+  const box = (el, root, dx) => {
+    for (let n = el; n && n !== root; n = n.parentNode) { const cs = getComputedStyle(n); if (cs.display === "none" || +cs.opacity === 0) return null; }
+    let b; try { b = el.getBBox(); } catch (e) { return null; }
+    const a = root.getCTM(), c = el.getCTM();
+    if (!b.width || !b.height || !a || !c) return null;
+    const m = a.inverse().multiply(c), xs = [], ys = [];
+    [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]].forEach(([x, y]) => {
+      xs.push(m.a * x + m.c * y + m.e + dx); ys.push(m.b * x + m.d * y + m.f); });
+    return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), w: 4 };
+  };
+  return [...[...g.querySelectorAll("[data-clear]")].map(el => box(el, g, 0)), ...[...ov.querySelectorAll("[data-clear]")].map(el => box(el, ov, sx))].filter(Boolean);
+}
 const EMOTE = { "?": "?", "!": "!", "$": "$", "…": "…", "x": "✕" };
 B.stage = (s, g) => {
   const d = s.data, set = drawSet(d.set || "blank", g, d), gy = set.gy;
@@ -535,7 +552,7 @@ B.stage = (s, g) => {
     // shimmers, and a slow pan steps a pixel at a time
     const lean = H > W ? 0 : 0.35;
     const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
-    const occ = [...set.occ], pend = [], sx = Math.round(fx - W / 2);   // what is on screen (bodies, bubbles, the kicker) in scene units, so a notification sits clear of it
+    const pend = [], sx = Math.round(fx - W / 2), occ = [...set.occ, ...keepClear(g, s.ov, sx)];   // what is on screen (bodies, bubbles, the kicker, data-clear layers) in scene units, so a notification sits clear of it
     if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50) });
     order.forEach(id => {
       const A = cast[id], c = A.c, h = c.h || V(540, 600);
@@ -591,7 +608,7 @@ B.stage = (s, g) => {
         cand.push([0, inF(x - nw / 2, hy0 - 0.2 * h - nh - 30), 0]);
         const spots = cand.map(([sd, [cx, cy], dy]) => {
           const r = { x0: cx, x1: cx + nw, y0: cy, y1: cy + nh };
-          return { sd, cx, cy, cost: occ.reduce((a, o) => a + area(r, o) * (o.id === id ? 0.3 : 1), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) };
+          return { sd, cx, cy, cost: occ.reduce((a, o) => a + area(r, o) * (o.id === id ? 0.3 : o.w || 1), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) };
         }).sort((a, b) => a.cost - b.cost);
         const [nx, ny] = [spots[0].cx, spots[0].cy];
         const ax = spots[0].sd ? x + spots[0].sd * (0.2 * h + 40) : x, ay = spots[0].sd ? gy - 0.6 * h : hy0 - 0.2 * h;
