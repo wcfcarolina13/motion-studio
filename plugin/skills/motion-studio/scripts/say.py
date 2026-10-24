@@ -1,6 +1,6 @@
 """What the voice says, when it differs from what the screen and captions show, and the words a TTS voice gets wrong.
 
-script.json carries a "say" map, film-wide and per segment ({"John Does": "John Doughs"}). The narration stays as written
+script.json carries a "say" map, film-wide and per segment ({"John Does": "John Doughs"}), on top of DEFAULT_SAY. The narration stays as written
 for captions and word cues; `lines` hands the TTS the spoken form, and `align` times the spoken words back onto the
 written ones. `lint` lists what the voice is likely to misread in the text it will actually be given, and `homographs` the words
 spelt one way and said two (a "say" entry pins one with misaki's inline phonemes: {"barely live": "barely [live](/lˈIv/)"}).
@@ -66,8 +66,15 @@ def _pattern(phrase):
     return re.compile(r"(?<![\w'])" + r"\s+".join(words) + r"(?![\w'])", re.I)
 
 
+# Spoken forms every film gets unless its own "say" map overrides them. Kokoro's lexicon runs a hyphenated "eighty-eight"
+# together (eɪɾiˈeɪt): the tens' final vowel slides into "eight", the only unit that opens on a vowel. Split, each word is
+# looked up alone and both are heard (toll-text dollar amounts, 2026-10-24). Figures ("$88") are already split by misaki.
+DEFAULT_SAY = {f"{tens}-eight": f"{tens} eight" for tens in "twenty thirty forty fifty sixty seventy eighty ninety".split()}
+
+
 def merged(film_map, seg_map):
-    out = dict(film_map or {})
+    out = dict(DEFAULT_SAY)
+    out.update(film_map or {})
     out.update(seg_map or {})
     return out
 
