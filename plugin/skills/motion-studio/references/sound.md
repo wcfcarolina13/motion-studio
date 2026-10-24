@@ -49,6 +49,10 @@ Every clip mix plays is written to `out/sounds_used.json`. `longform.py credits 
 
 A clip with `"role": "whoosh"` plays at each chapter start by default (`--whoosh <id|file>` picks another, `--no-whoosh` turns it off). `pop` clips are catalogued but nothing in the timeline places them yet.
 
+## Encoding the delivered audio
+
+`final` (long-form, Shorts, and `studio.py final`) encodes the mix to AAC, then decodes the result and measures its highest sample. A lossy encode can overshoot its source: ffmpeg's own AAC turned a toll-text mix that peaked at -2.5 dBFS into a +4.7 dBFS spike, which is an audible click (2026-10-23). The track must decode at -1 dBFS or lower, which also leaves room for YouTube's own re-encode. Encodes are tried in order until one passes: 192k; 256k; 256k behind a peak limiter at -2 dBFS, run on 4x-oversampled audio so it catches peaks between samples; and the same at -3 dBFS. Any attempt after the first is printed. If none passes, `final` stops. The encoder is AudioToolbox's `aac_at` where ffmpeg has it (macOS), because it held -2.3 dBTP on the mix that clicked; elsewhere it is ffmpeg's `aac`. Trade-offs: the limiter rungs shave the loudest transients by a decibel or two, and only on films that need them. The measurement sees what a player decodes, not what YouTube's re-encode will do.
+
 Still open for long-form sound, in order: drama foley (slap, gavel, glass, door) for the K-drama channel; a sound for counters and bars landing; checking each sound's level against the bed so none masks a word; varied clips per film so one channel's films don't share every click.
 
 ## Where sounds came from so far
