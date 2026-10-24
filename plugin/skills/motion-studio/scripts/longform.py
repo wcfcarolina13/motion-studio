@@ -104,8 +104,8 @@ def real_things(seg):
     if seg.get("type") in ("sms", "capture"):
         out.append((seg["id"], "text message" if seg["type"] == "sms" else "screenshot", d))
     for k, b in enumerate(d.get("beats") or []):
-        if isinstance(b, dict) and (b.get("notify") or "real" in b):
-            out.append((f"{seg['id']} beat {k + 1}", "phone notification", b))
+        if isinstance(b, dict) and (b.get("notify") or b.get("sms") or "real" in b):
+            out.append((f"{seg['id']} beat {k + 1}", "text message" if b.get("sms") else "phone notification", b))
     for c in d.get("cards") or []:
         if isinstance(c, dict) and ((c.get("icon") in REAL_ICONS and c.get("kind") != "note") or "real" in c):
             out.append((f"{seg['id']} card {c.get('id', '?')}", f"{c.get('icon') or 'evidence'} card", c))
@@ -1303,7 +1303,7 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
                     continue
                 if b.get("glow"):
                     events.append((b["t"], "buzz"))
-                if b.get("notify"):
+                if b.get("notify") or b.get("sms"):
                     events.append((b["t"] + (0.12 if b.get("glow") else 0.0), "ping"))
         elif sg["type"] == "board":
             events += [(c["t"] - 0.05, "pin") for c in d.get("cards", []) if c.get("t") is not None]
