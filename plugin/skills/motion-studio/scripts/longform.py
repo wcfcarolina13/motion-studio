@@ -1471,6 +1471,85 @@ MEASURE_TEXT = """() => {
 }"""
 
 
+# Text a viewer must read must not be painted over. Every visible text element (the same filter as MEASURE_TEXT) is
+# probed at a 15x5 grid inside its box: document.elementsFromPoint lists what is painted there, top first, so anything
+# above the text at a probe covers it, unless it is see-through (under 0.15 opacity after its parents), larger than
+# 60% of the frame (vignette, grade, a wipe), or marked data-over (a strike-through meant to cross the words). Text
+# under or over other visible text at a probe is reported either way round. Probes, not boxes: hit-testing follows the
+# real glyph cells, so a tilted stamp's loose bounding box near a word doesn't count. A collision needs 2 of the 75 probes, so a thin stroke across a word counts.
+OVERLAP = """() => {
+  const st = document.getElementById('stage').getBoundingClientRect(), frame = st.width * st.height;
+  const opac = n => { let o = 1;
+    for (; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) {
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return 0;
+      o *= +cs.opacity;
+    }
+    return o; };
+  const name = e => e.tagName === 'text' || e.closest('text') ? 'text "' + (e.closest('text') || e).textContent.trim().slice(0, 30) + '"'
+    : (u => u ? 'the shape holding "' + u.textContent.trim().slice(0, 30) + '"' : 'a ' + e.tagName)((e.parentNode.closest && e.parentNode.closest('g') || e.parentNode).querySelector('text'));
+  const texts = [];
+  document.querySelectorAll('#svg text').forEach(el => {
+    const s = el.textContent.trim();
+    if (!/[A-Za-z0-9]/.test(s) || opac(el) < 0.5) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.right < 0 || r.bottom < 0 || r.left > st.width || r.top > st.height) return;
+    const cg = el.parentNode.getAttribute && el.parentNode.getAttribute('clip-path');
+    if (cg) {
+      const c = document.getElementById(cg.slice(5, -1)), cr = c && c.querySelector('rect'), b = el.getBBox();
+      if (cr) { const y0 = +cr.getAttribute('y'), y1 = y0 + +cr.getAttribute('height');
+        if (Math.min(y1, b.y + b.height) - Math.max(y0, b.y) < 0.6 * b.height) return; }
+    }
+    texts.push([el, s.slice(0, 50), r]);
+  });
+  const out = [];
+  texts.forEach(([el, s, r]) => {
+    const hits = {};
+    for (let i = 0; i < 15; i++) for (let j = 0; j < 5; j++) {
+      const x = r.left + r.width * (0.05 + 0.9 * i / 14), y = r.top + r.height * (0.2 + 0.6 * j / 4);
+      const stack = document.elementsFromPoint(x, y), at = stack.findIndex(e => e === el || el.contains(e));
+      if (at < 0) continue;   // between lines, or outside the text's clip: nothing of it is drawn here
+      stack.slice(at + 1).forEach(e => { const u = e.closest('text');
+        if (u && u !== el && opac(u) >= 0.5) { const k = 'overlaps ' + name(u); hits[k] = (hits[k] || 0) + 1; } });
+      for (const e of stack.slice(0, at)) {
+        if (el.contains(e) || e.contains(el) || e.closest('[data-over]') || opac(e) < 0.15) continue;
+        const b = e.getBoundingClientRect();
+        if (b.width * b.height > 0.6 * frame) continue;
+        const k = name(e); hits[k] = (hits[k] || 0) + 1; break;
+      }
+    }
+    Object.entries(hits).forEach(([k, n]) => { if (n >= 2) out.push([s, k.startsWith('overlaps') ? k : 'covered by ' + k, n]); });
+  });
+  return out;
+}"""
+
+
+def overlaps(film, segs, step):
+    """{(segment id, text, what covers it): [times]} for text painted over. Sampled where text_sizes samples (each
+    segment's settled end and a beat after each word cue), 0.3 s after each of those, and every `step` seconds through
+    the segment, so a card or a stamp that crosses words on its way in is seen as well as one that lands on them. A
+    collision counts once it is seen at two samples at most 0.35 s apart: a stamp slamming down or a card flying past
+    for a frame or two is not reported, anything that stays is."""
+    import render
+    hits = {}
+    with render.Film(film) as f:
+        for s in segs:
+            rest = {max(s["t0"] + 0.5, s["t1"] - 0.4)}
+            rest |= {c["t"] + 0.7 for c in walk_cues(s.get("data")) if s["t0"] < c["t"] + 0.7 < s["t1"] - 0.3}
+            ts = rest | {r + 0.3 for r in rest if r + 0.3 < s["t1"] - 0.05}
+            if step:
+                ts |= {s["t0"] + 0.25 + k * step for k in range(int((s["t1"] - s["t0"] - 0.5) / step) + 1)}
+            seg = {}
+            for t in sorted(round(x, 3) for x in ts):
+                f.page.evaluate(f"window.seek({t:.3f})")
+                for txt, what, _ in f.page.evaluate(OVERLAP):
+                    seg.setdefault((s["id"], txt, what), []).append(t)
+            for key, seen in seg.items():
+                if any(0 < b - a <= 0.35 for a, b in zip(seen, seen[1:])):
+                    hits[key] = seen
+    return hits
+
+
 def text_sizes(film, segs):
     """The on-screen size of every visible piece of text, per segment: sampled once the segment's reveals are done and
     a beat after each of its word cues (a bubble or a notification can come and go mid-segment)."""
@@ -1601,6 +1680,16 @@ def cmd_check(a):
                          + (f" and {len(items) - 3} more" if len(items) > 3 else ""))
     # voice pace: a clip spoken noticeably faster or slower than the rest was likely voiced at another speed
     flags += ["voice " + p for p in speed_outliers(film, segs)]
+    # 6. overlap: reading text that something else is painted over, or two pieces of text on top of each other
+    if a.overlap_step >= 0:
+        hits = overlaps(film, segs, a.overlap_step)
+        report.append(f"overlap: {len({k[:2] for k in hits})} piece(s) of text collided with something, in {len({k[0] for k in hits})} segment(s)")
+        per = {}
+        for (sid, txt, what), ts in hits.items():
+            per.setdefault((sid, txt), ([], []))[0].append(what)
+            per[(sid, txt)][1].extend(ts)
+        for (sid, txt), (whats, ts) in per.items():
+            flags.append(f"{sid}: \"{txt}\" {'; '.join(whats)}, from {min(ts):.1f} s to {max(ts):.1f} s")
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -1755,6 +1844,8 @@ def main():
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
+    p.add_argument("--overlap-step", type=float, default=0.25,
+                   help="seconds between in-flight overlap samples (0: only settled moments; -1 skips the overlap test)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
