@@ -538,10 +538,10 @@ B.stage = (s, g) => {
     if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50) });
     order.forEach(id => {
       const A = cast[id], c = A.c, h = c.h || V(540, 600);
-      let keys = [[s.t0 - 1, c.pose || "stand"]], x = c.x * W, face = c.face || (c.x > 0.5 ? "left" : "right"), walking = 0;
+      let keys = [[s.t0 - 1, c.pose || "stand"]], x = c.x * W, face = c.face || (c.x > 0.5 ? "left" : "right"), walk = null;
       // entrance: walk in from off-frame over the first 1.6 s
       if (c.enter) { const x0 = c.enter === "left" ? -200 : W + 200, p = K.prog(t, s.t0, s.t0 + 1.6);
-        if (p < 1) walking = 1; x = K.lerp(x0, x, K.smooth(p)); if (p < 1) face = c.enter === "left" ? "right" : "left"; }
+        if (p < 1) walk = [s.t0, s.t0 + 1.6]; x = K.lerp(x0, x, K.smooth(p)); if (p < 1) face = c.enter === "left" ? "right" : "left"; }
       let say = null, sayT = 0, kind = "say", emote = null, emoT = 0, glow = 0, note = null, noteT = 0, noteFrom = "MESSAGES · now";
       beats.filter(b => b.who === id && b.T <= t + 1e-6).forEach(b => {
         if (b.pose) keys.push([b.T, b.pose]);
@@ -555,12 +555,12 @@ B.stage = (s, g) => {
       // walking to a new mark
       beats.filter(b => b.who === id && b.move != null).forEach(b => {
         const x1 = b.move * W, dur = Math.max(0.8, Math.abs(x1 - x) / 260), p = K.prog(t, b.T, b.T + dur);
-        if (t >= b.T) { if (p < 1) { walking = 1; face = x1 > x ? "right" : "left"; } x = K.lerp(x, x1, K.smooth(p)); }
+        if (t >= b.T) { if (p < 1) { walk = [b.T, b.T + dur]; face = x1 > x ? "right" : "left"; } x = K.lerp(x, x1, K.smooth(p)); }
       });
       let pose = F.at(t, keys);
       const rest = pose;                                 // the held pose, before breathing, sway and walk are added
       pose = Object.assign(F.idle(t, A.seed, pose), {});
-      if (walking) pose = F.walk(t * 2.4, pose);
+      if (walk) pose = F.stride(t, walk[0], walk[1], pose);   // the stride eases in from the first step and out into the held pose
       const buzz = glow > 0.6 ? Math.sin(t * 90) * 1.5 : 0;
       F.place(A.fig, x + buzz, gy, h, pose, { face, glow });
       // bubbles, emotes and notifications hang from the held pose's head, not the live one, so their text stays still to read
