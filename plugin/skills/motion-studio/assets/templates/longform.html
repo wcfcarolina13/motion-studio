@@ -88,8 +88,11 @@ function said(s, phrase, nth = 1) {
   window.STUDIO.warnings.push(`said(): "${phrase}" not found in ${s.id}`);
   return s.t0 + 0.5;
 }
-// camera keys from event times: sorted, at least `gap` s apart, so the camera never jumps between two keys at once
-function camKeys(t0, v0, evs, gap = 0.8, glide = 0.9) {
+// camera keys from event times: sorted, at least `gap` s apart, so the camera never jumps between two keys at once.
+// No glide averages more than `vmax` screen px/s (the eased peak is 3x that): a longer move glides longer, up to `gmax` s
+// (the Trapdoor kit's limit, 2026-10-24; a 2,400 px whip in 0.9 s smeared). Values are screen px: the engine's callers hold z at 1; a kit camera at zoom z passes vmax / z
+const CAM_VMAX = 1300, CAM_GMAX = 2.2;
+function camKeys(t0, v0, evs, gap = 0.8, glide = 0.9, vmax = CAM_VMAX, gmax = CAM_GMAX) {
   const keys = [[t0, v0]];
   evs.slice().sort((a, b) => a[0] - b[0]).forEach(([t, v]) => {
     const last = keys[keys.length - 1];
@@ -97,11 +100,14 @@ function camKeys(t0, v0, evs, gap = 0.8, glide = 0.9) {
     keys.push([t, v]);
   });
   // hold, then glide into each key over at most `glide` s. Easing across a long gap crawls at a fraction of a pixel per frame,
-  // and with the camera on whole pixels (so text keeps its shape) that crawl shows as a one-pixel stutter
+  // and with the camera on whole pixels (so text keeps its shape) that crawl shows as a one-pixel stutter. A glide that needs
+  // more time than the gap since the last key starts at that key and lands late, rather than whip
   const out = [keys[0]];
   for (let i = 1; i < keys.length; i++) {
-    const [t, v] = keys[i], [tp, vp] = keys[i - 1];
-    if (t - glide > tp + 1e-6) out.push([t - glide, vp]);
+    let [t, v] = keys[i];
+    const [tp, vp] = out[out.length - 1], need = Math.max(glide, Math.min(gmax, Math.abs(v - vp) / vmax));
+    if (t - need > tp + 1e-6) out.push([t - need, vp]);
+    else t = Math.max(t, tp + need);
     out.push([t, v]);
   }
   return out;
