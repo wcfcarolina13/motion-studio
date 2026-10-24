@@ -555,12 +555,12 @@ B.stage = (s, g) => {
   const bubbles = {}, emotes = {}, notes = {}, msgs = {};
   order.forEach(id => { bubbles[id] = bubble(fx); emotes[id] = K.text("", { "font-family": SANS, "font-size": 70, "font-weight": 700, fill: C.ACCENT, "text-anchor": "middle" }, fx);
     const n = K.el("g", {}, fx); notes[id] = { g: n, box: K.el("rect", { fill: "#262628", stroke: "#3a3a38", "stroke-width": 2 }, n),
-      from: K.text("", { ...AUX, "font-family": SANS, "font-size": V(26, 24), fill: C.GREY }, n), lines: [0, 1, 2, 3].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.INK }, n)) };
+      from: K.text("", { ...AUX, "font-family": SANS, "font-size": V(26, 24), fill: C.GREY }, n), lines: [0, 1, 2, 3, 4, 5].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.INK }, n)) };
     // an sms beat: the message itself on a patch of phone screen, laid out like the sms scene (sender, "Text Message", the body
     // in a grey bubble). The black screen keeps the small sender lines off whatever set dressing sits behind
     const m = K.el("g", {}, fx); msgs[id] = { g: m, scr: K.el("rect", { fill: "#000", stroke: "#3a3a38", "stroke-width": 2 }, m), who: K.text("", { ...AUX, "font-family": SANS, "font-size": V(26, 24), fill: C.INK }, m),
       sub: K.text("", { ...AUX, "font-family": SANS, "font-size": V(22, 20), fill: C.GREY }, m), tail: K.el("path", { fill: "#262628" }, m),
-      bub: K.el("rect", { fill: "#262628" }, m), lines: [0, 1, 2, 3].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.INK }, m)) }; });
+      bub: K.el("rect", { fill: "#262628" }, m), lines: [0, 1, 2, 3, 4, 5].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.INK }, m)) }; });
   return t => {
     const e = env(t, s), o = 1 - e.o;
     if (kick) placeMask(kick, V(90, 70), V(120, SAFE.y0 + 20), e.i * o, "start");
@@ -571,7 +571,7 @@ B.stage = (s, g) => {
     const lean = H > W ? 0 : 0.35;
     const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
     const pend = [], heads = [], sx = Math.round(fx - W / 2), occ = [...set.occ, ...keepClear(g, s.ov, sx)];   // what is on screen (bodies, bubbles, the kicker, data-clear layers) in scene units, so a notification sits clear of it
-    if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50) });
+    if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50), w: 3 });   // words, as a bubble
     order.forEach(id => {
       const A = cast[id], c = A.c, h = c.h || V(540, 600);
       // where the character stands, which way it faces and whether it is walking at time u
@@ -634,11 +634,12 @@ B.stage = (s, g) => {
       // a card may lean over its holder's legs (own weight 0.3, so it can sit by the phone hand), less readily over the
       // holder's torso (1), and over nobody's head (4, the weight of a data-clear layer; the head box is the skull, r 0.114 h,
       // plus hair). One 0.3 box for the whole holder let a text-message card cover its holder from the head down (Longtok,
-      // 2026-10-24). Heads are kept in `heads` too, so check can fail a card that still lands on one
-      const hr = 0.13 * h;
-      heads.push({ x0: hx1 - hr, x1: hx1 + hr, y0: hy0 - hr, y1: hy0 + hr, who: id });
+      // 2026-10-24). Heads and torsos are kept in `heads` too, so check can fail a card that still lands on one: an upright
+      // two-shot with a long message has no clear spot, and covering the kicker or the space above the safe area is worse
+      const hr = 0.13 * h, torso = { x0: x - 0.2 * h, x1: x + 0.2 * h, y0: hy0 + hr, y1: gy - 0.5 * h };
+      heads.push({ x0: hx1 - hr, x1: hx1 + hr, y0: hy0 - hr, y1: hy0 + hr, who: id, part: "head", lim: 0.15 }, { ...torso, who: id, part: "body", lim: 0.25 });
       occ.push({ x0: hx1 - hr, x1: hx1 + hr, y0: hy0 - hr, y1: hy0 + hr, w: 4 },
-               { x0: x - 0.2 * h, x1: x + 0.2 * h, y0: hy0 + hr, y1: gy - 0.5 * h, id, own: 1 }, { x0: x - 0.2 * h, x1: x + 0.2 * h, y0: gy - 0.5 * h, y1: gy, id });
+               { ...torso, id, own: 1 }, { x0: x - 0.2 * h, x1: x + 0.2 * h, y0: gy - 0.5 * h, y1: gy, id });
       const ep = emote && t - emoT < 1.4 ? K.step(t, emoT, 16, 0.5) * (1 - K.ein(K.prog(t, emoT + 1.1, emoT + 1.4))) : 0;
       emotes[id].textContent = ep > 0.02 ? (EMOTE[emote] || emote) : "";
       K.set(emotes[id], { x: hx + (face === "left" ? 70 : -70), y: hy - 20 - 30 * ep, "font-size": 70 * Math.max(0, ep) });
@@ -646,45 +647,53 @@ B.stage = (s, g) => {
                   msg, msgWho, msgSub, mp: msg ? Math.min(1.06, K.step(t, msgT, 15, 0.65)) : 0 });
     });
     // notifications go last, on whichever side of the holder (or above the head) covers the least of the others and the bubbles
-    g.__covers = [];   // [card text, whose head it covers]: read by check
+    g.__covers = [];   // [card text, whose head or body it covers]: read by check
     const area = (a, b) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
     const NL = pitch(READ, 1.15);
-    // the spot for an nw x nh box that appears at time `at` and stays: beside the phone hand at head height is best; then lower
-    // or higher on that side, then the other side, then overhead. Returns the box and the anchor it scales out of (the phone, or
-    // the head when overhead). A bubble gone before `at` is ignored; one up at any time after it counts from the start
-    const place = (id, x, h, face, hy0, nw, nh, at, what) => {
-      const side = face === "left" ? -1 : 1;
-      const inF = (cx, cy) => [Math.min(Math.max(cx, sx + 20), sx + W - nw - 20), Math.min(Math.max(16, cy), gy - nh - 20)];
-      const near = side > 0 ? x + 0.2 * h + 40 : x - 0.2 * h - 40 - nw, far = side > 0 ? x - 0.2 * h - 40 - nw : x + 0.2 * h + 40;
-      const pref = hy0 - nh / 2 - 20, cand = [];
-      for (let dy = -240; dy <= 360; dy += 40) { cand.push([side, inF(near, pref + dy), dy]); cand.push([-side, inF(far, pref + dy), dy]); }
-      cand.push([0, inF(x - nw / 2, hy0 - 0.2 * h - nh - 30), 0]);
-      const spots = cand.map(([sd, [cx, cy], dy]) => {
-        const r = { x0: cx, x1: cx + nw, y0: cy, y1: cy + nh };
-        return { sd, cx, cy, cost: occ.reduce((a, o) => a + (o.t1 <= at + 1e-6 ? 0 : area(r, o) * (o.id === id ? o.own || 0.3 : o.w || 1)), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) };
-      }).sort((a, b) => a.cost - b.cost);
-      const sp = spots[0];
-      occ.push({ x0: sp.cx, x1: sp.cx + nw, y0: sp.cy, y1: sp.cy + nh });   // a later note or message keeps clear of this one
-      heads.forEach(hd => { const r = { x0: sp.cx, x1: sp.cx + nw, y0: sp.cy, y1: sp.cy + nh };
-        if (area(r, hd) > 0.15 * (hd.x1 - hd.x0) * (hd.y1 - hd.y0)) g.__covers.push([what, `${hd.who}'s head`]); });
-      return { nx: sp.cx, ny: sp.cy, sd: sp.sd, ax: sp.sd ? x + sp.sd * (0.2 * h + 40) : x, ay: sp.sd ? gy - 0.6 * h : hy0 - 0.2 * h };
+    // the spot for a card that appears at time `at` and stays: beside the phone hand at head height is best; then lower or
+    // higher on that side, then the other side, then overhead. `shape(chars)` gives the card's {nw, nh} with its words wrapped
+    // at that many characters a line; the usual wrap is tried with a narrower one (fits beside a figure near the frame edge)
+    // and a wider one (fits overhead), at a small cost, as a letterer reflows a balloon to its space. Returns the box, the
+    // shape and the anchor it scales out of (the phone, or the head when overhead). A bubble gone before `at` is ignored;
+    // one up at any time after it counts from the start
+    const place = (id, x, h, face, hy0, chars, shape, at, what) => {
+      const side = face === "left" ? -1 : 1, spots = [];
+      [[chars, 0], [Math.round(chars * 0.7), 1500], [Math.round(chars * 1.5), 1500]].forEach(([c, pen]) => {
+        const sh = pen ? shape(c, 6) : shape(c), { nw, nh } = sh;
+        if (pen && (nw > W - 40 || sh.cut)) return;   // a reflow may run to 6 lines, but never drops words
+        const inF = (cx, cy) => [Math.min(Math.max(cx, sx + 20), sx + W - nw - 20), Math.min(Math.max(V(16, SAFE.y0), cy), gy - nh - 20)];
+        const near = side > 0 ? x + 0.2 * h + 40 : x - 0.2 * h - 40 - nw, far = side > 0 ? x - 0.2 * h - 40 - nw : x + 0.2 * h + 40;
+        const pref = hy0 - nh / 2 - 20, cand = [];
+        for (let dy = -240; dy <= 360; dy += 40) { cand.push([side, inF(near, pref + dy), dy]); cand.push([-side, inF(far, pref + dy), dy]); }
+        cand.push([0, inF(x - nw / 2, hy0 - 0.2 * h - nh - 30), 0]);
+        cand.forEach(([sd, [cx, cy], dy]) => {
+          const r = { x0: cx, x1: cx + nw, y0: cy, y1: cy + nh };
+          spots.push({ sd, cx, cy, sh, cost: occ.reduce((a, o) => a + (o.t1 <= at + 1e-6 ? 0 : area(r, o) * (o.id === id ? o.own || 0.3 : o.w || 1)), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) + pen });
+        });
+      });
+      const sp = spots.sort((a, b) => a.cost - b.cost)[0], { nw, nh } = sp.sh, r = { x0: sp.cx, x1: sp.cx + nw, y0: sp.cy, y1: sp.cy + nh };
+      occ.push(r);   // a later note or message keeps clear of this one
+      heads.forEach(hd => { if (area(r, hd) > hd.lim * (hd.x1 - hd.x0) * (hd.y1 - hd.y0)) g.__covers.push([what, `${hd.who}'s ${hd.part}`]); });
+      return { nx: sp.cx, ny: sp.cy, sd: sp.sd, sh: sp.sh, ax: sp.sd ? x + sp.sd * (0.2 * h + 40) : x, ay: sp.sd ? gy - 0.6 * h : hy0 - 0.2 * h };
     };
     const grow = (el, p, ax, ay) => el.setAttribute("transform", `translate(${ax} ${ay}) scale(${p}) translate(${-ax} ${-ay})`);
     pend.forEach(({ id, x, h, face, hy0, note, noteFrom, noteT, msgT, np, msg, msgWho, msgSub, mp }) => {
       const N = notes[id], M = msgs[id];
       // whichever came first is placed first, so the later one steers round it
       const drawNote = () => { if (np > 0.01) {
-        const ls = wrapWords(note, fit(V(620, 520), READ)).slice(0, 4), nw = Math.max(390, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48);
-        const nh = 64 + ls.length * NL, { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, noteT, note);
+        const shape = (c, n = 4) => { const all = wrapWords(note, c), ls = all.slice(0, n);
+          return { ls, cut: all.length > n, nw: Math.max(390, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48), nh: 64 + ls.length * NL }; };
+        const { nx, ny, ax, ay, sh: { ls, nw, nh } } = place(id, x, h, face, hy0, fit(V(620, 520), READ), shape, noteT, note);
         K.show(N.g, true); grow(N.g, np, ax, ay);
         K.set(N.box, K.rect(nx, ny, nw, nh, 18)); N.from.textContent = noteFrom; K.set(N.from, { x: nx + 24, y: ny + 36 });
         N.lines.forEach((l, k) => { l.textContent = ls[k] || ""; K.set(l, { x: nx + 24, y: ny + 50 + READ * 0.85 + k * NL }); });
       } else K.show(N.g, false); };
       const drawMsg = () => { if (mp > 0.01) {
         // sender and "Text Message" centred above a received (left-aligned) bubble, as on the sms scene's screen
-        const ls = wrapWords(msg, fit(V(620, 520), READ)).slice(0, 4), bw = Math.max(300, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48);
-        const P = 22, head = V(80, 74), bh = 28 + ls.length * NL, nw = bw + 2 * P + 30, nh = P + head + bh + P;
-        const { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, msgT, msg), bx = nx + P, by = ny + P + head;
+        const P = 22, head = V(80, 74);
+        const shape = (c, n = 4) => { const all = wrapWords(msg, c), ls = all.slice(0, n), bw = Math.max(300, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48), bh = 28 + ls.length * NL;
+          return { ls, cut: all.length > n, bw, bh, nw: bw + 2 * P + 30, nh: P + head + bh + P }; };
+        const { nx, ny, ax, ay, sh: { ls, bw, bh, nw, nh } } = place(id, x, h, face, hy0, fit(V(620, 520), READ), shape, msgT, msg), bx = nx + P, by = ny + P + head;
         K.show(M.g, true); grow(M.g, mp, ax, ay);
         K.set(M.scr, K.rect(nx, ny, nw, nh, 30));
         M.who.textContent = msgWho; M.sub.textContent = msgSub;

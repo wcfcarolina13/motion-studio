@@ -1733,9 +1733,10 @@ EDGE = """() => {
 }"""
 
 
-# A stage notification or text message placed over someone's head (the stage builder records each in its group's
-# __covers): the placement avoids heads, so one that lands on a head means the scene has no room for the card. Longtok
-# found a message card covering its holder from the head down (2026-10-24).
+# A stage notification or text message placed over someone's head, or over a quarter of someone's torso (the stage
+# builder records each in its group's __covers): the placement avoids both, so one that lands there means the scene has
+# no room for the card. Longtok found a message card covering its holder from the head down, then one over its holder's
+# torso and legs in an upright two-shot (2026-10-24).
 COVERS = """() => [...document.querySelectorAll('#svg g')].filter(g => g.__covers && g.__covers.length && getComputedStyle(g).display !== 'none')
   .flatMap(g => g.__covers.map(([s, who]) => [String(s).slice(0, 50), 'card over ' + who, 0]))"""
 
