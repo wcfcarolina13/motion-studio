@@ -507,15 +507,20 @@ function bubble(g) {   // a speech or thought bubble that pops from a point; tex
   const box = K.el("rect", { fill: C.INK }, g), tail = K.el("path", { fill: C.INK }, g);
   const lines = [0, 1, 2, 3].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.BG, "text-anchor": "middle" }, g));
   const L = pitch(READ, 1.15);
-  return { box, tail, lines, set(str, x, y, p, kind, ox = 0, op = 1) {     // ox: where the frame's left edge is, in scene units; op: opacity, for a fade-out
-    const ls = wrapWords(str || "", fit(V(640, 560), READ)).slice(0, 4), w = Math.max(...ls.map(l => l.length), 6) * READ * 0.55 + 56, h = ls.length * L + 34;
-    const sc = Math.max(0, Math.min(1.08, p)), cxb = Math.min(Math.max(x, ox + w / 2 + 20), ox + W - w / 2 - 20), bx = Math.round(cxb - w / 2 * sc), by = Math.max(16, Math.round(y - (h + 40) * sc));   // the box stays in frame, on whole pixels; the tail still points at the head
+  const size = str => { const ls = wrapWords(str || "", fit(V(640, 560), READ)).slice(0, 4); return [ls, Math.max(...ls.map(l => l.length), 6) * READ * 0.55 + 56, ls.length * L + 34]; };
+  const cxOf = (x, w, ox) => Math.min(Math.max(x, ox + w / 2 + 20), ox + W - w / 2 - 20);
+  return { box, tail, lines,
+  // the settled box `str` would fill at anchor (x, y), whether or not it is up: what a notification steers round
+  area(str, x, y, ox = 0) { const [, w, h] = size(str), cx = cxOf(x, w, ox), y0 = Math.max(16, Math.round(y - h - 40)); return { x0: cx - w / 2, x1: cx + w / 2, y0, y1: y0 + h + 40 }; },
+  set(str, x, y, p, kind, ox = 0, op = 1) {     // ox: where the frame's left edge is, in scene units; op: opacity, for a fade-out
+    const [ls, w, h] = size(str);
+    const sc = Math.max(0, Math.min(1.08, p)), cxb = cxOf(x, w, ox), bx = Math.round(cxb - w / 2 * sc), by = Math.max(16, Math.round(y - (h + 40) * sc));   // the box stays in frame, on whole pixels; the tail still points at the head
     K.set(box, K.rect(bx, by, w * sc, h * sc, kind === "think" ? 40 * sc : 20 * sc));
     tail.setAttribute("d", kind === "think" ? `M ${x - 6 * sc} ${y - 30 * sc} a ${9 * sc} ${9 * sc} 0 1 0 0.1 0 M ${x - 18 * sc} ${y - 8 * sc} a ${5 * sc} ${5 * sc} 0 1 0 0.1 0`
                                             : `M ${x - 18 * sc} ${y - 41 * sc} L ${x} ${y - 6 * sc} L ${x + 12 * sc} ${y - 41 * sc} Z`);
     lines.forEach((l, k) => { l.textContent = sc > 0.85 ? (ls[k] || "") : ""; K.set(l, { x: cxb, y: by + 17 + READ * 0.85 + k * L }); });
     [box, tail, ...lines].forEach(e => e.setAttribute("opacity", op));
-    return str && sc > 0 ? { x0: cxb - w / 2, x1: cxb + w / 2, y0: by, y1: by + h + 40 } : null;
+    return str && sc > 0 ? this.area(str, x, y, ox) : null;
   } };
 }
 // a hand-built layer in a stage scene marks what notifications must keep clear of with a data-clear attribute on any
@@ -561,32 +566,49 @@ B.stage = (s, g) => {
     if (kick) placeMask(kick, V(90, 70), V(120, SAFE.y0 + 20), e.i * o, "start");
     // the camera leans toward whoever acted last. An upright frame has no width to spare: hold the camera centred, or figures
     // at the edges are cut. No slow push or rise in either: bubble text under a slow zoom is re-rasterised every frame and
-    // shimmers, and a slow pan steps a pixel at a time
+    // shimmers. The pan moves by fractions of a pixel (cam.frac): on whole pixels a slow ease stepped the whole set one pixel
+    // every other frame, which final's pop check and the owner both caught (Trapdoor r6, 2026-10-24)
     const lean = H > W ? 0 : 0.35;
     const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
     const pend = [], sx = Math.round(fx - W / 2), occ = [...set.occ, ...keepClear(g, s.ov, sx)];   // what is on screen (bodies, bubbles, the kicker, data-clear layers) in scene units, so a notification sits clear of it
     if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50) });
     order.forEach(id => {
       const A = cast[id], c = A.c, h = c.h || V(540, 600);
-      let keys = [[s.t0 - 1, c.pose || "stand"]], x = c.x * W, face = c.face || (c.x > 0.5 ? "left" : "right"), walk = null;
-      // entrance: walk in from off-frame over the first 1.6 s
-      if (c.enter) { const x0 = c.enter === "left" ? -200 : W + 200, p = K.prog(t, s.t0, s.t0 + 1.6);
-        if (p < 1) walk = [s.t0, s.t0 + 1.6]; x = K.lerp(x0, x, K.smooth(p)); if (p < 1) face = c.enter === "left" ? "right" : "left"; }
-      let say = null, sayT = 0, kind = "say", gone = null, goneT = 0, emote = null, emoT = 0, glow = 0, note = null, noteT = 0, noteFrom = "MESSAGES · now", msg = null, msgT = 0, msgWho = "", msgSub = "";
+      // where the character stands, which way it faces and whether it is walking at time u
+      const stateAt = u => {
+        let x = c.x * W, face = c.face || (c.x > 0.5 ? "left" : "right"), walk = null;
+        // entrance: walk in from off-frame over the first 1.6 s
+        if (c.enter) { const x0 = c.enter === "left" ? -200 : W + 200, p = K.prog(u, s.t0, s.t0 + 1.6);
+          if (p < 1) walk = [s.t0, s.t0 + 1.6]; x = K.lerp(x0, x, K.smooth(p)); if (p < 1) face = c.enter === "left" ? "right" : "left"; }
+        beats.forEach(b => { if (b.who === id && b.face && b.T <= u + 1e-6) face = b.face; });
+        // walking to a new mark
+        beats.filter(b => b.who === id && b.move != null).forEach(b => {
+          const x1 = b.move * W, dur = Math.max(0.8, Math.abs(x1 - x) / 260), p = K.prog(u, b.T, b.T + dur);
+          if (u >= b.T) { if (p < 1) { walk = [b.T, b.T + dur]; face = x1 > x ? "right" : "left"; } x = K.lerp(x, x1, K.smooth(p)); }
+        });
+        return { x, face, walk };
+      };
+      let keys = [[s.t0 - 1, c.pose || "stand"]], { x, face, walk } = stateAt(t), prevFace = null, faceT = -1e9;
+      // a change of facing (a face beat, or setting off on a walk and arriving) turns over 0.2 s: find when it began
+      const f0 = stateAt(t - 0.2).face;
+      if (f0 !== face) { let lo = t - 0.2, hi = t; for (let k = 0; k < 10; k++) { const m = (lo + hi) / 2; if (stateAt(m).face === f0) lo = m; else hi = m; } prevFace = f0; faceT = hi; }
+      let rep = false, say = null, sayT = 0, kind = "say", gone = null, goneT = 0, emote = null, emoT = 0, glow = 0, note = null, noteT = 0, noteFrom = "MESSAGES · now", msg = null, msgT = 0, msgWho = "", msgSub = "";
+      const runs = [];
+      beats.filter(b => b.who === id).forEach(b => {
+        const last = runs[runs.length - 1], open = last && last.t1 === Infinity;
+        if (b.say || b.think) { if (open) last.t1 = b.T + 0.22; runs.push({ str: b.say || b.think, t0: b.T, t1: Infinity }); }
+        else if ((b.say === "" || b.think === "") && open) last.t1 = b.T + 0.3;
+      });
       beats.filter(b => b.who === id && b.T <= t + 1e-6).forEach(b => {
         if (b.pose) keys.push([b.T, b.pose]);
-        if (b.face) face = b.face;
-        if (b.say || b.think) { say = b.say || b.think; kind = b.say ? "say" : "think"; sayT = b.T; gone = null; }
-        if ((b.say === "" || b.think === "") && say) { gone = say; goneT = b.T; say = null; }   // cleared: fades out below
+        // a bubble that replaces another: the old one fades where it stands for 0.22 s, then the new one pops in (a straight
+        // swap showed the new box for a frame before its text)
+        if (b.say || b.think) { rep = !!say; gone = rep ? say : null; goneT = b.T; say = b.say || b.think; kind = b.say ? "say" : "think"; sayT = b.T + (rep ? 0.22 : 0); }
+        if ((b.say === "" || b.think === "") && say) { gone = say; goneT = b.T; say = null; rep = false; }   // cleared: fades out below
         if (b.emote) { emote = b.emote; emoT = b.T; }
         if (b.glow) glow = Math.max(glow, Math.exp(-(t - b.T) * 0.6));
         if (b.notify) { note = b.notify; noteT = b.T; noteFrom = b.from || "MESSAGES · now"; }
         if (b.sms) { msg = b.sms; msgT = b.T; msgWho = b.sender || "+1 (555) 010-0199"; msgSub = b.senderNote || "Text Message"; }
-      });
-      // walking to a new mark
-      beats.filter(b => b.who === id && b.move != null).forEach(b => {
-        const x1 = b.move * W, dur = Math.max(0.8, Math.abs(x1 - x) / 260), p = K.prog(t, b.T, b.T + dur);
-        if (t >= b.T) { if (p < 1) { walk = [b.T, b.T + dur]; face = x1 > x ? "right" : "left"; } x = K.lerp(x, x1, K.smooth(p)); }
       });
       let pose = F.at(t, keys);
       const rest = pose;                                 // the held pose, before breathing, sway and walk are added
@@ -594,25 +616,35 @@ B.stage = (s, g) => {
       if (walk) pose = F.stride(t, walk[0], walk[1], pose);   // the stride eases in from the first step and out into the held pose
       const buzz = glow > 0.6 ? Math.sin(t * 90) * 1.5 : 0;
       F.place(A.fig, x + buzz, gy, h, pose, { face, glow });
+      // the turn: the figure narrows through edge-on instead of mirroring in one frame
+      if (prevFace && t - faceT < 0.2) { const k0 = prevFace === "left" ? -1 : 1, k1 = face === "left" ? -1 : 1, k = K.lerp(k0, k1, K.smooth(K.prog(t, faceT, faceT + 0.2)));
+        A.fig.flip.setAttribute("transform", `scale(${(Math.abs(k) < 0.06 ? 0.06 * k1 : k).toFixed(3)} 1)`); }
       // bubbles, emotes and notifications hang from the held pose's head, not the live one, so their text stays still to read
-      const [hx, hy0] = F.headAt(x, gy, h, rest, face), hy = hy0 - h * 0.13;
+      // during a turn they slide across with it rather than jumping to the other side
+      const turn = prevFace && t - faceT < 0.2 ? K.smooth(K.prog(t, faceT, faceT + 0.2)) : 1, side = f => f === "left" ? -60 : 60;
+      const [hx1, hy0] = F.headAt(x, gy, h, rest, face), hy = hy0 - h * 0.13;
+      const hx = turn < 1 ? K.lerp(F.headAt(x, gy, h, rest, prevFace)[0] + side(prevFace), hx1 + side(face), turn) - side(face) : hx1;
       // a bubble cleared with say: "" or think: "" fades out over 0.3 s where it stands, rather than vanishing in one frame
-      const fade = gone ? 1 - K.smooth(K.prog(t, goneT, goneT + 0.3)) : 0, shown = say || (fade > 0 ? gone : null);
-      const bb = bubbles[id].set(shown, hx + (face === "left" ? -60 : 60), hy - 10, shown ? K.step(t, sayT, 14, 0.62) : 0, kind, sx, say ? 1 : fade);
-      if (bb) occ.push(bb);
+      const fade = gone ? 1 - K.smooth(K.prog(t, goneT, goneT + (rep ? 0.22 : 0.3))) : 0, newOn = say && t >= sayT - 1e-6, shown = newOn ? say : (fade > 0 ? gone : null);
+      bubbles[id].set(shown, hx + (face === "left" ? -60 : 60), hy - 10, shown ? (newOn ? K.step(t, sayT, 14, 0.62) : 1) : 0, kind, sx, newOn ? 1 : fade);
+      // every bubble this character has up at any time in the scene, at where it would sit now, with when it is up: a
+      // notification keeps clear of the bubbles that share its time on screen, including ones still to come, so a bubble
+      // arriving later neither covers it nor makes it jump
+      runs.forEach(r => occ.push(Object.assign(bubbles[id].area(r.str, hx + (face === "left" ? -60 : 60), hy - 10, sx), { t0: r.t0, t1: r.t1 })));
       occ.push({ x0: x - 0.2 * h, x1: x + 0.2 * h, y0: gy - 1.08 * h, y1: gy, id });
       const ep = emote && t - emoT < 1.4 ? K.step(t, emoT, 16, 0.5) * (1 - K.ein(K.prog(t, emoT + 1.1, emoT + 1.4))) : 0;
       emotes[id].textContent = ep > 0.02 ? (EMOTE[emote] || emote) : "";
       K.set(emotes[id], { x: hx + (face === "left" ? 70 : -70), y: hy - 20 - 30 * ep, "font-size": 70 * Math.max(0, ep) });
-      pend.push({ id, x, h, face, hy0, note, noteFrom, np: note ? Math.min(1.06, K.step(t, noteT, 15, 0.65)) : 0,
+      pend.push({ id, x, h, face, hy0, note, noteFrom, noteT, msgT, np: note ? Math.min(1.06, K.step(t, noteT, 15, 0.65)) : 0,
                   msg, msgWho, msgSub, mp: msg ? Math.min(1.06, K.step(t, msgT, 15, 0.65)) : 0 });
     });
     // notifications go last, on whichever side of the holder (or above the head) covers the least of the others and the bubbles
     const area = (a, b) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
     const NL = pitch(READ, 1.15);
-    // the spot for an nw x nh box: beside the phone hand at head height is best; then lower or higher on that side, then the
-    // other side, then overhead. Returns the box and the anchor it scales out of (the phone, or the head when overhead)
-    const place = (id, x, h, face, hy0, nw, nh) => {
+    // the spot for an nw x nh box that appears at time `at` and stays: beside the phone hand at head height is best; then lower
+    // or higher on that side, then the other side, then overhead. Returns the box and the anchor it scales out of (the phone, or
+    // the head when overhead). A bubble gone before `at` is ignored; one up at any time after it counts from the start
+    const place = (id, x, h, face, hy0, nw, nh, at) => {
       const side = face === "left" ? -1 : 1;
       const inF = (cx, cy) => [Math.min(Math.max(cx, sx + 20), sx + W - nw - 20), Math.min(Math.max(16, cy), gy - nh - 20)];
       const near = side > 0 ? x + 0.2 * h + 40 : x - 0.2 * h - 40 - nw, far = side > 0 ? x - 0.2 * h - 40 - nw : x + 0.2 * h + 40;
@@ -621,27 +653,28 @@ B.stage = (s, g) => {
       cand.push([0, inF(x - nw / 2, hy0 - 0.2 * h - nh - 30), 0]);
       const spots = cand.map(([sd, [cx, cy], dy]) => {
         const r = { x0: cx, x1: cx + nw, y0: cy, y1: cy + nh };
-        return { sd, cx, cy, cost: occ.reduce((a, o) => a + area(r, o) * (o.id === id ? 0.3 : o.w || 1), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) };
+        return { sd, cx, cy, cost: occ.reduce((a, o) => a + (o.t1 <= at + 1e-6 ? 0 : area(r, o) * (o.id === id ? 0.3 : o.w || 1)), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) };
       }).sort((a, b) => a.cost - b.cost);
       const sp = spots[0];
       occ.push({ x0: sp.cx, x1: sp.cx + nw, y0: sp.cy, y1: sp.cy + nh });   // a later note or message keeps clear of this one
       return { nx: sp.cx, ny: sp.cy, sd: sp.sd, ax: sp.sd ? x + sp.sd * (0.2 * h + 40) : x, ay: sp.sd ? gy - 0.6 * h : hy0 - 0.2 * h };
     };
     const grow = (el, p, ax, ay) => el.setAttribute("transform", `translate(${ax} ${ay}) scale(${p}) translate(${-ax} ${-ay})`);
-    pend.forEach(({ id, x, h, face, hy0, note, noteFrom, np, msg, msgWho, msgSub, mp }) => {
+    pend.forEach(({ id, x, h, face, hy0, note, noteFrom, noteT, msgT, np, msg, msgWho, msgSub, mp }) => {
       const N = notes[id], M = msgs[id];
-      if (np > 0.01) {
+      // whichever came first is placed first, so the later one steers round it
+      const drawNote = () => { if (np > 0.01) {
         const ls = wrapWords(note, fit(V(620, 520), READ)).slice(0, 4), nw = Math.max(390, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48);
-        const nh = 64 + ls.length * NL, { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh);
+        const nh = 64 + ls.length * NL, { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, noteT);
         K.show(N.g, true); grow(N.g, np, ax, ay);
         K.set(N.box, K.rect(nx, ny, nw, nh, 18)); N.from.textContent = noteFrom; K.set(N.from, { x: nx + 24, y: ny + 36 });
         N.lines.forEach((l, k) => { l.textContent = ls[k] || ""; K.set(l, { x: nx + 24, y: ny + 50 + READ * 0.85 + k * NL }); });
-      } else K.show(N.g, false);
-      if (mp > 0.01) {
+      } else K.show(N.g, false); };
+      const drawMsg = () => { if (mp > 0.01) {
         // sender and "Text Message" centred above a received (left-aligned) bubble, as on the sms scene's screen
         const ls = wrapWords(msg, fit(V(620, 520), READ)).slice(0, 4), bw = Math.max(300, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48);
         const P = 22, head = V(80, 74), bh = 28 + ls.length * NL, nw = bw + 2 * P + 30, nh = P + head + bh + P;
-        const { nx, ny, sd, ax, ay } = place(id, x, h, face, hy0, nw, nh), bx = nx + P, by = ny + P + head;
+        const { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, msgT), bx = nx + P, by = ny + P + head;
         K.show(M.g, true); grow(M.g, mp, ax, ay);
         K.set(M.scr, K.rect(nx, ny, nw, nh, 30));
         M.who.textContent = msgWho; M.sub.textContent = msgSub;
@@ -650,10 +683,11 @@ B.stage = (s, g) => {
         const cx = bx, dir = -1;   // a received message: tail at the bubble's bottom left, as on the sms scene's screen
         M.tail.setAttribute("d", `M ${cx - dir * 22} ${by + bh - 30} Q ${cx - dir * 4} ${by + bh - 4} ${cx + dir * 12} ${by + bh} Q ${cx - dir * 14} ${by + bh + 2} ${cx - dir * 34} ${by + bh - 10} Z`);
         M.lines.forEach((l, k) => { l.textContent = ls[k] || ""; K.set(l, { x: bx + 24, y: by + 14 + READ * 0.85 + k * NL }); });
-      } else K.show(M.g, false);
+      } else K.show(M.g, false); };
+      if (msg && noteT > msgT) { drawMsg(); drawNote(); } else { drawNote(); drawMsg(); }
     });
     void o;
-    g.__cam = { cx: fx, cy: H / 2, z: 1 };
+    g.__cam = { cx: fx, cy: H / 2, z: 1, frac: 1 };
   };
 };
 
@@ -1001,9 +1035,11 @@ K.run(t => {
     if (on) {
       b.fn(t);
       // the scene's own camera if it set one. No slow zoom drift otherwise: text re-rasterised at a new scale every frame
-      // shimmers (line gaps jitter by up to 2 px), and an unscaled pan lands on whole pixels so its text keeps its shape
+      // shimmers (line gaps jitter by up to 2 px), and an unscaled pan lands on whole pixels so its text keeps its shape, unless
+      // the scene asks for fractional steps (cam.frac: a stage pan, whose slow ease would otherwise step)
       const cam = b.g.__cam, z = cam ? cam.z : 1, cx = cam ? cam.cx : W / 2, cy = cam ? cam.cy : H / 2;
-      b.g.setAttribute("transform", z === 1 ? `translate(${Math.round(W / 2 - cx)} ${Math.round(H / 2 - cy)})`
+      b.g.setAttribute("transform", z === 1 ? (cam && cam.frac ? `translate(${(W / 2 - cx).toFixed(2)} ${(H / 2 - cy).toFixed(2)})`
+                                                               : `translate(${Math.round(W / 2 - cx)} ${Math.round(H / 2 - cy)})`)
                                             : `translate(${W / 2} ${H / 2}) scale(${z}) translate(${-cx} ${-cy})`);
       src = b.s.source || ""; chap = FULL.has(b.s.type) || VERT ? "" : b.s.chapter || "";   // a drama panel (and a Short) carries no chapter label
     }
