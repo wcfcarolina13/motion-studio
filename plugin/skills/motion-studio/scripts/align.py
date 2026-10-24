@@ -82,7 +82,7 @@ def tokens(text, say_map=None):
         idx = [i for i, p in enumerate(pos) if a <= p < b]
         if not idx:
             continue
-        parts = sp.split()
+        parts = say.plain(sp).split()
         if len(parts) == len(idx):
             for i, w in zip(idx, parts):
                 out[i]["say"] = spoken(w)
