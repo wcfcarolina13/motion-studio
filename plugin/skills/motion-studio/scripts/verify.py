@@ -27,10 +27,12 @@ def _patch_median(rgb):
     return tuple(int(round(float(np.median(c[:, i])))) for i in range(3))
 
 
-def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground=None):
+def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground=None, loop=False):
     """ground: the film's own frame 0 as the browser drew it (H x W x 3 uint8). When given, frame 0 of the video is
     judged against it, central-patch median to median, instead of against the flat colour bg: a textured ground has no
-    single commonest colour, and its mean sits several levels off the palette's flat BG (paper 237,231,221 vs 246,242,233)."""
+    single commonest colour, and its mean sits several levels off the palette's flat BG (paper 237,231,221 vs 246,242,233).
+    loop: the film is cut to loop (a Short whose end jumps back to its opening). The jump in its last 0.5 s is then not a
+    pop, but only if the last frame really matches frame 0 (mean difference within 3 levels); otherwise that fails."""
     video = Path(video)
     fails = []
     def report(ok, what):
@@ -81,6 +83,12 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground
     pops = [(i + 1, round((i + 1) / 30, 2)) for i in range(1, len(d) - 1) if d[i] > 1.0 and d[i] > 3 * max(d[i - 1], d[i + 1])]
     if allow:                                               # intended hits: scene wipes, stamps, hard cuts the film declares
         pops = [p for p in pops if not any(a0 - 0.05 <= p[1] <= a1 + 0.05 for a0, a1 in allow)]
+    if loop:                                                # the loop cut: the end returns to the opening frame on purpose
+        gap = float(np.abs(frames[-1] - frames[0]).mean())
+        report(gap <= 3.0, f"loop: last frame matches frame 0 (mean difference {gap:.1f} levels, ≤ 3)")
+        if gap <= 3.0:
+            end = (len(frames) - 1) / 30
+            pops = [p for p in pops if p[1] < end - 0.5]
     report(not pops, "no single-frame pops" + (f": {pops}" if pops else ""))
 
     if bpm and sheet_dest:

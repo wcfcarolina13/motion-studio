@@ -2,7 +2,7 @@
 """Long-form narrated films (YouTube explainers, 5-20 minutes) on the motion-studio engine.
 
 A film folder holds script.json and narration/<id>.mp3 (one clip per segment, from any TTS or a human read).
-script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?, "captions"?: false, "type_scale"?: 1, "say"?: {"John Does": "John Doughs"}, "moods"?: {"<chapter>": "tension"}, "segments": [
+script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?, "captions"?: false, "loop"?: false, "type_scale"?: 1, "say"?: {"John Does": "John Doughs"}, "moods"?: {"<chapter>": "tension"}, "segments": [
   {"id", "chapter", "type", "data", "narration", "source"?, "mood"?}]}.
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
@@ -1444,7 +1444,8 @@ def cmd_final(a):
     allow += [(t, t + 0.1) for sg in tl["segments"] if sg["type"] == "panel" for t in (sg["t0"], sg["t1"])]
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
-    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, ground=film_frame0(film))
+    # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
+    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
     print(out)
     sys.exit(0 if ok else 1)
 
