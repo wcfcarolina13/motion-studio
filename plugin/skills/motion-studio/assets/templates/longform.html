@@ -501,13 +501,14 @@ function bubble(g) {   // a speech or thought bubble that pops from a point; tex
   const box = K.el("rect", { fill: C.INK }, g), tail = K.el("path", { fill: C.INK }, g);
   const lines = [0, 1, 2, 3].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.BG, "text-anchor": "middle" }, g));
   const L = pitch(READ, 1.15);
-  return { box, tail, lines, set(str, x, y, p, kind, ox = 0) {     // ox: where the frame's left edge is, in scene units
+  return { box, tail, lines, set(str, x, y, p, kind, ox = 0, op = 1) {     // ox: where the frame's left edge is, in scene units; op: opacity, for a fade-out
     const ls = wrapWords(str || "", fit(V(640, 560), READ)).slice(0, 4), w = Math.max(...ls.map(l => l.length), 6) * READ * 0.55 + 56, h = ls.length * L + 34;
     const sc = Math.max(0, Math.min(1.08, p)), cxb = Math.min(Math.max(x, ox + w / 2 + 20), ox + W - w / 2 - 20), bx = Math.round(cxb - w / 2 * sc), by = Math.max(16, Math.round(y - (h + 40) * sc));   // the box stays in frame, on whole pixels; the tail still points at the head
     K.set(box, K.rect(bx, by, w * sc, h * sc, kind === "think" ? 40 * sc : 20 * sc));
     tail.setAttribute("d", kind === "think" ? `M ${x - 6 * sc} ${y - 30 * sc} a ${9 * sc} ${9 * sc} 0 1 0 0.1 0 M ${x - 18 * sc} ${y - 8 * sc} a ${5 * sc} ${5 * sc} 0 1 0 0.1 0`
                                             : `M ${x - 18 * sc} ${y - 41 * sc} L ${x} ${y - 6 * sc} L ${x + 12 * sc} ${y - 41 * sc} Z`);
     lines.forEach((l, k) => { l.textContent = sc > 0.85 ? (ls[k] || "") : ""; K.set(l, { x: cxb, y: by + 17 + READ * 0.85 + k * L }); });
+    [box, tail, ...lines].forEach(e => e.setAttribute("opacity", op));
     return str && sc > 0 ? { x0: cxb - w / 2, x1: cxb + w / 2, y0: by, y1: by + h + 40 } : null;
   } };
 }
@@ -542,12 +543,12 @@ B.stage = (s, g) => {
       // entrance: walk in from off-frame over the first 1.6 s
       if (c.enter) { const x0 = c.enter === "left" ? -200 : W + 200, p = K.prog(t, s.t0, s.t0 + 1.6);
         if (p < 1) walk = [s.t0, s.t0 + 1.6]; x = K.lerp(x0, x, K.smooth(p)); if (p < 1) face = c.enter === "left" ? "right" : "left"; }
-      let say = null, sayT = 0, kind = "say", emote = null, emoT = 0, glow = 0, note = null, noteT = 0, noteFrom = "MESSAGES · now";
+      let say = null, sayT = 0, kind = "say", gone = null, goneT = 0, emote = null, emoT = 0, glow = 0, note = null, noteT = 0, noteFrom = "MESSAGES · now";
       beats.filter(b => b.who === id && b.T <= t + 1e-6).forEach(b => {
         if (b.pose) keys.push([b.T, b.pose]);
         if (b.face) face = b.face;
-        if (b.say || b.think) { say = b.say || b.think; kind = b.say ? "say" : "think"; sayT = b.T; }
-        if (b.say === "" || b.think === "") say = null;
+        if (b.say || b.think) { say = b.say || b.think; kind = b.say ? "say" : "think"; sayT = b.T; gone = null; }
+        if ((b.say === "" || b.think === "") && say) { gone = say; goneT = b.T; say = null; }   // cleared: fades out below
         if (b.emote) { emote = b.emote; emoT = b.T; }
         if (b.glow) glow = Math.max(glow, Math.exp(-(t - b.T) * 0.6));
         if (b.notify) { note = b.notify; noteT = b.T; noteFrom = b.from || "MESSAGES · now"; }
@@ -565,7 +566,9 @@ B.stage = (s, g) => {
       F.place(A.fig, x + buzz, gy, h, pose, { face, glow });
       // bubbles, emotes and notifications hang from the held pose's head, not the live one, so their text stays still to read
       const [hx, hy0] = F.headAt(x, gy, h, rest, face), hy = hy0 - h * 0.13;
-      const bb = bubbles[id].set(say, hx + (face === "left" ? -60 : 60), hy - 10, say ? K.step(t, sayT, 14, 0.62) : 0, kind, sx);
+      // a bubble cleared with say: "" or think: "" fades out over 0.3 s where it stands, rather than vanishing in one frame
+      const fade = gone ? 1 - K.smooth(K.prog(t, goneT, goneT + 0.3)) : 0, shown = say || (fade > 0 ? gone : null);
+      const bb = bubbles[id].set(shown, hx + (face === "left" ? -60 : 60), hy - 10, shown ? K.step(t, sayT, 14, 0.62) : 0, kind, sx, say ? 1 : fade);
       if (bb) occ.push(bb);
       occ.push({ x0: x - 0.2 * h, x1: x + 0.2 * h, y0: gy - 1.08 * h, y1: gy, id });
       const ep = emote && t - emoT < 1.4 ? K.step(t, emoT, 16, 0.5) * (1 - K.ein(K.prog(t, emoT + 1.1, emoT + 1.4))) : 0;
