@@ -5,7 +5,8 @@
 //   K.run(t => F.place(you, 700, 900, 1.0, F.at(t, [[0, "stand"], [2.1, "phone"], [4.0, "worried"]])));
 //
 // Poses are plain objects of joint angles (degrees) plus face settings, so they blend: F.blend(a, b, p).
-// F.at(t, keys) eases between named or literal poses on a timeline; F.walk(phase) is a walk cycle;
+// F.at(t, keys) eases between named or literal poses on a timeline; F.walk(phase) is a walk cycle, and
+// F.stride(t, a, b, pose) eases a walk from a to b in and out of the held pose;
 // F.idle(t, seed) adds breathing, blinks and small weight shifts so a held pose never freezes.
 // Angles: 0 = limb hanging straight down; positive swings it toward the way the figure faces.
 // Elbows bend positive (forearm forward/up); knees bend negative (shin back).
@@ -66,6 +67,16 @@
       rs: -26 * sR + (over.rs || 0), ls: 26 * sR + (over.ls || 0), re: 16 + 10 * Math.max(0, -sR), le: 16 + 10 * Math.max(0, sR),
       lean: 3 + (over.lean || 0), bob: -1.3 * Math.abs(cR) + 1.3,
     });
+  };
+
+  // a walk from time a to b on top of a pose: the stride starts from the first step and eases in over the first ~0.35 s,
+  // then eases back out into the held pose before b, so a figure never snaps into or out of mid-stride. Outside a..b it
+  // returns the pose unchanged
+  F.stride = (t, a, b, pose, rate = 2.4) => {
+    if (t <= a || t >= b) return pose;
+    const r = Math.min(0.35, (b - a) / 3), w = K.smooth(K.prog(t, a, a + r)) * (1 - K.smooth(K.prog(t, b - r, b)));
+    const wk = F.walk((t - a) * rate, pose), p = F.blend(pose, wk, w);
+    return Object.assign(p, { bob: wk.bob * w, breath: pose.breath });
   };
 
   // idle motion on top of any pose: breath, a blink every few seconds, a slow sway. Deterministic per seed.
