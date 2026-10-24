@@ -1393,12 +1393,17 @@ def cmd_credits(a):
         print(f"  not in the catalog, check their licence by hand: {', '.join(unknown)}")
 
 
-def film_bg(film):
-    """The ground colour the film itself paints (window.STUDIO.bg), so a light-paper film's first frame isn't judged against house black."""
+def film_frame0(film):
+    """Frame 0 as the browser draws it (H x W x 3), the reference final's video is judged against, so a textured or
+    light-paper ground is compared with itself rather than with a flat palette colour."""
+    import numpy as np
     import render
     with render.Film(film) as f:
-        h = ((f.studio or {}).get("bg") or "#0b0b0b").lstrip("#")
-    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+        png = f.shot(0)
+        w, h = f.w, f.h
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", "-", "-vf", f"scale={w}:{h},format=rgb24", "-f", "rawvideo", "-"],
+                         input=png, capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(h, w, 3)
 
 
 def cmd_final(a):
@@ -1413,7 +1418,7 @@ def cmd_final(a):
     allow += [(t, t + 0.1) for sg in tl["segments"] if sg["type"] == "panel" for t in (sg["t0"], sg["t1"])]
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
-    ok = verify.verify(out, bpm=None, sheet_dest=None, bg=film_bg(film), allow=allow)
+    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, ground=film_frame0(film))
     print(out)
     sys.exit(0 if ok else 1)
 

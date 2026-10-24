@@ -20,7 +20,17 @@ def _ffprobe(video):
     return json.loads(out)
 
 
-def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None):
+def _patch_median(rgb):
+    """Per-channel median of the frame's central 60%: a paper or grain texture averages out, a vignette is left out."""
+    h, w = rgb.shape[:2]
+    c = rgb[int(h * 0.2):int(h * 0.8), int(w * 0.2):int(w * 0.8)].reshape(-1, 3)
+    return tuple(int(round(float(np.median(c[:, i])))) for i in range(3))
+
+
+def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground=None):
+    """ground: the film's own frame 0 as the browser drew it (H x W x 3 uint8). When given, frame 0 of the video is
+    judged against it, central-patch median to median, instead of against the flat colour bg: a textured ground has no
+    single commonest colour, and its mean sits several levels off the palette's flat BG (paper 237,231,221 vs 246,242,233)."""
     video = Path(video)
     fails = []
     def report(ok, what):
@@ -46,9 +56,14 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None):
     # a vignette darkens the corners, which hides on a black ground but not on a light one
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vf", "select=eq(n\\,0),scale=in_range=tv:out_range=pc,format=rgb24",
                           "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
-    cols, counts = np.unique(np.frombuffer(raw, np.uint8).reshape(-1, 3), axis=0, return_counts=True)
-    px = tuple(int(c) for c in cols[counts.argmax()])
-    report(all(abs(p - q) <= 4 for p, q in zip(px, bg)), f"frame-0 background {px} ≈ {bg}")
+    if ground is not None:
+        # like against like: a range error lifts or squeezes every level by up to ~20 (237 becomes 220), far past 4
+        px, ref = _patch_median(np.frombuffer(raw, np.uint8).reshape(h, w, 3)), _patch_median(ground)
+        report(all(abs(p - q) <= 4 for p, q in zip(px, ref)), f"frame-0 ground {px} ≈ the film's own frame 0 {ref} (centre median)")
+    else:
+        cols, counts = np.unique(np.frombuffer(raw, np.uint8).reshape(-1, 3), axis=0, return_counts=True)
+        px = tuple(int(c) for c in cols[counts.argmax()])
+        report(all(abs(p - q) <= 4 for p, q in zip(px, bg)), f"frame-0 background {px} ≈ {bg}")
 
     if a:
         loud = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(video), "-af", "ebur128=peak=true", "-vn", "-f", "null", "-"], capture_output=True, text=True).stderr
