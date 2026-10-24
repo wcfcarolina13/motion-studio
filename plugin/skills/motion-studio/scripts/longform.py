@@ -26,7 +26,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
   longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh id|w.wav | --no-whoosh] [--bed-db -25.5] [--no-sfx]
   longform.py credits <film>                    out/credits.txt: the attribution lines for every sound the mix used
-  longform.py render <film> [--workers 4] [--scale 1.0]
+  longform.py render <film> [--workers 4] [--scale 1.0] [--fresh]
   longform.py final <film>                      mux render + mix, verify
   longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes, text size
   longform.py share <film>                      out/share/: a page that streams the cut (publish it as a private artifact)
@@ -41,7 +41,8 @@ import re
 import shutil
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor
+import hashlib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -914,12 +915,13 @@ def frange(a, b, step):
 def _render_chunk(args):
     film, i0, i1, dest, scale = args
     import render
+    tmp = Path(dest).with_suffix(".part.mp4")   # renamed when whole, so a finished chunk is one whose name exists
     with render.Film(Path(film)) as f:
         vf = f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:out_color_matrix=bt709:out_range=tv,format=yuv420p"
         ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(FPS), "-i", "-",
                                "-vf", vf, "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
                                "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-                               str(dest)], stdin=subprocess.PIPE)
+                               str(tmp)], stdin=subprocess.PIPE)
         for i in range(i0, i1):
             ff.stdin.write(f.shot(i / FPS))
             if (i - i0) % 900 == 0:
@@ -927,7 +929,50 @@ def _render_chunk(args):
         ff.stdin.close()
         if ff.wait() != 0:
             raise RuntimeError("ffmpeg failed")
+        Path(dest).with_suffix(".errors").write_text(str(len(f.errors)))
+        tmp.rename(dest)
         return dest, len(f.errors)
+
+
+CHUNK = 900            # frames per render chunk (30 s): a failure loses at most this much, and chunks outnumber workers
+WORKER_GB = 1.5        # memory one render worker (a Chromium page plus its ffmpeg) may take; ~1 GB measured on a plain film
+HEADROOM_GB = 2.0      # left free for the system while rendering
+
+
+def available_gb():
+    """Memory the system can hand out now, in GB (Linux MemAvailable; macOS free + inactive + speculative + purgeable
+    pages), or None if it can't tell."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 1e6
+    except OSError:
+        pass
+    try:
+        vm = subprocess.run(["vm_stat"], capture_output=True, text=True, check=True).stdout
+        page = int(re.search(r"page size of (\d+)", vm).group(1))
+        pages = sum(int(m.group(2)) for m in re.finditer(r"Pages (free|inactive|speculative|purgeable):\s+(\d+)", vm))
+        return pages * page / 1e9
+    except (OSError, subprocess.CalledProcessError, AttributeError):
+        return None
+
+
+def render_stamp(film, scale):
+    """What the frames depend on: the page, its scripts and timeline (by content), every other file the page can load
+    (by size and time; audio, renders and review stills are left out) and the render settings. Kept chunks are reused
+    only while this is unchanged."""
+    h = hashlib.sha256(f"{scale} {FPS} {CHUNK}".encode())
+    skip = {"out", "review", "narration", "music"}
+    for p in sorted(film.rglob("*")):
+        rel = p.relative_to(film)
+        if not p.is_file() or rel.parts[0] in skip or p.name.startswith("."):
+            continue
+        h.update(str(rel).encode())
+        if p.suffix in (".html", ".js", ".css", ".json") and len(rel.parts) == 1:
+            h.update(p.read_bytes())
+        else:
+            st = p.stat(); h.update(f"{st.st_size} {st.st_mtime_ns}".encode())
+    return h.hexdigest()
 
 
 def cmd_render(a):
@@ -941,17 +986,48 @@ def cmd_render(a):
             raise SystemExit("render stopped: a 9:16 film needs its own contact sheet first. Run `stills` and look at "
                              "review/stills-segments.png (or stills-every.png); it must be newer than timeline.js")
     n = math.ceil(tl["duration"] * FPS)
-    parts = film / "out" / "parts"
-    shutil.rmtree(parts, ignore_errors=True)
+    # finished chunks survive a failed or interrupted render and are reused while the film is unchanged (render_stamp);
+    # --fresh, or any change to the page, timeline, assets or settings, starts over
+    parts, stamp = film / "out" / "parts", render_stamp(film, a.scale)
+    if a.fresh or not (parts / "stamp.txt").exists() or (parts / "stamp.txt").read_text() != stamp:
+        shutil.rmtree(parts, ignore_errors=True)
     parts.mkdir(parents=True, exist_ok=True)
-    size = math.ceil(n / a.workers)
-    jobs = [(str(film), k, min(n, k + size), str(parts / f"p{k:07d}.mp4"), a.scale) for k in range(0, n, size)]
-    with ProcessPoolExecutor(a.workers) as ex:
-        results = list(ex.map(_render_chunk, jobs))
+    (parts / "stamp.txt").write_text(stamp)
+    for stale in parts.glob("*.part.mp4"):
+        stale.unlink()
+    jobs = [(str(film), k, min(n, k + CHUNK), str(parts / f"p{k:07d}-{min(n, k + CHUNK):07d}.mp4"), a.scale) for k in range(0, n, CHUNK)]
+    todo = [j for j in jobs if not Path(j[3]).exists()]
+    if len(todo) < len(jobs):
+        print(f"resuming: {len(jobs) - len(todo)} of {len(jobs)} chunks already rendered")
+    # each worker is a browser page: more than memory allows and the system starts killing them mid-chunk
+    workers, gb = a.workers, available_gb()
+    if gb is not None:
+        workers = max(1, min(workers, int((gb - HEADROOM_GB) / WORKER_GB)))
+        if workers < a.workers:
+            print(f"workers: {workers} (asked for {a.workers}; {gb:.1f} GB free at {WORKER_GB} GB each, {HEADROOM_GB} GB kept free)")
+    for attempt in range(1 + a.retries):
+        if not todo:
+            break
+        failed = []
+        with ProcessPoolExecutor(min(workers, len(todo))) as ex:
+            futures = {ex.submit(_render_chunk, j): j for j in todo}
+            for fu in as_completed(futures):
+                try:
+                    fu.result()
+                except Exception as e:                      # a crashed page or worker (TargetClosedError, a broken pool)
+                    failed.append(futures[fu])
+                    print(f"  chunk {futures[fu][1]}-{futures[fu][2]} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+        todo = failed
+        if todo and attempt < a.retries:
+            workers = max(1, workers // 2)                  # fewer pages at once on the retry, in case memory was the cause
+            print(f"retrying {len(todo)} chunk(s) with {workers} worker(s)")
+    if todo:
+        raise SystemExit(f"render stopped: {len(todo)} chunk(s) still failing after {1 + a.retries} tries; the "
+                         f"{len(jobs) - len(todo)} finished ones are kept, so running render again picks up from here")
     lst = parts / "list.txt"
-    lst.write_text("".join(f"file '{Path(d).name}'\n" for d, _ in results))
+    lst.write_text("".join(f"file '{Path(j[3]).name}'\n" for j in jobs))
     run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(film / "out" / "silent.mp4")])
-    errs = sum(e for _, e in results)
+    errs = sum(int(Path(j[3]).with_suffix(".errors").read_text() or 0) for j in jobs if Path(j[3]).with_suffix(".errors").exists())
     print(f"{n} frames -> {film / 'out' / 'silent.mp4'}" + (f" ({errs} page errors)" if errs else ""))
 
 
@@ -1958,6 +2034,8 @@ def main():
     p = sp.add_parser("stills"); p.add_argument("film"); p.add_argument("--every", type=float); p.add_argument("--at", type=float, default=0.75)
     p.set_defaults(fn=cmd_stills)
     p = sp.add_parser("render"); p.add_argument("film"); p.add_argument("--workers", type=int, default=4); p.add_argument("--scale", type=float, default=1.0)
+    p.add_argument("--retries", type=int, default=2, help="re-runs of a failed chunk before render stops (finished chunks are kept)")
+    p.add_argument("--fresh", action="store_true", help="discard finished chunks and render every frame again")
     p.set_defaults(fn=cmd_render)
     p = sp.add_parser("music"); p.add_argument("film"); p.add_argument("--default", default="serious"); p.add_argument("--fit", type=float, default=0.6)
     p.set_defaults(fn=cmd_music)
