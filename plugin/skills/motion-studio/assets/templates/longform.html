@@ -570,7 +570,7 @@ B.stage = (s, g) => {
     // every other frame, which final's pop check and the owner both caught (Trapdoor r6, 2026-10-24)
     const lean = H > W ? 0 : 0.35;
     const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
-    const pend = [], sx = Math.round(fx - W / 2), occ = [...set.occ, ...keepClear(g, s.ov, sx)];   // what is on screen (bodies, bubbles, the kicker, data-clear layers) in scene units, so a notification sits clear of it
+    const pend = [], heads = [], sx = Math.round(fx - W / 2), occ = [...set.occ, ...keepClear(g, s.ov, sx)];   // what is on screen (bodies, bubbles, the kicker, data-clear layers) in scene units, so a notification sits clear of it
     if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50) });
     order.forEach(id => {
       const A = cast[id], c = A.c, h = c.h || V(540, 600);
@@ -630,8 +630,15 @@ B.stage = (s, g) => {
       // every bubble this character has up at any time in the scene, at where it would sit now, with when it is up: a
       // notification keeps clear of the bubbles that share its time on screen, including ones still to come, so a bubble
       // arriving later neither covers it nor makes it jump
-      runs.forEach(r => occ.push(Object.assign(bubbles[id].area(r.str, hx + (face === "left" ? -60 : 60), hy - 10, sx), { t0: r.t0, t1: r.t1 })));
-      occ.push({ x0: x - 0.2 * h, x1: x + 0.2 * h, y0: gy - 1.08 * h, y1: gy, id });
+      runs.forEach(r => occ.push(Object.assign(bubbles[id].area(r.str, hx + (face === "left" ? -60 : 60), hy - 10, sx), { t0: r.t0, t1: r.t1, w: 3 })));   // w 3: words under a card are lost, which is worse than a covered body
+      // a card may lean over its holder's legs (own weight 0.3, so it can sit by the phone hand), less readily over the
+      // holder's torso (1), and over nobody's head (4, the weight of a data-clear layer; the head box is the skull, r 0.114 h,
+      // plus hair). One 0.3 box for the whole holder let a text-message card cover its holder from the head down (Longtok,
+      // 2026-10-24). Heads are kept in `heads` too, so check can fail a card that still lands on one
+      const hr = 0.13 * h;
+      heads.push({ x0: hx1 - hr, x1: hx1 + hr, y0: hy0 - hr, y1: hy0 + hr, who: id });
+      occ.push({ x0: hx1 - hr, x1: hx1 + hr, y0: hy0 - hr, y1: hy0 + hr, w: 4 },
+               { x0: x - 0.2 * h, x1: x + 0.2 * h, y0: hy0 + hr, y1: gy - 0.5 * h, id, own: 1 }, { x0: x - 0.2 * h, x1: x + 0.2 * h, y0: gy - 0.5 * h, y1: gy, id });
       const ep = emote && t - emoT < 1.4 ? K.step(t, emoT, 16, 0.5) * (1 - K.ein(K.prog(t, emoT + 1.1, emoT + 1.4))) : 0;
       emotes[id].textContent = ep > 0.02 ? (EMOTE[emote] || emote) : "";
       K.set(emotes[id], { x: hx + (face === "left" ? 70 : -70), y: hy - 20 - 30 * ep, "font-size": 70 * Math.max(0, ep) });
@@ -639,12 +646,13 @@ B.stage = (s, g) => {
                   msg, msgWho, msgSub, mp: msg ? Math.min(1.06, K.step(t, msgT, 15, 0.65)) : 0 });
     });
     // notifications go last, on whichever side of the holder (or above the head) covers the least of the others and the bubbles
+    g.__covers = [];   // [card text, whose head it covers]: read by check
     const area = (a, b) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
     const NL = pitch(READ, 1.15);
     // the spot for an nw x nh box that appears at time `at` and stays: beside the phone hand at head height is best; then lower
     // or higher on that side, then the other side, then overhead. Returns the box and the anchor it scales out of (the phone, or
     // the head when overhead). A bubble gone before `at` is ignored; one up at any time after it counts from the start
-    const place = (id, x, h, face, hy0, nw, nh, at) => {
+    const place = (id, x, h, face, hy0, nw, nh, at, what) => {
       const side = face === "left" ? -1 : 1;
       const inF = (cx, cy) => [Math.min(Math.max(cx, sx + 20), sx + W - nw - 20), Math.min(Math.max(16, cy), gy - nh - 20)];
       const near = side > 0 ? x + 0.2 * h + 40 : x - 0.2 * h - 40 - nw, far = side > 0 ? x - 0.2 * h - 40 - nw : x + 0.2 * h + 40;
@@ -653,10 +661,12 @@ B.stage = (s, g) => {
       cand.push([0, inF(x - nw / 2, hy0 - 0.2 * h - nh - 30), 0]);
       const spots = cand.map(([sd, [cx, cy], dy]) => {
         const r = { x0: cx, x1: cx + nw, y0: cy, y1: cy + nh };
-        return { sd, cx, cy, cost: occ.reduce((a, o) => a + (o.t1 <= at + 1e-6 ? 0 : area(r, o) * (o.id === id ? 0.3 : o.w || 1)), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) };
+        return { sd, cx, cy, cost: occ.reduce((a, o) => a + (o.t1 <= at + 1e-6 ? 0 : area(r, o) * (o.id === id ? o.own || 0.3 : o.w || 1)), 0) + (sd === side ? 0 : 3000) + 6 * Math.abs(dy) };
       }).sort((a, b) => a.cost - b.cost);
       const sp = spots[0];
       occ.push({ x0: sp.cx, x1: sp.cx + nw, y0: sp.cy, y1: sp.cy + nh });   // a later note or message keeps clear of this one
+      heads.forEach(hd => { const r = { x0: sp.cx, x1: sp.cx + nw, y0: sp.cy, y1: sp.cy + nh };
+        if (area(r, hd) > 0.15 * (hd.x1 - hd.x0) * (hd.y1 - hd.y0)) g.__covers.push([what, `${hd.who}'s head`]); });
       return { nx: sp.cx, ny: sp.cy, sd: sp.sd, ax: sp.sd ? x + sp.sd * (0.2 * h + 40) : x, ay: sp.sd ? gy - 0.6 * h : hy0 - 0.2 * h };
     };
     const grow = (el, p, ax, ay) => el.setAttribute("transform", `translate(${ax} ${ay}) scale(${p}) translate(${-ax} ${-ay})`);
@@ -665,7 +675,7 @@ B.stage = (s, g) => {
       // whichever came first is placed first, so the later one steers round it
       const drawNote = () => { if (np > 0.01) {
         const ls = wrapWords(note, fit(V(620, 520), READ)).slice(0, 4), nw = Math.max(390, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48);
-        const nh = 64 + ls.length * NL, { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, noteT);
+        const nh = 64 + ls.length * NL, { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, noteT, note);
         K.show(N.g, true); grow(N.g, np, ax, ay);
         K.set(N.box, K.rect(nx, ny, nw, nh, 18)); N.from.textContent = noteFrom; K.set(N.from, { x: nx + 24, y: ny + 36 });
         N.lines.forEach((l, k) => { l.textContent = ls[k] || ""; K.set(l, { x: nx + 24, y: ny + 50 + READ * 0.85 + k * NL }); });
@@ -674,7 +684,7 @@ B.stage = (s, g) => {
         // sender and "Text Message" centred above a received (left-aligned) bubble, as on the sms scene's screen
         const ls = wrapWords(msg, fit(V(620, 520), READ)).slice(0, 4), bw = Math.max(300, Math.max(...ls.map(l => l.length)) * READ * 0.55 + 48);
         const P = 22, head = V(80, 74), bh = 28 + ls.length * NL, nw = bw + 2 * P + 30, nh = P + head + bh + P;
-        const { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, msgT), bx = nx + P, by = ny + P + head;
+        const { nx, ny, ax, ay } = place(id, x, h, face, hy0, nw, nh, msgT, msg), bx = nx + P, by = ny + P + head;
         K.show(M.g, true); grow(M.g, mp, ax, ay);
         K.set(M.scr, K.rect(nx, ny, nw, nh, 30));
         M.who.textContent = msgWho; M.sub.textContent = msgSub;

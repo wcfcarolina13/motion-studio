@@ -1733,6 +1733,13 @@ EDGE = """() => {
 }"""
 
 
+# A stage notification or text message placed over someone's head (the stage builder records each in its group's
+# __covers): the placement avoids heads, so one that lands on a head means the scene has no room for the card. Longtok
+# found a message card covering its holder from the head down (2026-10-24).
+COVERS = """() => [...document.querySelectorAll('#svg g')].filter(g => g.__covers && g.__covers.length && getComputedStyle(g).display !== 'none')
+  .flatMap(g => g.__covers.map(([s, who]) => [String(s).slice(0, 50), 'card over ' + who, 0]))"""
+
+
 def overlaps(film, segs, step):
     """{(segment id, text, what covers it): [times]} for text painted over. Sampled where text_sizes samples (each
     segment's settled end and a beat after each word cue), 0.3 s after each of those, and every `step` seconds through
@@ -1752,7 +1759,7 @@ def overlaps(film, segs, step):
             seg = {}
             for t in sorted(round(x, 3) for x in ts):
                 f.page.evaluate(f"window.seek({t:.3f})")
-                for txt, what, _ in f.page.evaluate(OVERLAP) + f.page.evaluate(EDGE):
+                for txt, what, _ in f.page.evaluate(OVERLAP) + f.page.evaluate(EDGE) + f.page.evaluate(COVERS):
                     seg.setdefault((s["id"], txt, what), []).append(t)
             for key, seen in seg.items():
                 if any(0 < b - a <= 0.35 for a, b in zip(seen, seen[1:])):
