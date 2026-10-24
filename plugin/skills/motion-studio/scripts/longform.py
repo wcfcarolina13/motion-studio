@@ -1627,14 +1627,26 @@ def cmd_share(a):
     dest = film / "out" / "share"
     shutil.rmtree(dest, ignore_errors=True)
     (dest / "v").mkdir(parents=True)
-    run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-c", "copy", "-f", "hls", "-hls_time", str(a.segment),
-         "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
-         "-hls_segment_filename", str(dest / "v" / "seg%02d.mp4"), str(dest / "v" / "index.m3u8")])
-    (dest / "v" / "index.m3u8").rename(dest / "v" / "index.txt")
-    sizes = {f.name: f.stat().st_size for f in sorted((dest / "v").iterdir())}
-    big = [n for n, b in sizes.items() if b > 14e6]
-    if big:
-        raise SystemExit(f"segments over 14 MB ({', '.join(big)}): rerun with a smaller --segment")
+    # segment length from the cut's bitrate: 10 MB at the average rate leaves room for busier stretches and for a cut
+    # landing on the next keyframe; a segment still over 14 MB halves the length and splits again
+    rate = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=bit_rate", "-of", "csv=p=0", str(src)],
+                                capture_output=True, text=True, check=True).stdout.strip() or 0)
+    seg = a.segment or (min(60.0, max(4.0, 10e6 * 8 / rate)) if rate else 45.0)
+    for _ in range(4):
+        shutil.rmtree(dest / "v", ignore_errors=True)
+        (dest / "v").mkdir(parents=True)
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-c", "copy", "-f", "hls", "-hls_time", f"{seg:.1f}",
+             "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+             "-hls_segment_filename", str(dest / "v" / "seg%02d.mp4"), str(dest / "v" / "index.m3u8")])
+        (dest / "v" / "index.m3u8").rename(dest / "v" / "index.txt")
+        sizes = {f.name: f.stat().st_size for f in sorted((dest / "v").iterdir())}
+        big = [n for n, b in sizes.items() if b > 14e6]
+        if not big:
+            break
+        print(f"{seg:.0f} s segments: {', '.join(big)} over 14 MB; splitting at {seg / 2:.0f} s")
+        seg /= 2
+    else:
+        raise SystemExit(f"segments over 14 MB ({', '.join(big)}) even at {seg * 2:.0f} s: the cut's keyframes are too far apart")
     poster = dest / "poster.jpg"
     at = meta.get("poster_at", min(tl["duration"] * 0.25, tl["chapters"][1]["t0"] + 3 if len(tl["chapters"]) > 1 else 5))
     run(["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "5", str(poster)])
@@ -1744,7 +1756,7 @@ def main():
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
     p.set_defaults(fn=cmd_check)
-    p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, default=60, help="seconds per streamed file")
+    p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
     a = ap.parse_args()
     a.fn(a)
