@@ -49,7 +49,7 @@ TEMPLATE = HERE.parent / "assets" / "templates" / "longform.html"
 sys.path.insert(0, str(HERE))
 import panelqa  # noqa: E402
 FPS = 30
-TEXT_ONLY = {"statement", "quote", "list", "chapter", "title"}      # scene types that are words on a background
+TEXT_ONLY = {"statement", "quote", "list", "chapter", "title"}      # scene types that are words on a background, unless a kit draws a picture into one (see picture_share)
 
 
 def run(cmd, **kw):
@@ -1561,6 +1561,52 @@ OVERLAP = """() => {
 }"""
 
 
+# How much of the frame a scene draws as picture rather than words. A 64x36 grid of probes over the frame: a probe
+# counts when the topmost visible thing there is a shape that is not text, not see-through (under 0.15 opacity after its
+# parents) and not frame-sized (a background, vignette or wipe, over 60% of the frame). The engine's own text scenes
+# measure 0-3%; a kit pattern that turns a statement into motion graphics (piles, shopfronts, acted steps) measures well above.
+PICTURE = """() => {
+  const st = document.getElementById('stage').getBoundingClientRect(), frame = st.width * st.height;
+  const opac = n => { let o = 1;
+    for (; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) {
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return 0;
+      o *= +cs.opacity;
+    }
+    return o; };
+  let hit = 0;
+  for (let i = 0; i < 64; i++) for (let j = 0; j < 36; j++) {
+    const x = st.left + st.width * (i + 0.5) / 64, y = st.top + st.height * (j + 0.5) / 36;
+    for (const e of document.elementsFromPoint(x, y)) {
+      if (!e.closest('#svg') || e.id === 'svg') break;
+      if (e.closest('text') || e.tagName === 'g' || opac(e) < 0.15) continue;
+      const b = e.getBoundingClientRect();
+      if (b.width * b.height > 0.6 * frame) continue;
+      hit++; break;
+    }
+  }
+  return hit / (64 * 36);
+}"""
+
+
+def picture_share(film, segs):
+    """{segment id: the largest share of the frame drawn as picture} for the text-only scene types, sampled at 30% and
+    60% through each and once it has settled, so a kit pattern that builds its picture up over the scene is seen."""
+    import render
+    out = {}
+    with render.Film(film) as f:
+        for s in segs:
+            if s["type"] not in TEXT_ONLY:
+                continue
+            ts = {s["t0"] + 0.3 * (s["t1"] - s["t0"]), s["t0"] + 0.6 * (s["t1"] - s["t0"]), max(s["t0"] + 0.5, s["t1"] - 0.4)}
+            best = 0.0
+            for t in sorted(ts):
+                f.page.evaluate(f"window.seek({t:.3f})")
+                best = max(best, f.page.evaluate(PICTURE))
+            out[s["id"]] = best
+    return out
+
+
 def overlaps(film, segs, step):
     """{(segment id, text, what covers it): [times]} for text painted over. Sampled where text_sizes samples (each
     segment's settled end and a beat after each word cue), 0.3 s after each of those, and every `step` seconds through
@@ -1625,11 +1671,18 @@ def cmd_check(a):
     tl = load_timeline(film)
     segs, total = tl["segments"], tl["duration"]
     report, flags = [], []
-    # 1. picture variety from the timeline: how much of the film is words on a background
-    text_time = sum(s["t1"] - s["t0"] for s in segs if s["type"] in TEXT_ONLY)
+    # 1. picture variety: how much of the film is words on a background. A text scene type counts unless what it draws
+    # covers --picture-min of the frame (a kit pattern that turns it into motion graphics); measured from the page
+    pic = picture_share(film, segs) if a.picture_min > 0 else {}
+    drawn = {k for k, v in pic.items() if v >= a.picture_min}
+    if drawn:
+        report.append("text scene types drawn as pictures (not counted as text-only): "
+                      + ", ".join(f"{k} {pic[k]:.0%}" for k in sorted(drawn)))
+    text_only = lambda s: s["type"] in TEXT_ONLY and s["id"] not in drawn
+    text_time = sum(s["t1"] - s["t0"] for s in segs if text_only(s))
     run_t, run0, worst = 0.0, None, (0.0, None, None)
     for s in segs:
-        if s["type"] in TEXT_ONLY:
+        if text_only(s):
             run0 = run0 or s; run_t += s["t1"] - s["t0"]
             if run_t > worst[0]:
                 worst = (run_t, run0["id"], s["id"])
@@ -1886,6 +1939,8 @@ def main():
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
+    p.add_argument("--picture-min", type=float, default=0.06,
+                   help="a text scene type drawing at least this share of the frame as picture is not text-only (0 = by type alone)")
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
     p.add_argument("--overlap-step", type=float, default=0.25,
                    help="seconds between in-flight overlap samples (0: only settled moments; -1 skips the overlap test)")
