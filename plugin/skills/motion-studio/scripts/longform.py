@@ -267,7 +267,7 @@ def cmd_voiced(a):
         print("VOICE:", p)
 
 
-def speed_outliers(film, segs, tol=0.15):
+def speed_outliers(film, segs, tol=0.15, drift=0.05):
     """Clips spoken noticeably faster or slower than the film's median (spoken letters per second, from the word
     times): a speed slip shows here even without a record. Sentences vary by about ±10% on their own (more with spread
     timing), so only a larger gap is flagged; a 1.17 re-voice showed as +37% on the test film."""
@@ -283,8 +283,22 @@ def speed_outliers(film, segs, tol=0.15):
     if len(rates) < 4:
         return []
     med = statistics.median(rates.values())
-    return [f"{sid}: spoken {r / med - 1:+.0%} against the film's median pace; check its voice speed"
-            for sid, r in rates.items() if abs(r / med - 1) > tol]
+    out = [f"{sid}: spoken {r / med - 1:+.0%} against the film's median pace; check its voice speed"
+           for sid, r in rates.items() if abs(r / med - 1) > tol]
+    # drift: one clip 8% fast is a sentence; three or more in a row all off the same way is a passage that sounds
+    # rushed or dragging (toll-text's opening ran 6-11% fast across its first scenes, under the single-clip limit)
+    ids, run = list(rates), []
+    for i, sid in enumerate(ids + [None]):
+        dev = rates[sid] / med - 1 if sid else 0.0
+        if run and (sid is None or abs(dev) < drift or (dev > 0) != (rates[run[0]] / med > 1)):
+            if len(run) >= 3:
+                devs = [rates[r] / med - 1 for r in run]
+                out.append(f"{run[0]}..{run[-1]}: {len(run)} clips in a row spoken {min(devs, key=abs):+.0%} to {max(devs, key=abs):+.0%} "
+                           f"against the film's median pace; the passage will sound {'rushed' if devs[0] > 0 else 'slow'}")
+            run = []
+        if sid and abs(dev) >= drift:
+            run.append(sid)
+    return out
 
 
 def cmd_lines(a):
