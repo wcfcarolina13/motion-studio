@@ -148,17 +148,20 @@ B.statement = (s, g) => {
 //         right item lands, for "instead of" pairs), accent?: "left"|"right" (default right) }
 // Both columns are up within the first second (icon and heading), and their items land row by row, left then right, so the
 // viewer compares pairs with both sides on screen for most of the segment. icon: a name from ICONS (phone, bank, card, person,
-// money, web, doc); it sits in a ring above the heading.
+// money, web, doc, x, check); it sits in a ring above the heading. color: "red", "green" or a hex colours that side's ring, icon
+// and heading (red and green come from the palette's RED and GREEN when it has them); fill: true draws a solid disc with the
+// icon cut out in white, the boldest form, for a do/don't pair: {icon: "x", color: "red", fill: true} | {icon: "check", color: "green", fill: true}.
 B.compare = (s, g) => {
   const d = s.data, L = d.left, R = d.right, acc = d.accent === "left" ? 0 : 1;
   const IS = Math.round(V(62, 46) * TS), IL = pitch(IS, 1.2), HS = Math.max(READ, Math.round(V(44, 34) * TS));
   const colW = V(W * 0.4, SAFE.x1 - SAFE.x0 - 80);
   const col = (side, k) => {
     const hot = k === acc, ink = hot ? C.INK : C.GREY;
-    const ring = side.icon ? K.el("circle", { fill: "none", stroke: hot ? C.ACCENT : C.GREY, "stroke-width": 4 }, g) : null;
-    const icon = side.icon ? K.el("path", { d: ICONS[side.icon] || ICONS.doc, fill: "none", stroke: hot ? C.ACCENT : C.GREY, "stroke-width": 3.5,
+    const tone = TONES[side.color] || side.color || (hot ? C.ACCENT : C.GREY), mark = side.icon === "x" || side.icon === "check";
+    const ring = side.icon ? K.el("circle", side.fill ? { fill: tone } : { fill: "none", stroke: tone, "stroke-width": 4 }, g) : null;
+    const icon = side.icon ? K.el("path", { d: ICONS[side.icon] || ICONS.doc, fill: "none", stroke: side.fill ? "#fff" : tone, "stroke-width": mark ? 7 : 3.5,
                                             "stroke-linejoin": "round", "stroke-linecap": "round" }, g) : null;
-    const head = maskText(side.title, { "font-family": SANS, "font-weight": 700, "font-size": HS, fill: hot ? C.ACCENT : C.GREY, "letter-spacing": 3 }, g);
+    const head = maskText(side.title, { "font-family": SANS, "font-weight": 700, "font-size": HS, fill: tone, "letter-spacing": 3 }, g);
     const items = side.items.map(x => wrapWords(txt(x), fit(colW, IS, 0.5)).map(l => maskText(l, { "font-size": IS, fill: ink }, g)));
     return { side, ring, icon, head, items };
   };
@@ -611,7 +614,11 @@ const ICONS = {
   money: "M -28 -16 h 56 v 32 h -56 Z M 0 -8 a 8 8 0 1 1 -0.1 0 Z",
   web: "M 0 -24 a 24 24 0 1 1 -0.1 0 Z M -24 0 h 48 M 0 -24 c -12 12 -12 36 0 48 M 0 -24 c 12 12 12 36 0 48",
   doc: "M -18 -24 h 26 l 10 10 v 38 h -36 Z M -10 -6 h 20 M -10 4 h 20 M -10 14 h 14",
+  x: "M -17 -17 L 17 17 M 17 -17 L -17 17",
+  check: "M -20 2 L -6 16 L 20 -16",
 };
+// do/don't colours: the palette's own RED and GREEN when it has them, else these (both read on dark and light grounds)
+const TONES = { red: C.RED || "#e0483e", green: C.GREEN || "#3fae5a" };
 B.board = (s, g) => {
   const d = s.data, r = K.rng(s.id.length * 13 + 5);
   const panel = K.el("rect", { fill: "#16140f", stroke: "#2c2820", "stroke-width": 6 }, g);
