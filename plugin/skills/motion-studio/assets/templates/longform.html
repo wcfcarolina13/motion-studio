@@ -164,7 +164,7 @@ B.compare = (s, g) => {
   };
   const cols = [col(L, 0), col(R, 1)], n = Math.max(L.items.length, R.items.length);
   const div = K.el("rect", { fill: "#2c2c2a" }, g);
-  const strikes = d.strike ? cols[0].items.map(ms => ms.map(() => K.el("rect", { fill: C.ACCENT }, g))) : [];   // one line per wrapped line
+  const strikes = d.strike ? cols[0].items.map(ms => ms.map(() => K.el("rect", { fill: C.ACCENT, "data-over": 1 }, g))) : [];   // one line per wrapped line; meant to cross text (data-over: check's overlap test skips it)
   [L.title, R.title, ...L.items, ...R.items].forEach(x => K.label(txt(x), s.t0, s.t1, "two columns"));
   const hasIcon = !!(L.icon || R.icon);
   // row k's height is its taller side
@@ -668,7 +668,13 @@ B.board = (s, g) => {
       K.show(stamp.sg, sc > 0.01);
       const w = stamp.tx.getComputedTextLength() + 60;
       K.set(stamp.box, { x: -w / 2, y: -62, width: w, height: 100 }); K.set(stamp.tx, { x: 0, y: 18 });
-      stamp.sg.setAttribute("transform", `translate(${on.x + 30} ${on.y + (on.h || 0) / 2 + 30}) rotate(-12) scale(${sc})`);   // across the card's foot, so its title stays readable
+      // tilted 12 degrees, the stamp reaches E above and below its centre and X to each side. It goes under the card's
+      // words, overlapping only the card's bottom margin; where the board ends first, it goes over the card's top edge
+      const sn = Math.sin(12 * Math.PI / 180), cs = Math.cos(12 * Math.PI / 180), E = (w / 2) * sn + 50 * cs + 12, X = (w / 2) * cs + 50 * sn;
+      const h = on.h || 0, below = on.y + h / 2 - 24 + E;
+      const sy = below + E < BX[1] + BX[3] - 16 ? below : on.y - h / 2 + 8 - E;
+      const sx = Math.min(Math.max(on.x + 30, BX[0] + X + 16), BX[0] + BX[2] - X - 16);
+      stamp.sg.setAttribute("transform", `translate(${sx} ${sy}) rotate(-12) scale(${sc})`);
     }
     void shown;
     g.__cam = { cx: fx, cy: fy + shake, z: 1 };   // no push: card text under a slow zoom shimmers; the lean is a pan
