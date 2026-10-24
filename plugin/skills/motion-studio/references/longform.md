@@ -15,7 +15,7 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
 | render | `python3 $L render <film> --workers 4` | `out/silent.mp4` |
 | ship | `python3 $L final <film>` | `out/<film>.mp4`, verify report |
 | critic | `python3 $L check <film>` | `review/check.txt` (see `critic.md`) |
-| upload | `python3 ${CLAUDE_SKILL_DIR}/scripts/youtube.py upload … --privacy private` | private video; `captions` adds the VTT |
+| upload | `python3 ${CLAUDE_SKILL_DIR}/scripts/youtube.py upload … --privacy private` | private video; `captions` adds the VTT; going public and the 48-hour review: `publish.md` |
 | share a draft | `python3 $L share <film>` | `out/share/`: a page that streams the cut, to publish as a private artifact (below) |
 | Short | `python3 $L short <film> <short> --from s05 --to s09`, then lay it out, `timeline`, `stills`, `render`, `final` in the Short's folder | a 9:16 film that reuses the long-form voice and sound (below) |
 
