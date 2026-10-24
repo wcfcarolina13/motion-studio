@@ -2,7 +2,8 @@
 
 script.json carries a "say" map, film-wide and per segment ({"John Does": "John Doughs"}). The narration stays as written
 for captions and word cues; `lines` hands the TTS the spoken form, and `align` times the spoken words back onto the
-written ones. `lint` lists what the voice is likely to misread in the text it will actually be given.
+written ones. `lint` lists what the voice is likely to misread in the text it will actually be given, and `homographs` the words
+spelt one way and said two (a "say" entry pins one with misaki's inline phonemes: {"barely live": "barely [live](/lˈIv/)"}).
 """
 import re
 
@@ -12,6 +13,47 @@ KNOWN = [
     (re.compile(r"\b[A-Z][a-z]+ Does\b(?!\s+(?:not|n't|it|this|that|the|a|an|so|too|he|she|they|we|you|I)\b)"),
      'Kokoro reads the plural surname "Does" ("the John Does") as the verb "does" (toll-text, 2026-10-23)', "Doughs"),
 ]
+
+# Homographs: one spelling, two pronunciations. Kokoro's G2P (misaki) picks a reading from a part-of-speech guess, so
+# it gets these wrong in some sentences (toll-text: "barely live" read as the verb, 2026-10-24).
+# BLOCK: both readings fit the same slot in narration, so the guess is a coin toss; `lines` and `voiced` refuse them.
+# WARN: noun/verb stress pairs and the like, where the part of speech settles it and the guess is usually right; listed
+# by `lines` and flagged by `check` for the listen-through. "living" is neither: it has one pronunciation.
+HOMOGRAPHS = {
+    "BLOCK": {
+        "live": ("lˈɪv", "lˈIv"), "lives": ("lˈɪvz", "lˈIvz"), "read": ("ɹˈid", "ɹˈɛd"), "lead": ("lˈid", "lˈɛd"),
+        "leads": ("lˈidz", "lˈɛdz"), "wind": ("wˈɪnd", "wˈInd"), "winds": ("wˈɪndz", "wˈIndz"), "tear": ("tˈɪɹ", "tˈɛɹ"),
+        "tears": ("tˈɪɹz", "tˈɛɹz"), "wound": ("wˈund", "wˈWnd"), "bow": ("bˈO", "bˈW"), "bows": ("bˈOz", "bˈWz"),
+        "row": ("ɹˈO", "ɹˈW"), "rows": ("ɹˈOz", "ɹˈWz"), "bass": ("bˈAs", "bˈæs"),
+    },
+    "WARN": {
+        "close": ("klˈOs", "klˈOz"), "record": ("ɹˈɛkəɹd", "ɹəkˈɔɹd"), "records": ("ɹˈɛkəɹdz", "ɹəkˈɔɹdz"),
+        "present": ("pɹˈɛzənt", "pɹəzˈɛnt"), "object": ("ˈɑbʤɛkt", "əbʤˈɛkt"), "minute": ("mˈɪnət", "mInˈut"),
+        "use": ("jˈus", "jˈuz"), "content": ("kˈɑntɛnt", "kəntˈɛnt"), "invalid": ("ɪnvˈæləd", "ˈɪnvələd"),
+        "desert": ("dˈɛzəɹt", "dəzˈɜɹt"), "refuse": ("ɹəfjˈuz", "ɹˈɛfjus"), "produce": ("pɹədˈus", "pɹˈOdus"),
+    },
+}
+# a word the say map already pinned to phonemes, misaki's inline form (its alphabet: A eɪ, I aɪ, O oʊ, W aʊ, Y ɔɪ): [live](/lˈIv/)
+PHONEMES = re.compile(r"\[([^\]]+)\]\(/[^)/]*/\)")
+
+
+def plain(text):
+    """The spoken text without inline phoneme markup: the words a listener hears, for alignment."""
+    return PHONEMES.sub(r"\1", text)
+
+
+def homographs(text):
+    """[(word, tier, why, fix)] for each homograph in `text` (the spoken form) not already pinned with [word](/phonemes/)."""
+    out, bare = [], PHONEMES.sub(lambda m: " " * len(m.group(0)), text)
+    for m in re.finditer(r"[A-Za-z]+", bare):
+        w = m.group(0).lower()
+        for tier, words in HOMOGRAPHS.items():
+            if w in words:
+                a, b = words[w]
+                why = f'"{m.group(0)}" has two readings ({a} / {b}) and the voice guesses which'
+                out.append((m.group(0), tier, why, f"[{m.group(0)}](/{a}/) or [{m.group(0)}](/{b}/)"))
+    return out
+
 
 URL = re.compile(r"\b(?:https?://\S+|www\.\S+|[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|gov|edu|io|co|us|uk|info|biz|app|site|online|"
                  r"xyz|top|example)\b\S*|[\w.+-]+@[\w-]+\.[\w.]+)", re.I)

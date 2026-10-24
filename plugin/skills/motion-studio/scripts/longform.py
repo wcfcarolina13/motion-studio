@@ -169,7 +169,21 @@ def say_problems(sc):
     """What the voice is likely to misread, in the text it will be given (so a "say" entry that fixes it clears it)."""
     import say
     return [f"{s['id']}: \"{w}\": {why}" + (f"; try \"say\": {{\"{w}\": \"{fix}\"}}" if fix else "")
-            for s, text in spoken_lines(sc) for w, why, fix in say.lint(text)]
+            for s, text in spoken_lines(sc) for w, why, fix in say.lint(text)] \
+        + [f"{s['id']}: \"{w}\": {why} ({fix})" for s, text in spoken_lines(sc) for w, tier, why, fix in say.homographs(text) if tier == "BLOCK"]
+
+
+def homograph_listen(sc):
+    """WARN-tier homographs ("record", "use", "close"...): usually read right, so listed for the listen-through, not flagged."""
+    import say
+    return [f"{s['id']}: \"{w}\"" for s, text in spoken_lines(sc) for w, tier, why, fix in say.homographs(text) if tier == "WARN"]
+
+
+def homograph_blocks(sc, ids=None):
+    """Lines the voice must not be given yet: a BLOCK-tier homograph that no "say" entry has pinned (say.HOMOGRAPHS)."""
+    import say
+    return [f"{s['id']}: \"{w}\" in \"{text[:80]}\": {why}; pin it with \"say\": {{\"{w}\": \"{fix.split(' or ')[0]}\"}} (or the other reading)"
+            for s, text in spoken_lines(sc) if not ids or s["id"] in ids for w, tier, why, fix in say.homographs(text) if tier == "BLOCK"]
 
 
 # ── one voice per film ───────────────────────────────────────
@@ -231,6 +245,10 @@ def cmd_voiced(a):
     sc = load_script(film)
     vj = film / "narration" / "voice.json"
     rec = json.loads(vj.read_text()) if vj.exists() else {}
+    blocks = homograph_blocks(sc, a.ids)
+    if blocks and not a.allow_homographs:
+        raise SystemExit("voiced stopped: these clips were given words with two pronunciations; pin each in \"say\", "
+                         "re-voice the clip, then run voiced again\n  " + "\n  ".join(blocks))
     over = {k: v for k, v in (("engine", a.engine), ("pack", a.pack), ("name", a.name), ("speed", a.speed)) if v is not None}
     n = 0
     for s, text in spoken_lines(sc):
@@ -272,8 +290,16 @@ def cmd_lines(a):
     film = Path(a.film).resolve()
     sc = load_script(film)
     lines = spoken_lines(sc)
+    blocks = homograph_blocks(sc)
+    if blocks and not a.allow_homographs:
+        raise SystemExit("lines stopped: words with two pronunciations the voice will guess at; rewrite or pin each one\n  "
+                         + "\n  ".join(blocks))
     for p in say_problems(sc):
         print("SAY:", p, file=sys.stderr)
+    listen = homograph_listen(sc)
+    if listen:
+        print(f"LISTEN: {len(listen)} word(s) with two readings the voice usually gets right; check them in the listen-through: "
+              + ", ".join(listen), file=sys.stderr)
     v = voice_for(sc, {})
     print(f"VOICE: {v['engine']} {v['name']}, pack {v['pack']}, speed {v['speed']}; run `voiced` after voicing", file=sys.stderr)
     if a.json:      # a drama: one voice per speaker, inner monologue read closer and quieter
@@ -1693,6 +1719,9 @@ def cmd_check(a):
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
+    listen = homograph_listen(load_script(film))
+    if listen:
+        report.append(f"listen for: {', '.join(listen)} (two readings, usually right)")
     flags += ["say " + p for p in sp]
     print("\n".join(report))
     print(f"\n{len(flags)} flag(s)" + (":" if flags else ""))
@@ -1763,9 +1792,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("init"); p.add_argument("film"); p.set_defaults(fn=cmd_init)
-    p = sp.add_parser("lines"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lines)
+    p = sp.add_parser("lines"); p.add_argument("film"); p.add_argument("--json", action="store_true")
+    p.add_argument("--allow-homographs", action="store_true", help="hand over lines with unpinned two-reading words anyway")
+    p.set_defaults(fn=cmd_lines)
     p = sp.add_parser("voiced"); p.add_argument("film"); p.add_argument("ids", nargs="*", help="segment ids (default: every clip)")
     p.add_argument("--engine"); p.add_argument("--pack"); p.add_argument("--name"); p.add_argument("--speed", type=float)
+    p.add_argument("--allow-homographs", action="store_true", help="record clips a listen-through has confirmed read right")
     p.set_defaults(fn=cmd_voiced)
     p = sp.add_parser("panels"); p.add_argument("film"); p.set_defaults(fn=cmd_panels)
     p = sp.add_parser("lint"); p.add_argument("source", help="a film folder, or a JSON list of panel prompts")
