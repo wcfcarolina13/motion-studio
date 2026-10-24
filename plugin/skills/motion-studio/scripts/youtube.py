@@ -14,7 +14,8 @@ type "Desktop app", and save its JSON as ~/.motion-studio/youtube/client_secret.
   youtube.py upload FILE --title T [--description-file F] [--tags a,b] [--privacy private|unlisted|public]
                     [--category 27] [--thumbnail PNG] [--made-for-kids] [--synthetic]
                     [--language en] [--localizations titles.json]   {"es": {"title", "description"?}, "pt-BR": {...}}
-  youtube.py set-privacy VIDEO_ID private|unlisted|public
+  youtube.py set-privacy VIDEO_ID private|unlisted|public [--synthetic | --not-synthetic]
+                    re-sends the AI disclosure every time (the channel's "synthetic" unless a flag says otherwise)
   youtube.py captions VIDEO_ID FILE.vtt [--language en] [--name English]   add a caption track (longform.py writes one)
 
 Privacy defaults to private. Nothing here publishes publicly unless --privacy public is passed.
@@ -272,6 +273,30 @@ def cmd_upload(a):
     (path.parent / f"{path.stem}.youtube.json").write_text(json.dumps(video, indent=2))
 
 
+# The writable fields of a video's status. A PUT of part=status replaces the whole part, so a field left out is reset
+# to its default; videos.list does not return containsSyntheticMedia, so copying the fetched status back cleared the AI
+# disclosure on both Trapdoor videos when they went public (2026-10-24).
+STATUS_FIELDS = ("privacyStatus", "embeddable", "license", "publicStatsViewable", "publishAt", "selfDeclaredMadeForKids",
+                 "containsSyntheticMedia")
+
+
+def status_update(current, privacy, synthetic):
+    """The status to PUT: the fetched one's writable fields, the new privacy, and containsSyntheticMedia set explicitly.
+    synthetic: True/False from the flag or the channel config, None when neither says; then a disclosure the fetched
+    status does carry is kept, and with nothing to go on the update is refused rather than clearing a disclosure."""
+    st = {k: current[k] for k in STATUS_FIELDS if k in current}
+    st["privacyStatus"] = privacy
+    if privacy != "private":
+        st.pop("publishAt", None)                     # a scheduled publish only applies to a private video
+    if synthetic is None:
+        synthetic = current.get("containsSyntheticMedia")
+    if synthetic is None:
+        raise SystemExit("this video's AI disclosure is unknown (YouTube does not return it): pass --synthetic or "
+                         "--not-synthetic, or set \"synthetic\" for this channel in channels.json")
+    st["containsSyntheticMedia"] = bool(synthetic)
+    return st
+
+
 def cmd_set_privacy(a):
     if a.privacy == "public" and not a.yes_public:
         raise SystemExit("refusing to make public without --yes-public")
@@ -280,10 +305,17 @@ def cmd_set_privacy(a):
     items = json.loads(b).get("items", [])
     if not items:
         raise SystemExit(f"no video {a.video_id} on this channel")
-    st = items[0]["status"]
-    st["privacyStatus"] = a.privacy
+    cfg = channel_cfg()
+    synthetic = True if a.synthetic else False if a.not_synthetic else (bool(cfg["synthetic"]) if "synthetic" in cfg else None)
+    st = status_update(items[0]["status"], a.privacy, synthetic)
     s, _, b = api("PUT", "https://www.googleapis.com/youtube/v3/videos?part=status", body={"id": a.video_id, "status": st})
-    print(s, json.loads(b).get("status", b.decode()[:300]))
+    got = json.loads(b).get("status") if s == 200 else None
+    if got is None:
+        raise SystemExit(f"set-privacy -> {s}: {b.decode()[:300]}")
+    print(s, got)
+    if got.get("containsSyntheticMedia", st["containsSyntheticMedia"]) != st["containsSyntheticMedia"]:
+        raise SystemExit(f"YouTube answered containsSyntheticMedia={got.get('containsSyntheticMedia')}, not "
+                         f"{st['containsSyntheticMedia']}: check the video's AI disclosure in Studio")
 
 
 def cmd_captions(a):
@@ -317,7 +349,11 @@ def main():
     p.add_argument("--localizations", help='JSON {"es": {"title", "description"?}, ...}; the disclosure line is added to each')
     p.set_defaults(fn=cmd_upload)
     p = sp.add_parser("set-privacy"); p.add_argument("video_id"); p.add_argument("privacy", choices=["private", "unlisted", "public"])
-    p.add_argument("--yes-public", action="store_true"); p.set_defaults(fn=cmd_set_privacy)
+    p.add_argument("--yes-public", action="store_true")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--synthetic", action="store_true", help="declare altered or synthetic content (default: the channel's \"synthetic\")")
+    g.add_argument("--not-synthetic", action="store_true", help="declare it is not")
+    p.set_defaults(fn=cmd_set_privacy)
     p = sp.add_parser("captions"); p.add_argument("video_id"); p.add_argument("file"); p.add_argument("--language", default="en")
     p.add_argument("--name", default="English"); p.set_defaults(fn=cmd_captions)
     a = ap.parse_args()
