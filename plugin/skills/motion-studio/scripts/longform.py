@@ -1607,12 +1607,48 @@ def picture_share(film, segs):
     return out
 
 
+# Reading text must sit wholly inside the frame, and inside the safe area on an upright Short (where YouTube's buttons
+# and caption bar cover the edges): the same visible-text filter as MEASURE_TEXT, then the text's box is compared with
+# SAFE (the template's safe area, frame units) scaled to the page. Labels (data-aux: source lines, kickers) are held
+# only to the frame, since the template sets some in a Short's margin on purpose. 2 px of slack; text marked data-edge
+# (a ticker meant to run off the side) is skipped. Text wholly off the frame is unseen and not reported.
+EDGE = """() => {
+  const st = document.getElementById('stage').getBoundingClientRect(), out = [];
+  const FW = typeof W !== 'undefined' ? W : st.width, FH = typeof H !== 'undefined' ? H : st.height;
+  const k = st.width / FW, S = typeof SAFE !== 'undefined' ? SAFE : { x0: 0, x1: FW, y0: 0, y1: FH }, upright = FH > FW;
+  const safe = { l: st.left + S.x0 * k, r: st.left + S.x1 * k, t: st.top + S.y0 * k, b: st.top + S.y1 * k };
+  const whole = { l: st.left, r: st.right, t: st.top, b: st.bottom };
+  document.querySelectorAll('#svg text').forEach(el => {
+    const s = el.textContent.trim();
+    if (!/[A-Za-z0-9]/.test(s) || el.closest('[data-edge]')) return;
+    for (let n = el, o = 1; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) {
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      o *= +cs.opacity; if (o < 0.5) return;
+    }
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.right < st.left || r.bottom < st.top || r.left > st.right || r.top > st.bottom) return;
+    const cg = el.parentNode.getAttribute && el.parentNode.getAttribute('clip-path');
+    if (cg) {
+      const c = document.getElementById(cg.slice(5, -1)), cr = c && c.querySelector('rect'), b = el.getBBox();
+      if (cr) { const y0 = +cr.getAttribute('y'), y1 = y0 + +cr.getAttribute('height');
+        if (Math.min(y1, b.y + b.height) - Math.max(y0, b.y) < 0.6 * b.height) return; }
+    }
+    const aux = !!el.closest('[data-aux]'), box = aux ? whole : safe;   // a label (source line, kicker) may sit in a Short's margin, never off the frame
+    const sides = [['left', box.l - r.left], ['right', r.right - box.r], ['top', box.t - r.top], ['bottom', r.bottom - box.b]].filter(([, d]) => d > 2);
+    sides.forEach(([side, d]) => out.push([s.slice(0, 50), (upright && !aux ? 'outside the safe area at the ' : 'cut off at the ') + side + ' edge', Math.round(d / k)]));
+  });
+  return out;
+}"""
+
+
 def overlaps(film, segs, step):
     """{(segment id, text, what covers it): [times]} for text painted over. Sampled where text_sizes samples (each
     segment's settled end and a beat after each word cue), 0.3 s after each of those, and every `step` seconds through
     the segment, so a card or a stamp that crosses words on its way in is seen as well as one that lands on them. A
     collision counts once it is seen at two samples at most 0.35 s apart: a stamp slamming down or a card flying past
-    for a frame or two is not reported, anything that stays is."""
+    for a frame or two is not reported, anything that stays is. Text cut off by the frame edge (or outside a Short's
+    safe area, see EDGE) is sampled and judged the same way; its `what` starts with "cut off" or "outside"."""
     import render
     hits = {}
     with render.Film(film) as f:
@@ -1625,7 +1661,7 @@ def overlaps(film, segs, step):
             seg = {}
             for t in sorted(round(x, 3) for x in ts):
                 f.page.evaluate(f"window.seek({t:.3f})")
-                for txt, what, _ in f.page.evaluate(OVERLAP):
+                for txt, what, _ in f.page.evaluate(OVERLAP) + f.page.evaluate(EDGE):
                     seg.setdefault((s["id"], txt, what), []).append(t)
             for key, seen in seg.items():
                 if any(0 < b - a <= 0.35 for a, b in zip(seen, seen[1:])):
@@ -1772,14 +1808,19 @@ def cmd_check(a):
     flags += ["voice " + p for p in speed_outliers(film, segs)]
     # 6. overlap: reading text that something else is painted over, or two pieces of text on top of each other
     if a.overlap_step >= 0:
-        hits = overlaps(film, segs, a.overlap_step)
+        found = overlaps(film, segs, a.overlap_step)
+        edge = {k: v for k, v in found.items() if k[2].startswith(("cut off", "outside"))}
+        hits = {k: v for k, v in found.items() if k not in edge}
         report.append(f"overlap: {len({k[:2] for k in hits})} piece(s) of text collided with something, in {len({k[0] for k in hits})} segment(s)")
-        per = {}
-        for (sid, txt, what), ts in hits.items():
-            per.setdefault((sid, txt), ([], []))[0].append(what)
-            per[(sid, txt)][1].extend(ts)
-        for (sid, txt), (whats, ts) in per.items():
-            flags.append(f"{sid}: \"{txt}\" {'; '.join(whats)}, from {min(ts):.1f} s to {max(ts):.1f} s")
+        # 7. edge: reading text cut off by the frame edge, or outside a Short's safe area (sampled with the overlap test)
+        report.append(f"edge: {len({k[:2] for k in edge})} piece(s) of text cut off at the frame or safe-area edge, in {len({k[0] for k in edge})} segment(s)")
+        for found_in in (hits, edge):
+            per = {}
+            for (sid, txt, what), ts in found_in.items():
+                per.setdefault((sid, txt), ([], []))[0].append(what)
+                per[(sid, txt)][1].extend(ts)
+            for (sid, txt), (whats, ts) in per.items():
+                flags.append(f"{sid}: \"{txt}\" {'; '.join(whats)}, from {min(ts):.1f} s to {max(ts):.1f} s")
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -1943,7 +1984,7 @@ def main():
                    help="a text scene type drawing at least this share of the frame as picture is not text-only (0 = by type alone)")
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
     p.add_argument("--overlap-step", type=float, default=0.25,
-                   help="seconds between in-flight overlap samples (0: only settled moments; -1 skips the overlap test)")
+                   help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)

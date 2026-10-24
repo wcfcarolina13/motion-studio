@@ -291,8 +291,8 @@ B.flow = (s, g) => {   // a chain of labelled nodes along one line; the line dra
     // wide: nodes left to right with labels under them; tall: top to bottom with labels to the right
     // wide: the end nodes come in far enough that their labels stay in frame
     const half = it => Math.max(0, ...it.lab.map(m => m.t.getComputedTextLength() / 2));
-    const e = env(t, s), o = 1 - e.o, a0 = V(Math.max(220, half(items[0]) + 60), SAFE.y0 + 60 + title.length * 70), a1 = V(W - Math.max(220, half(items[n - 1]) + 60), SAFE.y1 - 60), across = V(H * 0.5 - Math.max(...items.map(it => it.lab.length)) * pitch(READ) / 3, 260);
-    title.forEach((m, k) => placeMask(m, W / 2, V(200, SAFE.y0 + 20) + k * 66, e.i * o));
+    const e = env(t, s), o = 1 - e.o, a0 = V(Math.max(220, half(items[0]) + 60), SAFE.y0 + 104 + title.length * 70), a1 = V(W - Math.max(220, half(items[n - 1]) + 60), SAFE.y1 - 60), across = V(H * 0.5 - Math.max(...items.map(it => it.lab.length)) * pitch(READ) / 3, 260);
+    title.forEach((m, k) => placeMask(m, W / 2, V(200, SAFE.y0 + 64) + k * 66, e.i * o));   // upright: the first line's caps start at the safe area's top
     const lastT = cueT(d.nodes[n - 1], revealAt(s, n - 1, n, d.span || 0.75, 0.4));
     const lp = K.prog(t, s.t0 + 0.3, lastT + 0.2);
     K.set(line, VERT ? K.rect(across - 2, a0, 4, (a1 - a0) * lp * o) : K.rect(a0, across - 2, (a1 - a0) * lp * o, 4));
