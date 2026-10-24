@@ -27,7 +27,7 @@
 
 ## verify (what it checks)
 
-Even dimensions · yuv420p · fast start (moov before mdat) · clean decode · frame-0 background decodes to the film's ground colour (`K.C.BG`) (the limited-range grey lift shows up here) · loudness −14 ±1 LUFS and true peak ≤ −1 dBTP · no single-frame pops (a frame whose difference from its neighbours spikes 3×). A slow push-in can trip the pop scan faintly (text antialiasing shifting): check the flagged frame before "fixing" it.
+Even dimensions · yuv420p · fast start (moov before mdat) · clean decode · frame-0 background decodes to the film's ground colour (the limited-range grey lift shows up here: it moves every level by up to about 20). For a long-form film, the reference is the film's own frame 0 as the browser draws it, and the two are compared by the per-channel median of the central 60%, within 4 levels, so a textured paper ground is judged against itself rather than the palette's flat `BG` (toll-text's paper decodes about 9 levels under it, 2026-10-24). `studio.py` films keep the flat `K.C.BG` test · loudness −14 ±1 LUFS and true peak ≤ −1 dBTP · no single-frame pops (a frame whose difference from its neighbours spikes 3×). A slow push-in can trip the pop scan faintly (text antialiasing shifting): check the flagged frame before "fixing" it.
 
 ## Traps already paid for
 
