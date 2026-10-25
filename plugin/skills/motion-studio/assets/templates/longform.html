@@ -419,7 +419,7 @@ B.title = (s, g) => {   // the cold-open title card
 };
 
 // ── people: stage scenes with rigged figures (figure.js) ─────────────
-// data: { set: "street"|"room"|"desk"|"blank", screen?: {url, title?, lines?} (what the desk's monitor shows), kicker?, cast: [{id, x: 0..1, h?, skin, hair, hairColor, shirt, pants,
+// data: { set: "street"|"room"|"desk"|"blank", light?: "left"|"right", foreground?: true, screen?: {url, title?, lines?} (what the desk's monitor shows), kicker?, cast: [{id, x: 0..1, h?, skin, hair, hairColor, shirt, pants,
 //         kind: "person"|"silhouette", face, pose, enter: "left"|"right"}],
 //         beats: [{at, who, pose?, face?, emote?: "?"|"!"|"$"|"…", say?, think?, notify?, from?, sms?, sender?, senderNote?, move?: x, glow?: true}] }
 // Every beat with "at" fires on its spoken word; a beat without one fires at `time` (0..1 of the segment).
@@ -432,14 +432,19 @@ function drawSet(kind, g, d = {}) {
   const floor = K.el("rect", { fill: "#131312" }, g);
   K.set(floor, K.rect(-200, gy, W + 400, H - gy + 200));
   K.el("rect", { x: -200, y: gy - 2, width: W + 400, height: 3, fill: "#2a2a28" }, g);
+  // data.light ("left" | "right"): soft shadows on the floor, cast away from that side, under every prop (`feet`, drawn
+  // below) and every figure (the stage frame). Off unless asked for, so older films render the same
+  const shade = d.light ? K.el("g", { filter: `url(#${stageBlur()})` }, g) : null, feet = [];
   const r = K.rng(kind.length * 7 + 3);
   const plant = (x, s = 1) => {                          // a potted plant: pot and five leaves
+    feet.push([x - 30 * s, x + 30 * s]);
     K.el("path", { d: `M ${x - 34 * s} ${gy - 70 * s} L ${x + 34 * s} ${gy - 70 * s} L ${x + 26 * s} ${gy} L ${x - 26 * s} ${gy} Z`, fill: "#5a3a2a" }, g);
     [[-40, -150, -0.5], [-14, -190, -0.15], [14, -195, 0.15], [40, -155, 0.5], [0, -140, 0]].forEach(([dx, dy, k]) =>
       K.el("path", { d: `M ${x} ${gy - 70 * s} Q ${x + dx * s * 1.6} ${gy + (dy + 40) * s} ${x + dx * s} ${gy + dy * s} Q ${x + dx * s * 0.3} ${gy + (dy + 70) * s} ${x} ${gy - 70 * s} Z`,
                      fill: k ? "#2f5a3a" : "#3a6b45" }, g));
   };
   const lamp = (x, y, h) => {                            // a lamp with a lit shade and a soft pool of light
+    feet.push([x - 40, x + 40]);
     K.el("ellipse", { cx: x, cy: y - h + 40, rx: 150, ry: 110, fill: "#3a3222", opacity: 0.25 }, g);
     K.el("rect", { x: x - 4, y: y - h + 40, width: 8, height: h - 40, fill: dark }, g);
     K.el("rect", { x: x - 40, y: y - 8, width: 80, height: 8, rx: 4, fill: dark }, g);
@@ -452,6 +457,7 @@ function drawSet(kind, g, d = {}) {
       for (let wy = gy - bh + 30; wy < gy - 60; wy += 56) for (let wx = bx + 22; wx < bx + bw - 30; wx += 46)
         if (r() > 0.55) K.el("rect", { x: wx, y: wy, width: 20, height: 28, fill: r() > 0.7 ? "#3a3222" : "#232321" }, g);
     }
+    feet.push([X(1500) - 30, X(1500) + 40]);
     K.el("rect", { x: X(1500), y: gy - 430, width: 10, height: 430, fill: "#2a2a28" }, g);
     K.el("rect", { x: X(1500) - 40, y: gy - 440, width: 70, height: 14, rx: 7, fill: "#2a2a28" }, g);
     K.el("ellipse", { cx: X(1505), cy: gy - 420, rx: 120, ry: 60, fill: "#3a3222", opacity: 0.3 }, g);   // the street lamp's glow
@@ -463,12 +469,14 @@ function drawSet(kind, g, d = {}) {
     K.el("path", { d: `M ${X(840)} ${gy - 505} L ${X(890)} ${gy - 580} L ${X(930)} ${gy - 540} L ${X(960)} ${gy - 575} L ${X(1000)} ${gy - 505} Z`, fill: "#3a4a3e" }, g);
     K.el("rect", { x: X(1240), y: gy - 170, width: X(520), height: 120, rx: 26, fill: "#24211f" }, g);
     K.el("rect", { x: X(1220), y: gy - 230, width: X(560), height: 90, rx: 30, fill: wood }, g);
+    feet.push([X(1230), X(1770)]);
     K.el("rect", { x: X(1250), y: gy - 50, width: 18, height: 50, fill: dark }, g); K.el("rect", { x: X(1750) - 18, y: gy - 50, width: 18, height: 50, fill: dark }, g);
     K.el("rect", { x: X(1300), y: gy - 210, width: 90, height: 70, rx: 14, fill: "#7a3b2b" }, g);          // a cushion
     lamp(X(1840), gy, 420);
     plant(X(1100), 0.9);
   } else if (kind === "desk") {
     const dx0 = X(980), dx1 = X(1780), top = gy - 300, cx = (dx0 + dx1) / 2;
+    feet.push([dx0, dx1]);
     K.el("rect", { x: dx0, y: top, width: dx1 - dx0, height: 22, rx: 4, fill: wood }, g);
     K.el("rect", { x: dx0 + 30, y: top + 22, width: 16, height: 278, fill: "#221f1d" }, g);
     K.el("rect", { x: dx1 - 190, y: top + 22, width: 160, height: 200, rx: 4, fill: "#221f1d" }, g);      // a drawer unit
@@ -501,7 +509,49 @@ function drawSet(kind, g, d = {}) {
     K.el("rect", { x: dx1 - 160, y: top - 20, width: 110, height: 8, fill: "#c4bca5" }, g);
     plant(X(1880), 0.8);
   }
-  return { gy, occ };
+  // a contact shadow per prop: a flat blurred ellipse on the floor, pushed away from the light
+  const away = d.light === "left" ? 1 : -1;
+  if (shade) feet.forEach(([a, b]) => { const w = b - a;
+    K.el("ellipse", { cx: (a + b) / 2 + away * 0.22 * w, cy: gy + 6, rx: w * 0.7, ry: 18, fill: "#000", opacity: 0.6 }, shade); });
+  return { gy, occ, shade, away };
+}
+let stageBlurId = null;
+function stageBlur() {   // one soft blur shared by stage shadows and the foreground
+  if (!stageBlurId) { stageBlurId = "stblur"; const f = K.el("filter", { id: stageBlurId, x: "-20%", y: "-50%", width: "140%", height: "200%", "color-interpolation-filters": "sRGB" }, K.defs);
+    K.el("feGaussianBlur", { stdDeviation: 7 }, f); }
+  return stageBlurId;
+}
+// data.foreground: true puts a few dark, blurred shapes in front of the action at the frame's bottom corners (an armchair and
+// a plant in a room, a chair back and a desk lamp at a desk, a railing and a bollard on the street, a low ledge on blank),
+// moving 35% faster than the set when the camera pans, so the scene reads as having depth. They stay below knee height
+// at the edges, under every bubble and card. Off unless asked for
+function drawForeground(kind, g) {
+  // pieces stand on the frame's bottom corners, from the floor's front edge up to about knee height of a figure, dark and
+  // out of focus. A tall frame keeps them as short as a wide one: below its floor is YouTube's control area
+  const fg = K.el("g", { filter: `url(#${stageFgBlur()})`, opacity: 0.9 }, g), gy = V(900, SAFE.y1 - 40), c = "#070706", top = gy - 150, bot = gy + V(200, 240);
+  const P = d => K.el("path", { d, fill: c }, fg), R = (x, y, w, h, rx = 0) => K.el("rect", { x, y, width: w, height: h, rx, fill: c }, fg);
+  const cw = V(300, 220);
+  if (kind === "room") {
+    R(-80, top + 40, cw + 80, bot - top, 70); R(-80, top - 10, cw - 40, 90, 45);   // an armchair's arm and back, close to the lens
+    [[-60, -170], [-20, -230], [20, -200], [60, -150]].forEach(([dx, dy]) =>
+      P(`M ${W - 120} ${top + 90} Q ${W - 120 + dx * 1.7} ${top + dy + 70} ${W - 120 + dx} ${top + dy} Q ${W - 120 + dx * 0.2} ${top + dy + 100} ${W - 120} ${top + 90} Z`));
+    R(W - 170, top + 80, 120, bot - top, 18);                                 // a tall plant in its pot
+  } else if (kind === "desk") {
+    P(`M -60 ${bot} L -60 ${top} Q ${cw * 0.5} ${top - 70} ${cw} ${top + 10} L ${cw - 20} ${bot} Z`);   // a chair back
+    R(W - 150, top + 40, 14, bot - top, 6); P(`M ${W - 230} ${top + 50} L ${W - 143} ${top - 30} L ${W - 56} ${top + 50} Z`);   // a desk lamp
+  } else if (kind === "street") {
+    R(-40, top + 30, cw + 140, 22, 11); [30, 160, 290].forEach(x => R(x * V(1, 0.72), top + 30, 18, bot - top, 8));       // a railing
+    R(W - 170, top + 20, 90, bot - top, 40);                                  // a bollard
+  } else {
+    R(-40, gy + 10, W + 80, bot - gy, 0);                                     // a low ledge across the front
+  }
+  return fg;
+}
+let stageFgBlurId = null;
+function stageFgBlur() {   // the foreground is nearer the lens than the focus: blur it more than the shadows
+  if (!stageFgBlurId) { stageFgBlurId = "stfgblur"; const f = K.el("filter", { id: stageFgBlurId, x: "-20%", y: "-20%", width: "140%", height: "140%", "color-interpolation-filters": "sRGB" }, K.defs);
+    K.el("feGaussianBlur", { stdDeviation: 18 }, f); }
+  return stageFgBlurId;
 }
 function bubble(g) {   // a speech or thought bubble that pops from a point; text wraps inside
   const box = K.el("rect", { fill: C.INK }, g), tail = K.el("path", { fill: C.INK }, g);
@@ -544,10 +594,25 @@ const EMOTE = { "?": "?", "!": "!", "$": "$", "…": "…", "x": "✕" };
 B.stage = (s, g) => {
   const d = s.data, set = drawSet(d.set || "blank", g, d), gy = set.gy;
   const kick = d.kicker ? maskText(d.kicker, { ...AUX, "font-family": SANS, "font-size": 28, fill: C.ACCENT, "letter-spacing": 5 }, s.ov) : null;
-  const cast = {}, order = [];
-  (d.cast || []).forEach((c, i) => { cast[c.id] = { c, fig: F.figure(g, c), seed: i * 3 + 1 }; order.push(c.id); });
+  const cast = {}, order = [], feetShade = set.shade ? K.el("g", { filter: `url(#${stageBlur()})` }, g) : null;
+  (d.cast || []).forEach((c, i) => { cast[c.id] = { c, fig: F.figure(g, c), seed: i * 3 + 1,
+    sh: feetShade && K.el("ellipse", { fill: "#000", opacity: 0.6 }, feetShade) }; order.push(c.id); });
+  // the light: a warm pool on the light side over the set and figures, falling off to dark on the far side; under bubbles
+  // and cards, so text keeps its contrast. On a set this dark a shadow only reads where the light lands
+  if (d.light) { const id = "stl" + s.id.replace(/\W/g, ""), L = d.light === "left";
+    const gr = K.el("linearGradient", { id, x1: L ? 0 : 1, x2: L ? 1 : 0, y1: 0, y2: 0 }, K.defs);
+    [[0, 0], [0.45, 0.05], [1, 0.42]].forEach(([o, a]) => K.el("stop", { offset: o, "stop-color": "#000", "stop-opacity": a }, gr));
+    const gw = K.el("radialGradient", { id: id + "w", cx: L ? "8%" : "92%", cy: "62%", r: "62%" }, K.defs);
+    [[0, 0.17], [0.55, 0.06], [1, 0]].forEach(([o, a]) => K.el("stop", { offset: o, "stop-color": "#ffd9a0", "stop-opacity": a }, gw));
+    K.el("rect", { x: -400, y: -300, width: W + 800, height: H + 600, fill: `url(#${id}w)` }, set.shade.parentNode.insertBefore(K.el("g", {}, g), set.shade));
+    K.el("rect", { x: -400, y: -300, width: W + 800, height: H + 600, fill: `url(#${id})` }, g); }
+  const fore = d.foreground ? drawForeground(d.set || "blank", g) : null;
   const fx = K.el("g", {}, g);
   const beats = (d.beats || []).map(b => Object.assign({ T: b.t != null ? b.t : s.t0 + (b.time || 0) * (s.t1 - s.t0) }, b)).sort((a, b) => a.T - b.T);
+  const lean = H > W ? 0 : 0.35, camK = camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)]));
+  const camAt = u => K.kf(u, camK);
+  // where the camera sits on average through the scene: the foreground is at the frame's corners there
+  const camMid = fore ? Array.from({ length: 21 }, (_, k) => camAt(s.t0 + (s.t1 - s.t0) * k / 20)).reduce((a, v) => a + v, 0) / 21 : W / 2;
   beats.forEach(b => { if (b.say || b.think) K.label(b.say || b.think, b.T, s.t1, b.say ? "speech bubble" : "thought bubble");
                        if (b.notify) K.label(b.notify, b.T, s.t1, "phone notification");
                        if (b.sms) K.label(b.sms, b.T, s.t1, "phone text message"); });
@@ -568,8 +633,7 @@ B.stage = (s, g) => {
     // at the edges are cut. No slow push or rise in either: bubble text under a slow zoom is re-rasterised every frame and
     // shimmers. The pan moves by fractions of a pixel (cam.frac): on whole pixels a slow ease stepped the whole set one pixel
     // every other frame, which final's pop check and the owner both caught (Trapdoor r6, 2026-10-24)
-    const lean = H > W ? 0 : 0.35;
-    const fx = K.kf(t, camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)])));
+    const fx = camAt(t);
     const pend = [], heads = [], sx = Math.round(fx - W / 2), occ = [...set.occ, ...keepClear(g, s.ov, sx)];   // what is on screen (bodies, bubbles, the kicker, data-clear layers) in scene units, so a notification sits clear of it
     if (kick) occ.push({ x0: sx, x1: sx + V(90, 70) + kick.t.getComputedTextLength() + 40, y0: 0, y1: V(150, SAFE.y0 + 50), w: 3 });   // words, as a bubble
     order.forEach(id => {
@@ -616,6 +680,7 @@ B.stage = (s, g) => {
       if (walk) pose = F.stride(t, walk[0], walk[1], pose);   // the stride eases in from the first step and out into the held pose
       const buzz = glow > 0.6 ? Math.sin(t * 90) * 1.5 : 0;
       F.place(A.fig, x + buzz, gy, h, pose, { face, glow });
+      if (A.sh) K.set(A.sh, { cx: x + set.away * 0.2 * h, cy: gy + 4, rx: 0.3 * h * (1 + 0.15 * (pose.crouch || 0)), ry: 0.035 * h });   // cast away from the light
       // the turn: the figure narrows through edge-on instead of mirroring in one frame
       if (prevFace && t - faceT < 0.2) { const k0 = prevFace === "left" ? -1 : 1, k1 = face === "left" ? -1 : 1, k = K.lerp(k0, k1, K.smooth(K.prog(t, faceT, faceT + 0.2)));
         A.fig.flip.setAttribute("transform", `scale(${(Math.abs(k) < 0.06 ? 0.06 * k1 : k).toFixed(3)} 1)`); }
@@ -706,6 +771,9 @@ B.stage = (s, g) => {
       if (msg && noteT > msgT) { drawMsg(); drawNote(); } else { drawNote(); drawMsg(); }
     });
     void o;
+    // the foreground sits on the frame's corners when the camera is at its average place and, being nearer the lens,
+    // slides 35% further than the set as the camera pans away from there (the group pans with the set; this adds the rest)
+    if (fore) fore.setAttribute("transform", `translate(${(camMid - W / 2 - 0.35 * (fx - camMid)).toFixed(2)} 0)`);
     g.__cam = { cx: fx, cy: H / 2, z: 1, frac: 1 };
   };
 };
