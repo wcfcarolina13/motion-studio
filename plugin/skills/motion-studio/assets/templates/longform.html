@@ -459,8 +459,12 @@ B.title = (s, g) => {   // the cold-open title card
 // the boxes a notification should keep clear of (the monitor's screen).
 function drawSet(kind, g, d = {}) {
   const gy = V(900, SAFE.y1 - 40), sx = W / 1920, X = v => v * sx;   // tall: the ground sits low in the safe area, furniture squeezes in
-  const occ = [], wood = SET.wood, dark = SET.dark, line = SET.line;
-  if (kind !== "blank") K.el("rect", { x: -W / 2, y: -300, width: 2 * W, height: gy + 300, fill: kind === "street" ? SET.wallStreet : SET.wall }, g);
+  const occ = [], lights = [], wood = SET.wood, dark = SET.dark, line = SET.line, HK = window.STAGE_HOOKS || {};
+  // the backdrop: the wall (or the street's sky) in its own group, under everything else. A kit's STAGE_HOOKS.backdrop
+  // (kind, group, info) draws into it, over the default wall or after clearing it (group.replaceChildren())
+  const back = K.el("g", { "data-layer": "backdrop" }, g);
+  if (kind !== "blank") K.el("rect", { x: -W / 2, y: -300, width: 2 * W, height: gy + 300, fill: kind === "street" ? SET.wallStreet : SET.wall }, back);
+  if (HK.backdrop) HK.backdrop(kind, back, { gy, W, H, data: d, theme: THEME });
   const floorC = SET.floor, floor = K.el("rect", { fill: floorC }, g);
   K.set(floor, K.rect(-W / 2, gy, 2 * W, H - gy + 200));   // wall and floor reach half a frame past each edge: the camera leans up to 0.35 of that
   K.el("rect", { x: -W / 2, y: gy - 2, width: 2 * W, height: 3, fill: SET.skirting }, g);
@@ -480,7 +484,7 @@ function drawSet(kind, g, d = {}) {
                      fill: k ? SET.leaf : SET.leafLight }, g));
   };
   const lamp = (x, y, h) => {                            // a lamp with a lit shade and a soft pool of light
-    feet.push([x - 40, x + 40, h]);
+    feet.push([x - 40, x + 40, h]); lights.push({ kind: "lamp", x, y: y - h + 110, w: 108, top: y - h + 50 });
     K.el("ellipse", { cx: x, cy: y - h + 40, rx: 150, ry: 110, fill: SET.glow, opacity: 0.25 }, g);
     K.el("rect", { x: x - 4, y: y - h + 40, width: 8, height: h - 40, fill: dark }, g);
     K.el("rect", { x: x - 40, y: y - 8, width: 80, height: 8, rx: 4, fill: dark }, g);
@@ -493,14 +497,15 @@ function drawSet(kind, g, d = {}) {
       for (let wy = gy - bh + 30; wy < gy - 60; wy += 56) for (let wx = bx + 22; wx < bx + bw - 30; wx += 46)
         if (r() > 0.55) K.el("rect", { x: wx, y: wy, width: 20, height: 28, fill: r() > 0.7 ? SET.windowLit : SET.windowDark }, g);
     }
-    feet.push([X(1500) - 30, X(1500) + 40, 440]);
+    feet.push([X(1500) - 30, X(1500) + 40, 440]); lights.push({ kind: "streetLamp", x: X(1500) - 5, y: gy - 426, w: 70, top: gy - 440 });
     K.el("rect", { x: X(1500), y: gy - 430, width: 10, height: 430, fill: SET.post }, g);
     K.el("rect", { x: X(1500) - 40, y: gy - 440, width: 70, height: 14, rx: 7, fill: SET.post }, g);
     K.el("ellipse", { cx: X(1505), cy: gy - 420, rx: 120, ry: 60, fill: SET.glow, opacity: 0.3 }, g);   // the street lamp's glow
   } else if (kind === "room") {
     K.el("rect", { x: X(220), y: gy - 670, width: X(360), height: 300, rx: 6, fill: SET.glass, stroke: SET.windowFrame, "stroke-width": 8 }, g);
     K.el("rect", { x: X(400) - 4, y: gy - 670, width: 8, height: 300, fill: SET.windowFrame }, g);
-    K.el("circle", { cx: X(520), cy: gy - 610, r: 22, fill: SET.moon, opacity: 0.8 }, g);                 // the moon in the window
+    K.el("circle", { cx: X(520), cy: gy - 610, r: 22, fill: SET.moon, opacity: 0.8 }, g);
+    lights.push({ kind: "window", x: X(400), y: gy - 520, w: X(360), h: 300, top: gy - 670 });                 // the moon in the window
     K.el("rect", { x: X(820), y: gy - 640, width: X(200), height: 150, fill: SET.picture, stroke: SET.pictureFrame, "stroke-width": 10 }, g);   // a framed picture
     K.el("path", { d: `M ${X(840)} ${gy - 505} L ${X(890)} ${gy - 580} L ${X(930)} ${gy - 540} L ${X(960)} ${gy - 575} L ${X(1000)} ${gy - 505} Z`, fill: SET.pictureArt }, g);
     K.el("rect", { x: X(1240), y: gy - 170, width: X(520), height: 120, rx: 26, fill: SET.sofa }, g);
@@ -520,6 +525,7 @@ function drawSet(kind, g, d = {}) {
     // the monitor at a monitor's size beside a person: bezel, lit screen, neck and foot. data.screen puts a browser page on
     // it, as set dressing: its text is too small to read, so say what matters in a notification or bubble too
     const sw = 380, sh = 230, sxl = cx - sw / 2, syt = top - 70 - sh;
+    lights.push({ kind: "monitor", x: cx, y: syt + sh / 2, w: sw, h: sh, top: syt });
     K.el("rect", { x: cx - 14, y: top - 72, width: 28, height: 60, fill: line }, g);
     K.el("rect", { x: cx - 80, y: top - 14, width: 160, height: 14, rx: 6, fill: line }, g);
     K.el("rect", { x: sxl - 14, y: syt - 14, width: sw + 28, height: sh + 28, rx: 14, fill: SET.bezel, stroke: line, "stroke-width": 3 }, g);
@@ -551,7 +557,14 @@ function drawSet(kind, g, d = {}) {
   if (shade) feet.forEach(([a, b, ht]) => { const w = b - a;
     K.el("ellipse", flat ? { cx: (a + b) / 2 + away * 0.06 * ht, cy: gy + 0.06 * ht * 0.5, rx: w * 0.6, ry: 12 + 0.03 * ht, fill: tone }
                          : { cx: (a + b) / 2 + away * 0.22 * w, cy: gy + 6, rx: w * 0.7, ry: 18, fill: SD.soft, opacity: SD.softOpacity }, shade); });
-  return { gy, occ, shade, away, flat, tone, blend };
+  // lights: where the set's light sources are (a lamp's shade, the street lamp's head, the room's window, the desk's
+  // screen), in the scene's own units, which pan with the camera: x and y are the centre a kit hangs a light cone or glow
+  // from (a lamp's and the street lamp's are the underside of the shade or head), w and h its size, top its upper edge.
+  // A kit reads them in STAGE_HOOKS.set(kind, g, set, data), called once the set is drawn, or later from the scene
+  // group's __set
+  const set = { gy, occ, shade, away, flat, tone, blend, lights, back };
+  if (HK.set) HK.set(kind, g, set, d);
+  return set;
 }
 let stageBlurId = null;
 function stageBlur() {   // one soft blur shared by stage shadows and the foreground
@@ -636,6 +649,7 @@ function keepClear(g, ov, sx) {
 const EMOTE = { "?": "?", "!": "!", "$": "$", "…": "…", "x": "✕" };
 B.stage = (s, g) => {
   const d = s.data, set = drawSet(d.set || "blank", g, d), gy = set.gy;
+  g.__set = set;
   const kick = d.kicker ? maskText(d.kicker, { ...AUX, "font-family": SANS, "font-size": 28, fill: C.ACCENT, "letter-spacing": 5 }, s.ov) : null;
   const cast = {}, order = [], feetShade = set.shade ? K.el("g", set.flat ? { opacity: THEME.shadow.opacity, ...set.blend } : { filter: `url(#${stageBlur()})`, ...set.blend }, g) : null;
   (d.cast || []).forEach((c, i) => { cast[c.id] = { c, fig: F.figure(g, c), seed: i * 3 + 1,
