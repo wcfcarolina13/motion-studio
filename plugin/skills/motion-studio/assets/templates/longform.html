@@ -428,10 +428,10 @@ B.title = (s, g) => {   // the cold-open title card
 function drawSet(kind, g, d = {}) {
   const gy = V(900, SAFE.y1 - 40), sx = W / 1920, X = v => v * sx;   // tall: the ground sits low in the safe area, furniture squeezes in
   const occ = [], wood = "#2b2724", dark = "#1b1918", line = "#33363a";
-  if (kind !== "blank") K.el("rect", { x: -300, y: -300, width: W + 600, height: gy + 300, fill: kind === "street" ? "#0d0e10" : "#100f0e" }, g);
+  if (kind !== "blank") K.el("rect", { x: -W / 2, y: -300, width: 2 * W, height: gy + 300, fill: kind === "street" ? "#0d0e10" : "#100f0e" }, g);
   const floor = K.el("rect", { fill: "#131312" }, g);
-  K.set(floor, K.rect(-200, gy, W + 400, H - gy + 200));
-  K.el("rect", { x: -200, y: gy - 2, width: W + 400, height: 3, fill: "#2a2a28" }, g);
+  K.set(floor, K.rect(-W / 2, gy, 2 * W, H - gy + 200));   // wall and floor reach half a frame past each edge: the camera leans up to 0.35 of that
+  K.el("rect", { x: -W / 2, y: gy - 2, width: 2 * W, height: 3, fill: "#2a2a28" }, g);
   const r = K.rng(kind.length * 7 + 3);
   const plant = (x, s = 1) => {                          // a potted plant: pot and five leaves
     K.el("path", { d: `M ${x - 34 * s} ${gy - 70 * s} L ${x + 34 * s} ${gy - 70 * s} L ${x + 26 * s} ${gy} L ${x - 26 * s} ${gy} Z`, fill: "#5a3a2a" }, g);
@@ -1046,20 +1046,22 @@ K.run(t => {
   built.forEach(b => {
     const on = t >= b.s.t0 - 0.01 && t <= b.s.t1 + 0.01 + (b.wipe ? WIPE : 0);
     K.show(b.g, on); K.show(b.s.ov, on && t <= b.s.t1 + 0.01);
-    if (b.wipe && on) {
-      const inn = K.eio(K.prog(t, b.s.t0, b.s.t0 + WIPE)), out = !b.next || !OPAQUE.has(b.next.type) ? K.eio(K.prog(t, b.s.t1, b.s.t1 + WIPE)) : 0;
-      const pad = 200;                                     // the scene camera can zoom; keep the clip wider than the frame
-      K.set(b.wipe, { x: -pad + out * (W + 2 * pad), width: Math.max(0, (W + 2 * pad) * (inn - out)), y: -pad, height: H + 2 * pad });
-    }
     if (on) {
       b.fn(t);
       // the scene's own camera if it set one. No slow zoom drift otherwise: text re-rasterised at a new scale every frame
       // shimmers (line gaps jitter by up to 2 px), and an unscaled pan lands on whole pixels so its text keeps its shape, unless
       // the scene asks for fractional steps (cam.frac: a stage pan, whose slow ease would otherwise step)
       const cam = b.g.__cam, z = cam ? cam.z : 1, cx = cam ? cam.cx : W / 2, cy = cam ? cam.cy : H / 2;
-      b.g.setAttribute("transform", z === 1 ? (cam && cam.frac ? `translate(${(W / 2 - cx).toFixed(2)} ${(H / 2 - cy).toFixed(2)})`
-                                                               : `translate(${Math.round(W / 2 - cx)} ${Math.round(H / 2 - cy)})`)
-                                            : `translate(${W / 2} ${H / 2}) scale(${z}) translate(${-cx} ${-cy})`);
+      const tx = cam && cam.frac ? +(W / 2 - cx).toFixed(2) : Math.round(W / 2 - cx), ty = cam && cam.frac ? +(H / 2 - cy).toFixed(2) : Math.round(H / 2 - cy);
+      b.g.setAttribute("transform", z === 1 ? `translate(${tx} ${ty})` : `translate(${W / 2} ${H / 2}) scale(${z}) translate(${-cx} ${-cy})`);
+      if (b.wipe) {
+        // the wipe is laid out on the frame and mapped into the scene's own coordinates, which the camera moves: drawn in scene
+        // coordinates, a pan wider than its pad left a strip at the frame's edge unpainted
+        const inn = K.eio(K.prog(t, b.s.t0, b.s.t0 + WIPE)), out = !b.next || !OPAQUE.has(b.next.type) ? K.eio(K.prog(t, b.s.t1, b.s.t1 + WIPE)) : 0;
+        const pad = 200, sx = -pad + out * (W + 2 * pad), sw = Math.max(0, (W + 2 * pad) * (inn - out)), sy = -pad, sh = H + 2 * pad;
+        K.set(b.wipe, z === 1 ? { x: sx - tx, width: sw, y: sy - ty, height: sh }
+                              : { x: (sx - W / 2) / z + cx, width: sw / z, y: (sy - H / 2) / z + cy, height: sh / z });
+      }
       src = b.s.source || ""; chap = FULL.has(b.s.type) || VERT ? "" : b.s.chapter || "";   // a drama panel (and a Short) carries no chapter label
     }
   });
