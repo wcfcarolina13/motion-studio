@@ -2,7 +2,7 @@
 """Long-form narrated films (YouTube explainers, 5-20 minutes) on the motion-studio engine.
 
 A film folder holds script.json and narration/<id>.mp3 (one clip per segment, from any TTS or a human read).
-script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?, "captions"?: false, "loop"?: false, "type_scale"?: 1, "say"?: {"John Does": "John Doughs"}, "moods"?: {"<chapter>": "tension"}, "segments": [
+script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?, "theme"? (stage colours, longform.md), "captions"?: false, "loop"?: false, "type_scale"?: 1, "say"?: {"John Does": "John Doughs"}, "moods"?: {"<chapter>": "tension"}, "segments": [
   {"id", "chapter", "type", "data", "narration", "source"?, "mood"?}]}.
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
@@ -713,7 +713,7 @@ def cmd_timeline(a):
     if chapters:
         chapters[-1]["t1"] = total
     eng = json.loads((film / "engine.json").read_text()) if (film / "engine.json").exists() else {}
-    tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs, "format": fmt,
+    tl = {"title": sc["title"], "palette": sc.get("palette", {}), "theme": sc.get("theme", {}), "duration": total, "segments": segs, "format": fmt,
           "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1),
           "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False)))}
@@ -794,7 +794,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say") if k in sc}
+    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
