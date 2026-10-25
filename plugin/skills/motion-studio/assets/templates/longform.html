@@ -419,7 +419,7 @@ B.title = (s, g) => {   // the cold-open title card
 };
 
 // ── people: stage scenes with rigged figures (figure.js) ─────────────
-// data: { set: "street"|"room"|"desk"|"blank", light?: "left"|"right", foreground?: true, look?: "soft"|"flat", shadow?: "#hex", screen?: {url, title?, lines?} (what the desk's monitor shows), kicker?, cast: [{id, x: 0..1, h?, skin, hair, hairColor, shirt, pants,
+// data: { set: "street"|"room"|"desk"|"blank", light?: "left"|"right", foreground?: true, look?: "soft"|"flat", shadow?: "#hex", ink?: "#hex", screen?: {url, title?, lines?} (what the desk's monitor shows), kicker?, cast: [{id, x: 0..1, h?, skin, hair, hairColor, shirt, pants,
 //         kind: "person"|"silhouette", face, pose, enter: "left"|"right"}],
 //         beats: [{at, who, pose?, face?, emote?: "?"|"!"|"$"|"…", say?, think?, notify?, from?, sms?, sender?, senderNote?, move?: x, glow?: true}] }
 // Every beat with "at" fires on its spoken word; a beat without one fires at `time` (0..1 of the segment).
@@ -530,29 +530,31 @@ function stageBlur() {   // one soft blur shared by stage shadows and the foregr
 // a plant in a room, a chair back and a desk lamp at a desk, a railing and a bollard on the street, a low ledge on blank),
 // moving 35% faster than the set when the camera pans, so the scene reads as having depth. They stay below knee height
 // at the edges, under every bubble and card. Off unless asked for. In the flat look (data.look "flat") they are solid
-// shapes in the floor's darker tone with an ink outline, unblurred, to match a flat, outlined art style
-function drawForeground(kind, g, flat = false, tone = "#070706") {
+// shapes in the floor's darker tone with an ink outline (data.ink, else the palette's INK), unblurred, to match a flat,
+// outlined art style. Returns the group and its left and right halves, which the stage slides outward clear of the cast
+function drawForeground(kind, g, flat = false, tone = "#070706", ink = C.INK) {
   // pieces stand on the frame's bottom corners, from the floor's front edge up to about knee height of a figure, dark and
   // out of focus. A tall frame keeps them as short as a wide one: below its floor is YouTube's control area
   const fg = K.el("g", flat ? {} : { filter: `url(#${stageFgBlur()})`, opacity: 0.9 }, g), gy = V(900, SAFE.y1 - 40), top = gy - 150, bot = flat ? H + 20 : gy + V(200, 240);   // a hard-edged piece runs off the frame rather than end mid-floor
-  const paint = flat ? { fill: tone, stroke: C.INK, "stroke-width": 6, "stroke-linejoin": "round" } : { fill: "#070706" };
-  const P = d => K.el("path", { d, ...paint }, fg), R = (x, y, w, h, rx = 0) => K.el("rect", { x, y, width: w, height: h, rx, ...paint }, fg);
+  const paint = flat ? { fill: tone, stroke: ink, "stroke-width": 6, "stroke-linejoin": "round" } : { fill: "#070706" };
+  const gl = K.el("g", {}, fg), gr = K.el("g", {}, fg), at = x => x < W / 2 ? gl : gr;
+  const P = (d, x) => K.el("path", { d, ...paint }, at(x)), R = (x, y, w, h, rx = 0) => K.el("rect", { x, y, width: w, height: h, rx, ...paint }, at(x + w / 2));
   const cw = V(300, 220);
   if (kind === "room") {
     R(-80, top + 40, cw + 80, bot - top, 70); R(-80, top - 10, cw - 40, 90, 45);   // an armchair's arm and back, close to the lens
-    [[-60, -170], [-20, -230], [20, -200], [60, -150]].forEach(([dx, dy]) =>
-      P(`M ${W - 120} ${top + 90} Q ${W - 120 + dx * 1.7} ${top + dy + 70} ${W - 120 + dx} ${top + dy} Q ${W - 120 + dx * 0.2} ${top + dy + 100} ${W - 120} ${top + 90} Z`));
-    R(W - 170, top + 80, 120, bot - top, 18);                                 // a tall plant in its pot
+    [[-55, 0], [-20, -25], [20, -15], [55, 5]].forEach(([dx, dy]) =>   // leaves stop at about knee height
+      P(`M ${W - 120} ${top + 90} Q ${W - 120 + dx * 1.7} ${top + dy + 70} ${W - 120 + dx} ${top + dy} Q ${W - 120 + dx * 0.2} ${top + dy + 100} ${W - 120} ${top + 90} Z`, W));
+    R(W - 170, top + 80, 120, bot - top, 18);                                 // a plant in its pot
   } else if (kind === "desk") {
-    P(`M -60 ${bot} L -60 ${top} Q ${cw * 0.5} ${top - 70} ${cw} ${top + 10} L ${cw - 20} ${bot} Z`);   // a chair back
-    R(W - 150, top + 40, 14, bot - top, 6); P(`M ${W - 225} ${top + 50} L ${W - 180} ${top - 25} L ${W - 106} ${top - 25} L ${W - 61} ${top + 50} Z`);   // a desk lamp: pole and shade
+    P(`M -60 ${bot} L -60 ${top} Q ${cw * 0.5} ${top - 20} ${cw} ${top + 10} L ${cw - 20} ${bot} Z`, 0);   // a chair back
+    R(W - 150, top + 40, 14, bot - top, 6); P(`M ${W - 225} ${top + 50} L ${W - 180} ${top - 25} L ${W - 106} ${top - 25} L ${W - 61} ${top + 50} Z`, W);   // a desk lamp: pole and shade
   } else if (kind === "street") {
     R(-40, top + 30, cw + 140, 22, 11); [30, 160, 290].forEach(x => R(x * V(1, 0.72), top + 30, 18, bot - top, 8));       // a railing
     R(W - 170, top + 20, 90, bot - top, 40);                                  // a bollard
   } else {
-    R(-40, gy + 10, W + 80, bot - gy, 0);                                     // a low ledge across the front
+    K.el("rect", { x: -40, y: gy + 10, width: W + 80, height: bot - gy, ...paint }, fg);   // a low ledge across the front, below every foot
   }
-  return fg;
+  return { g: fg, gl, gr };
 }
 let stageFgBlurId = null;
 function stageFgBlur() {   // the foreground is nearer the lens than the focus: blur it more than the shadows
@@ -614,13 +616,20 @@ B.stage = (s, g) => {
     [[0, 0.17], [0.55, 0.06], [1, 0]].forEach(([o, a]) => K.el("stop", { offset: o, "stop-color": "#ffd9a0", "stop-opacity": a }, gw));
     K.el("rect", { x: -400, y: -300, width: W + 800, height: H + 600, fill: `url(#${id}w)` }, set.shade.parentNode.insertBefore(K.el("g", {}, g), set.shade));
     K.el("rect", { x: -400, y: -300, width: W + 800, height: H + 600, fill: `url(#${id})` }, g); }
-  const fore = d.foreground ? drawForeground(d.set || "blank", g, set.flat, set.tone) : null;
+  const fore = d.foreground ? drawForeground(d.set || "blank", g, set.flat, set.tone, d.ink || C.INK) : null;
   const fx = K.el("g", {}, g);
   const beats = (d.beats || []).map(b => Object.assign({ T: b.t != null ? b.t : s.t0 + (b.time || 0) * (s.t1 - s.t0) }, b)).sort((a, b) => a.T - b.T);
   const lean = H > W ? 0 : 0.35, camK = camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)]));
   const camAt = u => K.kf(u, camK);
   // where the camera sits on average through the scene: the foreground is at the frame's corners there
   const camMid = fore ? Array.from({ length: 21 }, (_, k) => camAt(s.t0 + (s.t1 - s.t0) * k / 20)).reduce((a, v) => a + v, 0) / 21 : W / 2;
+  // a corner piece keeps clear of every figure's box, widened by 12% each side, wherever the figure stands or walks to in
+  // the scene, measured with the camera at its average place: the piece slides outward, off the frame if it must
+  if (fore) { const off = camMid - W / 2, xs = (d.cast || []).flatMap(c => { const hw = 0.2 * (c.h || 540) * 1.12;
+      return [c.x, ...beats.filter(b => b.who === c.id && b.move != null).map(b => b.move)].map(x => [x * W - hw, x * W + hw]); });
+    const lb = fore.gl.getBBox(), rb = fore.gr.getBBox();
+    if (lb.width && xs.length) fore.gl.setAttribute("transform", `translate(${Math.min(0, Math.min(...xs.map(v => v[0])) - (lb.x + lb.width + off)).toFixed(1)} 0)`);
+    if (rb.width && xs.length) fore.gr.setAttribute("transform", `translate(${Math.max(0, Math.max(...xs.map(v => v[1])) - (rb.x + off)).toFixed(1)} 0)`); }
   beats.forEach(b => { if (b.say || b.think) K.label(b.say || b.think, b.T, s.t1, b.say ? "speech bubble" : "thought bubble");
                        if (b.notify) K.label(b.notify, b.T, s.t1, "phone notification");
                        if (b.sms) K.label(b.sms, b.T, s.t1, "phone text message"); });
@@ -782,7 +791,7 @@ B.stage = (s, g) => {
     void o;
     // the foreground sits on the frame's corners when the camera is at its average place and, being nearer the lens,
     // slides 35% further than the set as the camera pans away from there (the group pans with the set; this adds the rest)
-    if (fore) fore.setAttribute("transform", `translate(${(camMid - W / 2 - 0.35 * (fx - camMid)).toFixed(2)} 0)`);
+    if (fore) fore.g.setAttribute("transform", `translate(${(camMid - W / 2 - 0.35 * (fx - camMid)).toFixed(2)} 0)`);
     g.__cam = { cx: fx, cy: H / 2, z: 1, frac: 1 };
   };
 };
