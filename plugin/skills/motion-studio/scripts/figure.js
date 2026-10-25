@@ -43,18 +43,40 @@
     sit:     { lh: 88, lk: -88, rh: 86, rk: -86, crouch: 0.42, rs: 24, re: 40, ls: 20, le: 40 },
     sitphone:{ prop: "phone", lh: 88, lk: -88, rh: 86, rk: -86, crouch: 0.42, head: 14, rs: 14, re: 132, ls: 18, le: 40, look: 0.9, lookY: 0.7, mouth: 0 },
     slump:   { head: 22, lean: 10, rs: -2, re: 4, ls: 0, le: 4, look: 0.2, lookY: 0.9, brow: 0.9, mouth: -0.9 },
+    realise: { head: -8, lean: -5, rs: 34, re: 96, ls: 22, le: 70, look: 0, lookY: -0.1, brow: 0.8, mouth: -0.3, open: 0.6 },
   };
   for (const k in F.POSES) F.POSES[k] = Object.assign({}, base, F.POSES[k]);
   const resolve = p => typeof p === "string" ? (F.POSES[p] || F.POSES.stand) : Object.assign({}, base, p);
   F.blend = (a, b, p) => { a = resolve(a); b = resolve(b); const o = {}; for (const k in base) o[k] = K.lerp(a[k], b[k], p); o.prop = p < 0.5 ? a.prop : b.prop; return o; };
-  // keys: [[t, pose], ...]; each change takes `dur` seconds with a slight overshoot so moves land, not slide
-  F.at = (t, keys, dur = 0.45) => {
+  // keys: [[t, pose], ...] or [[t, pose, {hold}], ...]; each change springs into the new pose. With o.anticipate (a stage
+  // film's "anticipate", on for films made by init since 2026-10-25) a big change first leans the other way for 0.12 s (about
+  // 4 frames, ending on the key so the move still starts on its word), and the body and limbs overshoot by about 5% and settle
+  // instead of stopping dead; face settings never overshoot. `hold` (frames) freezes the pose at the top of its overshoot,
+  // an accent on a realisation: the "realise" pose holds 2 frames unless the key says otherwise. Without o.anticipate the
+  // move is the old one: it lands on the target with no lean back and no overshoot (the clamp below), so films made before
+  // render the same
+  F.FPS = 30;
+  const BODY = ["lean", "head", "ls", "le", "rs", "re", "lh", "lk", "rh", "rk", "crouch"], ARMS = ["lean", "head", "ls", "le", "rs", "re"];
+  const SW = 13, SZ = 0.68, ANT = 0.12, PEAK = Math.PI / (SW * Math.sqrt(1 - SZ * SZ));   // the spring's first overshoot peak, s
+  const reach = (a, b, p, q) => { const o = F.blend(a, b, Math.min(1, p)); if (q > 1) BODY.forEach(k => { o[k] = K.lerp(a[k], b[k], q); }); return o; };
+  F.at = (t, keys, dur = 0.45, o = {}) => {
     let cur = resolve(keys[0][1]);
     for (let i = 1; i < keys.length; i++) {
-      if (t < keys[i][0]) break;
-      const s = Math.min(1.08, K.step(t, keys[i][0], 13, 0.68)) ;
-      cur = F.blend(cur, keys[i][1], K.clamp01(dur > 0 ? s : 1));
-      if (s < 1) { const over = s - 1; if (over > 0) cur = F.blend(cur, keys[i][1], 1 + over); }
+      const [ti, pi, ko = {}] = keys[i], tgt = resolve(pi);
+      // a big change: the arms, head and lean together move more than 80 degrees
+      const big = o.anticipate && dur > 0 && ARMS.reduce((a, k) => a + Math.abs(tgt[k] - cur[k]), 0) > 80;
+      if (t < ti - (big ? ANT : 0)) break;
+      let from = cur;
+      if (big) {   // the counter-move: 12% of the change the other way, at most 10 degrees a joint, never lifting the hips
+        from = Object.assign({}, cur);
+        BODY.forEach(k => { from[k] = cur[k] - Math.max(-10, Math.min(10, 0.12 * (tgt[k] - cur[k]))); });
+        from.crouch = Math.max(0, from.crouch);
+        if (t < ti) { cur = F.blend(cur, from, K.smooth(K.prog(t, ti - ANT, ti))); break; }
+      }
+      const hold = o.anticipate ? (ko.hold ?? (pi === "realise" ? 2 : 0)) / F.FPS : 0;
+      const tt = hold && t > ti + PEAK ? Math.max(ti + PEAK, t - hold) : t;
+      const sp = dur > 0 ? K.step(tt, ti, SW, SZ) : 1;
+      cur = o.anticipate ? reach(from, tgt, sp, sp) : F.blend(cur, tgt, K.clamp01(sp));
     }
     return cur;
   };
