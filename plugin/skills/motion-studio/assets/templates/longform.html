@@ -680,8 +680,9 @@ B.stage = (s, g) => {
         if (b.say || b.think) { if (open) last.t1 = b.T + 0.22; runs.push({ str: b.say || b.think, t0: b.T, t1: Infinity }); }
         else if ((b.say === "" || b.think === "") && open) last.t1 = b.T + 0.3;
       });
+      // every pose beat, past and still to come: an anticipating move starts leaning back just before its word
+      beats.filter(b => b.who === id && b.pose).forEach(b => keys.push([b.T, b.pose, { hold: b.hold }]));
       beats.filter(b => b.who === id && b.T <= t + 1e-6).forEach(b => {
-        if (b.pose) keys.push([b.T, b.pose]);
         // a bubble that replaces another: the old one fades where it stands for 0.22 s, then the new one pops in (a straight
         // swap showed the new box for a frame before its text)
         if (b.say || b.think) { rep = !!say; gone = rep ? say : null; goneT = b.T; say = b.say || b.think; kind = b.say ? "say" : "think"; sayT = b.T + (rep ? 0.22 : 0); }
@@ -691,8 +692,10 @@ B.stage = (s, g) => {
         if (b.notify) { note = b.notify; noteT = b.T; noteFrom = b.from || "MESSAGES · now"; }
         if (b.sms) { msg = b.sms; msgT = b.T; msgWho = b.sender || "+1 (555) 010-0199"; msgSub = b.senderNote || "Text Message"; }
       });
-      let pose = F.at(t, keys);
-      const rest = pose;                                 // the held pose, before breathing, sway and walk are added
+      // the held pose, before breathing, sway and walk are added. Bubbles and cards hang from the plain move's head (no lean
+      // back, no overshoot, no hold), so their text moves no more than it did before anticipation
+      const rest = F.at(t, keys);
+      let pose = TIMELINE.anticipate ? F.at(t, keys, 0.45, { anticipate: true }) : rest;
       pose = Object.assign(F.idle(t, A.seed, pose), {});
       if (walk) pose = F.stride(t, walk[0], walk[1], pose);   // the stride eases in from the first step and out into the held pose
       const buzz = glow > 0.6 ? Math.sin(t * 90) * 1.5 : 0;
