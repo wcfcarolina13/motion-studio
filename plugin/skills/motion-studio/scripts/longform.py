@@ -145,6 +145,11 @@ def gate_real_assets(film, segs, step):
                          + "\n  ".join(missing))
 
 
+# what `init` writes to a new film's engine.json: behaviour that is on for new films but would change an older film's
+# re-render. "anticipate": figures lean back before a big pose change, overshoot and settle (figure.js F.at; 2026-10-25)
+ENGINE_DEFAULTS = {"anticipate": True}
+
+
 def cmd_init(a):
     film = Path(a.film).resolve()
     for d in ("narration", "out", "review", "sources"):
@@ -152,6 +157,11 @@ def cmd_init(a):
     shutil.copy(TEMPLATE, film / "film.html")
     for f in ("kit.js", "figure.js"):
         shutil.copy(HERE / f, film / f)
+    # defaults a film made from today on gets, where an older film keeps the old behaviour so its re-renders don't change.
+    # script.json overrides each ("anticipate": false)
+    eng = film / "engine.json"
+    if not eng.exists():
+        eng.write_text(json.dumps(ENGINE_DEFAULTS, indent=1) + "\n")
     print(film)
 
 
@@ -702,9 +712,11 @@ def cmd_timeline(a):
     total = round(t + (SHORT_TAIL if short else a.tail), 3)
     if chapters:
         chapters[-1]["t1"] = total
+    eng = json.loads((film / "engine.json").read_text()) if (film / "engine.json").exists() else {}
     tl = {"title": sc["title"], "palette": sc.get("palette", {}), "duration": total, "segments": segs, "format": fmt,
           "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
-          "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1)}
+          "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1),
+          "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False)))}
     if short:
         problems += short_audio(film, short, segs, a.lead)
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
@@ -759,6 +771,8 @@ def cmd_short(a):
     shutil.copy(TEMPLATE, dest / "film.html")
     for f in ("kit.js", "figure.js"):
         shutil.copy(HERE / f, dest / f)
+    if (film / "engine.json").exists():     # the Short moves like its long-form film
+        shutil.copy2(film / "engine.json", dest / "engine.json")
     keep = {x["id"] for x in segs}
     for x in segs:
         clip = film / "narration" / f"{x['id']}.mp3"
