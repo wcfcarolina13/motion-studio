@@ -1615,6 +1615,9 @@ MEASURE_TEXT = """() => {
 # real glyph cells, so a tilted stamp's loose bounding box near a word doesn't count. A collision needs 2 of the 75 probes, so a thin stroke across a word counts.
 # Text drawn inside the box of a visible data-clear element (a hand-built stage layer marked keep-clear) fails too, even
 # on top of it, unless the text is part of that element.
+# Text drawn straight onto a stage foreground piece (data-fore: the shapes in front of the action) fails too, even on
+# top of it, because the piece's edges run through the words: the first thing painted under the text at a probe is
+# the piece. Text on its own box (a bubble, a card) is drawn on that box, so it passes (Longtok, 2026-10-25).
 OVERLAP = """() => {
   const st = document.getElementById('stage').getBoundingClientRect(), frame = st.width * st.height;
   const opac = n => { let o = 1;
@@ -1651,6 +1654,8 @@ OVERLAP = """() => {
       if (at < 0) continue;   // between lines, or outside the text's clip: nothing of it is drawn here
       clears.forEach(([c, b, nm]) => { if (!c.contains(el) && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) {
         const k = 'inside keep-clear ' + nm; hits[k] = (hits[k] || 0) + 1; } });
+      const under = stack.slice(at + 1).find(e => !el.contains(e));
+      if (under && under.closest('[data-fore]') && opac(under) >= 0.15) hits['on the stage foreground'] = (hits['on the stage foreground'] || 0) + 1;
       stack.slice(at + 1).forEach(e => { const u = e.closest('text');
         if (u && u !== el && opac(u) >= 0.5) { const k = 'overlaps ' + name(u); hits[k] = (hits[k] || 0) + 1; } });
       for (const e of stack.slice(0, at)) {
@@ -1660,7 +1665,7 @@ OVERLAP = """() => {
         const k = name(e); hits[k] = (hits[k] || 0) + 1; break;
       }
     }
-    Object.entries(hits).forEach(([k, n]) => { if (n >= 2) out.push([s, /^(overlaps|inside)/.test(k) ? k : 'covered by ' + k, n]); });
+    Object.entries(hits).forEach(([k, n]) => { if (n >= 2) out.push([s, /^(overlaps|inside|on the)/.test(k) ? k : 'covered by ' + k, n]); });
   });
   return out;
 }"""

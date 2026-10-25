@@ -535,9 +535,10 @@ function stageBlur() {   // one soft blur shared by stage shadows and the foregr
 function drawForeground(kind, g, flat = false, tone = "#070706", ink = C.INK) {
   // pieces stand on the frame's bottom corners, from the floor's front edge up to about knee height of a figure, dark and
   // out of focus. A tall frame keeps them as short as a wide one: below its floor is YouTube's control area
-  const fg = K.el("g", flat ? {} : { filter: `url(#${stageFgBlur()})`, opacity: 0.9 }, g), gy = V(900, SAFE.y1 - 40), top = gy - 150, bot = flat ? H + 20 : gy + V(200, 240);   // a hard-edged piece runs off the frame rather than end mid-floor
+  const fg = K.el("g", flat ? { "data-fore": "" } : { "data-fore": "", filter: `url(#${stageFgBlur()})`, opacity: 0.9 }, g), gy = V(900, SAFE.y1 - 40), top = gy - 150, bot = flat ? H + 20 : gy + V(200, 240);   // a hard-edged piece runs off the frame rather than end mid-floor
   const paint = flat ? { fill: tone, stroke: ink, "stroke-width": 6, "stroke-linejoin": "round" } : { fill: "#070706" };
   const gl = K.el("g", {}, fg), gr = K.el("g", {}, fg), at = x => x < W / 2 ? gl : gr;
+  let ledge = null;
   const P = (d, x) => K.el("path", { d, ...paint }, at(x)), R = (x, y, w, h, rx = 0) => K.el("rect", { x, y, width: w, height: h, rx, ...paint }, at(x + w / 2));
   const cw = V(300, 220);
   if (kind === "room") {
@@ -552,9 +553,9 @@ function drawForeground(kind, g, flat = false, tone = "#070706", ink = C.INK) {
     R(-40, top + 30, cw + 140, 22, 11); [30, 160, 290].forEach(x => R(x * V(1, 0.72), top + 30, 18, bot - top, 8));       // a railing
     R(W - 170, top + 20, 90, bot - top, 40);                                  // a bollard
   } else {
-    K.el("rect", { x: -W / 2, y: gy + 10, width: 2 * W, height: bot - gy, ...paint }, fg);   // a low ledge across the front, below every foot
+    ledge = K.el("rect", { x: -W / 2, y: gy + 10, width: 2 * W, height: bot - gy, ...paint }, fg);   // a low ledge across the front, below every foot
   }
-  return { g: fg, gl, gr };
+  return { g: fg, gl, gr, ledge, blur: flat ? 0 : 18 };
 }
 let stageFgBlurId = null;
 function stageFgBlur() {   // the foreground is nearer the lens than the focus: blur it more than the shadows
@@ -628,8 +629,26 @@ B.stage = (s, g) => {
   if (fore) { const off = camMid - W / 2, xs = (d.cast || []).flatMap(c => { const hw = 0.2 * (c.h || 540) * 1.12;
       return [c.x, ...beats.filter(b => b.who === c.id && b.move != null).map(b => b.move)].map(x => [x * W - hw, x * W + hw]); });
     const lb = fore.gl.getBBox(), rb = fore.gr.getBBox();
-    if (lb.width && xs.length) fore.gl.setAttribute("transform", `translate(${Math.min(0, Math.min(...xs.map(v => v[0])) - (lb.x + lb.width + off)).toFixed(1)} 0)`);
-    if (rb.width && xs.length) fore.gr.setAttribute("transform", `translate(${Math.max(0, Math.max(...xs.map(v => v[1])) - (rb.x + off)).toFixed(1)} 0)`); }
+    let ldx = lb.width && xs.length ? Math.min(0, Math.min(...xs.map(v => v[0])) - (lb.x + lb.width + off)) : 0;
+    let rdx = rb.width && xs.length ? Math.max(0, Math.max(...xs.map(v => v[1])) - (rb.x + off)) : 0;
+    // and clear of the source line, which sits on the frame (bottom left on a wide film) while the pieces pan with the
+    // camera: a piece is drawn on the frame where it stands at the camera's average place and moves 1.35x the camera's
+    // offset from there, so it slides outward until no camera place in the scene brings it within a pad of the line's
+    // box (the pad takes in a soft piece's blur). A corner piece usually leaves the frame; the blank set's full-width
+    // ledge can't slide, so it stops above the line. Posts and furniture through the line made it hard to read on a phone
+    // (Longtok, episode 2, 2026-10-25)
+    if (s.source) {
+      const keep = sourceT.textContent; sourceT.textContent = "Source: " + s.source;
+      const fb = sourceT.getBBox(), pad = 16 + 2 * fore.blur; sourceT.textContent = keep;
+      const sh = Array.from({ length: 41 }, (_, k) => -1.35 * (camAt(s.t0 + (s.t1 - s.t0) * k / 40) - camMid)), lo = Math.min(...sh), hi = Math.max(...sh);
+      const fx0 = fb.x - pad, fx1 = fb.x + fb.width + pad, fy0 = fb.y - pad, fy1 = fb.y + fb.height + pad;
+      const hits = (b, dx) => b.width && b.y < fy1 && b.y + b.height > fy0 && b.x + dx + lo < fx1 && b.x + b.width + dx + hi > fx0;
+      if (hits(lb, ldx) && fx0 < W / 2) ldx = Math.min(ldx, fx0 - (lb.x + lb.width + hi));
+      if (hits(rb, rdx) && fx1 > W / 2) rdx = Math.max(rdx, fx1 - (rb.x + lo));
+      if (fore.ledge) { const y = +fore.ledge.getAttribute("y"), h = +fore.ledge.getAttribute("height"); if (y + h > fy0 && y < fy1) K.set(fore.ledge, { height: Math.max(0, fy0 - y) }); }
+    }
+    if (ldx) fore.gl.setAttribute("transform", `translate(${ldx.toFixed(1)} 0)`);
+    if (rdx) fore.gr.setAttribute("transform", `translate(${rdx.toFixed(1)} 0)`); }
   beats.forEach(b => { if (b.say || b.think) K.label(b.say || b.think, b.T, s.t1, b.say ? "speech bubble" : "thought bubble");
                        if (b.notify) K.label(b.notify, b.T, s.t1, "phone notification");
                        if (b.sms) K.label(b.sms, b.T, s.t1, "phone text message"); });
