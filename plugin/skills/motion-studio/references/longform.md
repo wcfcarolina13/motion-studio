@@ -6,7 +6,7 @@ For 5–20 minute 16:9 explainers (YouTube). The narration is the clock: each se
 
 | Step | Command | Produces |
 |---|---|---|
-| scaffold | `python3 $L init <film>` | film.html (engine), kit.js, figure.js, folders |
+| scaffold | `python3 $L init <film>` | film.html (engine), kit.js, figure.js, closeup.js, folders |
 | voice | `python3 $L lines <film>` → one mp3 per segment id in `narration/` (any TTS or a human read). It prints what the voice should say, with the `say` map applied, and lists likely misreads on stderr as `SAY:` lines; fix them before voicing. After voicing, `python3 $L voiced <film>` records each clip's voice, pack, speed, words and hash; `timeline` stops on a clip that is unrecorded, changed since, voiced for other words, or voiced with another voice, pack or speed | `narration/s01.mp3` …, `narration/voice.json` |
 | word times | `python3 $L align <film>` | `narration/words.json` (offline forced alignment) |
 | timeline | `python3 $L timeline <film>` | `timeline.js`, `out/narration.wav`, `out/chapters.txt`, `out/captions.vtt` (`captions --lang es --text es.json` adds `out/captions.es.vtt`) |

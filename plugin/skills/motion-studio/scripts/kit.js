@@ -58,7 +58,7 @@
     K.BPM = bpm; K.BEAT = 60 / bpm; K.BAR = 4 * K.BEAT;
     K.b = (bar, beat = 0) => (bar * 4 + beat) * K.BEAT;
     K.DUR = K.b(bars);
-    window.STUDIO = { kit: VERSION, title, bg: K.C.BG, format: { name: format, w: F.w, h: F.h, capTop: F.capTop, band: F.band }, bpm, bars, scenes: [], text: [] };
+    window.STUDIO = { kit: VERSION, title, bg: K.C.BG, format: { name: format, w: F.w, h: F.h, capTop: F.capTop, band: F.band }, bpm, bars, scenes: [], text: [], warnings: [] };
     const stage = document.getElementById("stage"), svg = document.getElementById("svg");
     stage.style.width = F.w + "px"; stage.style.height = F.h + "px"; stage.style.background = K.C.BG;
     document.body.style.background = K.C.BG;
@@ -130,7 +130,7 @@
     window.DUR = K.DUR;
     window.STUDIO.text.sort((a, b) => a.t0 - b.t0);
     // lint: a caption wider than the frame gets clipped by its own mask; warn instead of shipping it
-    window.STUDIO.warnings = [];
+    // (added to what the page found while building: said(), a close-up's lenses)
     document.querySelectorAll("#caps > div").forEach(d => {
       const inner = d.firstChild, over = inner.scrollWidth - d.clientWidth;
       if (over > 1) window.STUDIO.warnings.push(`caption too wide by ${over}px: "${inner.textContent}"`);
