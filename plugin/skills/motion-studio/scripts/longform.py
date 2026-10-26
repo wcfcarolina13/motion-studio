@@ -672,7 +672,7 @@ def cmd_timeline(a):
             dur = d + a.pad + s.get("extra", 0.0)
         else:
             dur = s.get("hold", 3.0)
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3))
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -1760,6 +1760,121 @@ COVERS = """() => [...document.querySelectorAll('#svg g')].filter(g => g.__cover
   .flatMap(g => g.__covers.map(([s, who]) => [String(s).slice(0, 50), 'card over ' + who, 0]))"""
 
 
+# Every visible piece of reading text at this moment (the MEASURE_TEXT filter, labels and captions left out), with
+# whether it is fully shown (opacity >= 0.95 after its parents, at least 98% inside its rise mask and its scene's
+# wipe) and its box in its scene's own coordinates, so a camera move does not count as the text moving. Each element
+# keeps an id across samples (el.__tid).
+TEXT_STATE = """() => {
+  const st = document.getElementById('stage').getBoundingClientRect(), out = [];
+  window.__tidN = window.__tidN || 0;
+  const inside = (b, r) => r ? Math.max(0, Math.min(r.x + r.width, b.x + b.width) - Math.max(r.x, b.x)) * Math.max(0, Math.min(r.y + r.height, b.y + b.height) - Math.max(r.y, b.y)) / Math.max(1e-6, b.width * b.height) : 1;
+  const clipRect = n => { const a = n.getAttribute && n.getAttribute('clip-path'); if (!a) return null;
+    const c = document.getElementById(a.slice(5, -1)), r = c && c.querySelector('rect');
+    return r ? { x: +r.getAttribute('x'), y: +r.getAttribute('y'), width: +r.getAttribute('width'), height: +r.getAttribute('height') } : null; };
+  const corners = (b, m) => { const p = [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]]
+    .map(([x, y]) => [m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f]), xs = p.map(q => q[0]), ys = p.map(q => q[1]);
+    return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) }; };
+  document.querySelectorAll('#svg text').forEach(el => {
+    const s = el.textContent.trim();
+    if (!/[A-Za-z0-9]/.test(s) || el.closest('[data-aux]')) return;
+    let o = 1;
+    for (let n = el; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) {
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      o *= +cs.opacity;
+    }
+    if (o < 0.5) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.right < 0 || r.bottom < 0 || r.left > st.width || r.top > st.height) return;
+    const b = el.getBBox(), seg = el.closest('[data-seg]');
+    let shown = inside(b, clipRect(el.parentNode));
+    // the scene's own space: the segment group under the camera; its wipe clip is in that space too
+    const sg = seg && seg.parentNode && seg.parentNode.id === 'scenes' ? seg : null;
+    const m = sg ? sg.getCTM().inverse().multiply(el.getCTM()) : el.getCTM(), box = corners(b, m);
+    if (sg) shown = Math.min(shown, inside(box, clipRect(sg)));
+    if (shown < 0.6) return;      // still under its mask line or the wipe, as MEASURE_TEXT
+    el.__tid = el.__tid || ++window.__tidN;
+    out.push([el.__tid, seg ? seg.getAttribute('data-seg') : '', s, o >= 0.95 && shown >= 0.98 ? 1 : 0, box.x, box.y, box.width, box.height,
+              el.closest('[data-payoff]') ? 1 : 0, Math.round(parseFloat(getComputedStyle(el).fontSize))]);
+  });
+  return out;
+}"""
+
+
+def text_holds(film, total, chapter_ends, step):
+    """The on-screen text sheet: every block of reading text, when it is fully shown in its final state, and how long it
+    holds there. Sampled every `step` seconds. A text element's final state is its last shown string and size; it is
+    settled from the first sample after which it stays fully shown, with that string and size, moving under 60 px/s in
+    its scene (a bubble bobbing with its speaker still reads). Lines of one wrapped block (same segment and font size,
+    stacked within 1.7 line heights and overlapping sideways, settling within 1 s and leaving within 0.3 s of each other) are read as one block,
+    held from its last line's settle. A block needs max(2 s, 1 s + words / 3) on screen, at least 3 s when marked
+    data-payoff (or its segment has "payoff": true) or still up on the last frame before a chapter cut."""
+    import render
+    runs, live = [], {}
+    with render.Film(film) as f:
+        n = int(total / step)
+        for k in range(n + 1):
+            t = round(k * step, 3)
+            f.page.evaluate(f"window.seek({min(t, total - 1e-3):.3f})")
+            now = {r[0]: r for r in f.page.evaluate(TEXT_STATE)}
+            for tid in list(live):
+                if tid not in now:
+                    runs.append(live.pop(tid) + [t])
+            for tid, r in now.items():
+                live.setdefault(tid, [r[1], []])[1].append((t, r))
+        runs += [v + [total] for v in live.values()]
+    lines = []
+    for seg, samples, t_end in runs:
+        # readable stretches: fully shown, moving under 60 px/s, one string and one size throughout; the last one is the
+        # text's final state, held from its first sample until the sample after its last
+        stretch, last = None, None
+        for i, (t, r) in enumerate(samples):
+            nb = samples[i - 1] if i else (samples[1] if len(samples) > 1 else None)
+            speed = math.hypot(nb[1][4] - r[4], nb[1][5] - r[5]) / abs(nb[0] - t) if nb else 0
+            ok = r[3] and speed < 60
+            same = stretch and r[2] == stretch["r"][2] and abs(r[6] - stretch["r"][6]) <= max(2, 0.02 * r[6]) \
+                and abs(r[7] - stretch["r"][7]) <= max(2, 0.02 * r[7])
+            if ok and same:
+                stretch["i1"] = i
+            elif ok:
+                stretch = {"r": r, "i0": i, "i1": i}
+                last = stretch
+            else:
+                stretch = None
+        if last:
+            r, k = last["r"], last["i1"]
+            settle, end = samples[last["i0"]][0], samples[k + 1][0] if k + 1 < len(samples) else t_end
+        else:
+            r, settle, end = samples[-1][1], None, t_end
+        lines.append({"seg": seg, "text": r[2], "t": settle, "end": end, "x": r[4], "w": r[6], "y": r[5], "h": r[7], "size": r[9],
+                      "payoff": bool(r[8]), "first": samples[0][0]})
+    # wrapped lines of one block read together
+    lines.sort(key=lambda x: (x["seg"], x["first"], x["y"]))
+    blocks = []
+    fits = lambda b, ln: (b["seg"] == ln["seg"] and b["size"] == ln["size"] and abs(b["end"] - ln["end"]) <= 0.3
+                          and 0 < ln["y"] - b["y"] <= 1.7 * ln["size"] and ln["t"] is not None and b["t"] is not None
+                          and abs(ln["t"] - b["t0"]) <= 1.0
+                          and min(b["x"] + b["w"], ln["x"] + ln["w"]) - max(b["x"], ln["x"]) >= 0.3 * min(b["w"], ln["w"]))
+    for ln in lines:
+        b = next((b for b in reversed(blocks) if fits(b, ln)), None)
+        if b:
+            b["text"] += " " + ln["text"]; b["y"] = ln["y"]; b["x"], b["w"] = ln["x"], ln["w"]
+            b["t"] = max(b["t"], ln["t"]); b["end"] = min(b["end"], ln["end"]); b["payoff"] |= ln["payoff"]
+        else:
+            blocks.append(dict(ln, t0=ln["t"]))
+    sheet = []
+    for b in sorted(blocks, key=lambda x: (x["t"] if x["t"] is not None else x["first"], x["seg"])):
+        words = len(re.findall(r"[A-Za-z0-9$%][\w'$%.,-]*", b["text"]))
+        hold = 0.0 if b["t"] is None else b["end"] - b["t"]
+        need, why = max(2.0, 1.0 + words / 3), ""
+        if b["payoff"]:
+            need, why = max(need, 3.0), "payoff"
+        elif b["t"] is not None and any(b["t"] < c <= b["end"] + step + 1e-6 for c in chapter_ends):
+            need, why = max(need, 3.0), "before a chapter cut"
+        sheet.append({"seg": b["seg"], "text": b["text"], "t": b["t"], "hold": hold, "need": need, "why": why, "words": words})
+    return sheet
+
+
 def overlaps(film, segs, step):
     """{(segment id, text, what covers it): [times]} for text painted over. Sampled where text_sizes samples (each
     segment's settled end and a beat after each word cue), 0.3 s after each of those, and every `step` seconds through
@@ -1950,6 +2065,23 @@ def cmd_check(a):
         for t, d in bad:
             flags.append(f"render at {t:.1f} s ({seg_at(t)}) differs between two renders in {d:.2%} of pixels"
                          + (" (MS_GPU_RASTER=1 is set)" if not render.RASTER else ""))
+    # 9. on-screen text: every block of reading text, when it is fully shown and for how long (review/text-sheet.tsv);
+    # a reveal that moves on before a viewer can read it fails
+    if a.text_step > 0:
+        ends = [ch["t1"] for ch in tl.get("chapters", [])[:-1] if ch.get("t1")]
+        sheet = text_holds(film, total, ends, a.text_step)
+        short = [x for x in sheet if x["hold"] < x["need"] - 1e-6]
+        rows = ["seg\tfully shown (s)\thold (s)\tneeds (s)\twords\tok\ttext"]
+        for x in sheet:
+            shown = "never" if x["t"] is None else f"{x['t']:.1f}"
+            rows.append(f"{x['seg']}\t{shown}\t{x['hold']:.1f}\t{x['need']:.1f}"
+                        f"{' (' + x['why'] + ')' if x['why'] else ''}\t{x['words']}\t{'no' if x in short else 'yes'}\t{x['text']}")
+        (film / "review" / "text-sheet.tsv").write_text("\n".join(rows) + "\n")
+        report.append(f"on-screen text: {len(sheet)} block(s), {len(short)} held too briefly to read (review/text-sheet.tsv)")
+        for x in short:
+            when = "never fully shown" if x["t"] is None else f"fully shown at {x['t']:.1f} s for {x['hold']:.1f} s"
+            flags.append(f"{x['seg']}: \"{x['text'][:60]}\" {when}; needs {x['need']:.1f} s"
+                         f" ({x['words']} words{', ' + x['why'] if x['why'] else ''})")
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -2117,6 +2249,7 @@ def main():
     p.add_argument("--overlap-step", type=float, default=0.25,
                    help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
     p.add_argument("--repeat", type=int, default=8, help="moments rendered twice to check frames are repeatable (0 skips)")
+    p.add_argument("--text-step", type=float, default=0.1, help="seconds between on-screen text samples for the text sheet and hold test (0 skips)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
