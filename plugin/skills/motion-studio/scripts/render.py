@@ -11,6 +11,10 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 FPS = 30
+# Chrome's GPU rasteriser and partial raster can paint the same moment differently twice on pages with gradients and
+# filters, so a re-render (or a resumed chunk) would not match its neighbours. Software raster of whole tiles is
+# deterministic; MS_GPU_RASTER=1 opts back into GPU raster where speed matters more than repeatable frames.
+RASTER = [] if os.environ.get("MS_GPU_RASTER") == "1" else ["--disable-gpu-rasterization", "--disable-partial-raster"]
 
 
 class Film:
@@ -23,7 +27,7 @@ class Film:
         self._pw = sync_playwright().start()
         # the installed Chrome by default; MS_CHROMIUM=/path/to/chromium for machines without it (CI, cloud sandboxes)
         kw = {"executable_path": os.environ["MS_CHROMIUM"]} if os.environ.get("MS_CHROMIUM") else {"channel": "chrome"}
-        self.browser = self._pw.chromium.launch(headless=True, args=["--allow-file-access-from-files"], **kw)
+        self.browser = self._pw.chromium.launch(headless=True, args=["--allow-file-access-from-files", *RASTER], **kw)
         page = self.browser.new_page(viewport={"width": 2000, "height": 2000}, device_scale_factor=1)
         self.errors = []
         page.on("pageerror", lambda e: (self.errors.append(str(e)), print("PAGE ERROR:", e, flush=True)))
@@ -59,6 +63,31 @@ class Film:
             raise SystemExit("this film has no window.STUDIO (bpm/bars); pass explicit times instead")
         bar = 4 * 60 / s["bpm"]
         return [round(k * bar + at * bar, 3) for k in range(s["bars"])]
+
+
+def repeat_diffs(project, times):
+    """[(t, share of pixels that differ)] for each moment rendered twice: again in the same page after seeking away,
+    and in a fresh browser. Anything above 0 means the film's frames are not repeatable."""
+    import numpy as np
+    with Film(project) as f:
+        first = [f.shot(t) for t in times]
+        again = [f.shot(t) for t in reversed(times)][::-1]
+    with Film(project) as f:
+        fresh = [f.shot(t) for t in times]
+        w, h = f.w, f.h
+
+    def px(png):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", "-", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                             input=png, capture_output=True, check=True).stdout
+        return np.frombuffer(raw, np.uint8).reshape(h, w, 3)
+    out = []
+    for t, a, b, c in zip(times, first, again, fresh):
+        worst = 0.0
+        for o in (b, c):
+            if o != a:
+                worst = max(worst, float((px(a) != px(o)).any(axis=2).mean()))
+        out.append((t, worst))
+    return out
 
 
 def stills(project, times, out_dir, bars=False):
