@@ -1824,6 +1824,7 @@ def cmd_check(a):
     film = Path(a.film).resolve()
     tl = load_timeline(film)
     segs, total = tl["segments"], tl["duration"]
+    seg_at = lambda t: next((s["id"] for s in segs if s["t0"] <= t < s["t1"]), "end")
     report, flags = [], []
     # 1. picture variety: how much of the film is words on a background. A text scene type counts unless what it draws
     # covers --picture-min of the frame (a kit pattern that turns it into motion graphics); measured from the page
@@ -1863,7 +1864,6 @@ def cmd_check(a):
         # 2. dead air: stretches with no visible event
         gaps = np.diff(np.concatenate([[0.0], times, [total]]))
         starts = np.concatenate([[0.0], times])
-        seg_at = lambda t: next((s["id"] for s in segs if s["t0"] <= t < s["t1"]), "end")
         holds = [(starts[i], gaps[i]) for i in range(len(gaps)) if gaps[i] >= a.hold]
         n_ev = int((ev[1:] & ~ev[:-1]).sum() + (1 if len(ev) and ev[0] else 0))     # a run of changing frames is one event
         report.append(f"visible events: {n_ev} ({n_ev / total * 60:.0f}/min); holds over {a.hold:.0f} s: {len(holds)}")
@@ -1939,6 +1939,17 @@ def cmd_check(a):
                 per[(sid, txt)][1].extend(ts)
             for (sid, txt), (whats, ts) in per.items():
                 flags.append(f"{sid}: \"{txt}\" {'; '.join(whats)}, from {min(ts):.1f} s to {max(ts):.1f} s")
+    # 8. determinism: the same moment rendered twice must give the same pixels, or re-renders and resumed chunks
+    # won't match what was reviewed (Chrome's GPU raster did this on gradients and filters; see render.RASTER)
+    if a.repeat:
+        import render
+        ts = [round(total * k / (a.repeat + 1), 3) for k in range(1, a.repeat + 1)]
+        rd = render.repeat_diffs(film, ts)
+        bad = [(t, d) for t, d in rd if d > 0]
+        report.append(f"determinism: {len(bad)} of {len(rd)} moment(s) rendered differently twice")
+        for t, d in bad:
+            flags.append(f"render at {t:.1f} s ({seg_at(t)}) differs between two renders in {d:.2%} of pixels"
+                         + (" (MS_GPU_RASTER=1 is set)" if not render.RASTER else ""))
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -2105,6 +2116,7 @@ def main():
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
     p.add_argument("--overlap-step", type=float, default=0.25,
                    help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
+    p.add_argument("--repeat", type=int, default=4, help="moments rendered twice to check frames are repeatable (0 skips)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
