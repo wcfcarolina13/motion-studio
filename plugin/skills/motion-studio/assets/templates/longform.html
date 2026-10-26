@@ -1197,11 +1197,25 @@ window.STUDIO.ready = Promise.all([...new Set(PANEL_IMAGES.filter(Boolean))].map
   return im.decode().catch(() => { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`panel image missing or unreadable: ${src}`); });
 }));
 
+// the source line and the chapter label, as runs of segments that show the same words: each run fades in over 0.35 s
+// from its first segment's start and out over the 0.2 s before the next run (0.3 s after the last segment). Set in one
+// frame, the film's first labels snapped on and final's pop check failed (Longtok, episode 2, 2026-10-26)
+const labelRuns = pick => SEGS.reduce((runs, s) => { const v = pick(s), r = runs[runs.length - 1];
+  if (r && r.v === v) r.t1 = s.t1; else runs.push({ v, t0: s.t0, t1: s.t1 }); return runs; }, []);
+const srcRuns = labelRuns(s => s.source ? "Source: " + s.source : "");
+const chapRuns = labelRuns(s => FULL.has(s.type) || VERT ? "" : (s.chapter || "").toUpperCase());   // a drama panel (and a Short) carries no chapter label
+const showLabel = (el, runs, t) => {
+  const i = runs.findIndex(r => t >= r.t0 && t < r.t1), last = runs[runs.length - 1];
+  const r = i >= 0 ? runs[i] : last && t >= last.t1 && t < last.t1 + 0.3 ? last : null;
+  el.textContent = r ? r.v : "";
+  const out = r === last ? K.prog(t, r.t1, r.t1 + 0.3) : K.prog(t, r ? r.t1 - 0.2 : 0, r ? r.t1 : 1);
+  el.setAttribute("opacity", r ? (Math.min(K.smooth(K.prog(t, r.t0, r.t0 + 0.35)), 1 - K.smooth(out))).toFixed(3) : 0);
+};
+
 // ── render(t) ────────────────────────────────────────────
 K.run(t => {
   dots.forEach(d => K.set(d.el, { cx: (d.x + t * d.v) % W, cy: d.y, r: d.s }));
   K.show(bgG, !built.some(b => (OPAQUE.has(b.s.type) && t >= b.s.t0 + WIPE && t <= b.s.t1) || (FULL.has(b.s.type) && t >= b.s.t0 && t <= b.s.t1)));
-  let src = "", chap = "";
   built.forEach(b => {
     const on = t >= b.s.t0 - 0.01 && t <= b.s.t1 + 0.01 + (b.wipe ? WIPE : 0);
     K.show(b.g, on); K.show(b.s.ov, on && t <= b.s.t1 + 0.01);
@@ -1221,11 +1235,10 @@ K.run(t => {
         K.set(b.wipe, z === 1 ? { x: sx - tx, width: sw, y: sy - ty, height: sh }
                               : { x: (sx - W / 2) / z + cx, width: sw / z, y: (sy - H / 2) / z + cy, height: sh / z });
       }
-      src = b.s.source || ""; chap = FULL.has(b.s.type) || VERT ? "" : b.s.chapter || "";   // a drama panel (and a Short) carries no chapter label
     }
   });
-  sourceT.textContent = src ? "Source: " + src : "";
-  chapterT.textContent = chap.toUpperCase();
+  showLabel(sourceT, srcRuns, t);
+  showLabel(chapterT, chapRuns, t);
   capPages.forEach(pg => {
     // a page leaves in the 0.18 s before the next one rises, so two pages never share the band
     const vis = t >= pg.t0 && t < pg.t1;

@@ -1002,8 +1002,8 @@ def available_gb():
 
 def render_stamp(film, scale):
     """What the frames depend on: the page, its scripts and timeline (by content), every other file the page can load
-    (by size and time; audio, renders and review stills are left out) and the render settings. Kept chunks are reused
-    only while this is unchanged."""
+    (by size and time; see _stamp for what is left out) and the render settings. Kept chunks are reused only while
+    this is unchanged."""
     return _stamp(film, hashlib.sha256(f"{scale} {FPS} {CHUNK}".encode()))
 
 
@@ -1012,11 +1012,19 @@ def film_stamp(film):
     return _stamp(film, hashlib.sha256(b"film"))
 
 
+# Files that never reach a frame, left out of the film's stamp: the folders a run writes or mixes from (renders, review
+# sheets, logs, voice and music clips) and file types the page never loads (logs, notes, sheets, editor and lock
+# files). Everything else counts, so an image or script a kit adds in a subfolder still ties the check to its version.
+# A kit's log appended after each step made every film "changed since check" (Longtok, episode 2, 2026-10-26).
+STAMP_SKIP_DIRS = {"out", "review", "narration", "music", "logs"}
+STAMP_SKIP_TYPES = {".log", ".md", ".txt", ".tsv", ".csv", ".bak", ".tmp", ".swp", ".pid", ".lock"}
+
+
 def _stamp(film, h):
-    skip = {"out", "review", "narration", "music"}
     for p in sorted(film.rglob("*")):
         rel = p.relative_to(film)
-        if not p.is_file() or rel.parts[0] in skip or p.name.startswith("."):
+        if not p.is_file() or rel.parts[0] in STAMP_SKIP_DIRS or p.name.startswith(".") or p.suffix.lower() in STAMP_SKIP_TYPES \
+                or p.name.endswith("~"):
             continue
         h.update(str(rel).encode())
         if p.suffix in (".html", ".js", ".css", ".json") and len(rel.parts) == 1:
