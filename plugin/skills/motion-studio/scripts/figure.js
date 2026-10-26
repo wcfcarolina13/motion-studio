@@ -48,7 +48,7 @@
   for (const k in F.POSES) F.POSES[k] = Object.assign({}, base, F.POSES[k]);
   const resolve = p => typeof p === "string" ? (F.POSES[p] || F.POSES.stand) : Object.assign({}, base, p);
   F.blend = (a, b, p) => { a = resolve(a); b = resolve(b); const o = {}; for (const k in base) o[k] = K.lerp(a[k], b[k], p); o.prop = p < 0.5 ? a.prop : b.prop; return o; };
-  // keys: [[t, pose], ...] or [[t, pose, {hold}], ...]; each change springs into the new pose. With o.anticipate (a stage
+  // keys: [[t, pose], ...] or [[t, pose, {hold, z, w}], ...]; each change springs into the new pose. With o.anticipate (a stage
   // film's "anticipate", on for films made by init since 2026-10-25) a big change first leans the other way for 0.12 s (about
   // 4 frames, ending on the key so the move still starts on its word), and the body and limbs overshoot by about 5% and settle
   // instead of stopping dead; face settings never overshoot. `hold` (frames) freezes the pose at the top of its overshoot,
@@ -56,30 +56,45 @@
   // move is the old one: it lands on the target with no lean back and no overshoot (the clamp below), so films made before
   // render the same
   F.FPS = 30;
-  const BODY = ["lean", "head", "ls", "le", "rs", "re", "lh", "lk", "rh", "rk", "crouch"], ARMS = ["lean", "head", "ls", "le", "rs", "re"];
-  const SW = 13, SZ = 0.68, ANT = 0.12, PEAK = Math.PI / (SW * Math.sqrt(1 - SZ * SZ));   // the spring's first overshoot peak, s
-  const reach = (a, b, p, q) => { const o = F.blend(a, b, Math.min(1, p)); if (q > 1) BODY.forEach(k => { o[k] = K.lerp(a[k], b[k], q); }); return o; };
-  F.at = (t, keys, dur = 0.45, o = {}) => {
-    let cur = resolve(keys[0][1]);
-    for (let i = 1; i < keys.length; i++) {
-      const [ti, pi, ko = {}] = keys[i], tgt = resolve(pi);
-      // a big change: the arms, head and lean together move more than 80 degrees
-      const big = o.anticipate && dur > 0 && ARMS.reduce((a, k) => a + Math.abs(tgt[k] - cur[k]), 0) > 80;
-      if (t < ti - (big ? ANT : 0)) break;
-      let from = cur;
-      if (big) {   // the counter-move: 12% of the change the other way, at most 10 degrees a joint, never lifting the hips
-        from = Object.assign({}, cur);
-        BODY.forEach(k => { from[k] = cur[k] - Math.max(-10, Math.min(10, 0.12 * (tgt[k] - cur[k]))); });
-        from.crouch = Math.max(0, from.crouch);
-        if (t < ti) { cur = F.blend(cur, from, K.smooth(K.prog(t, ti - ANT, ti))); break; }
+  // F.keyer(spec) builds an F.at for any rig whose poses are flat objects of numbers (F.closeup uses it too). spec:
+  // resolve and blend (the rig's own), body (the values that spring and overshoot; everything else just blends),
+  // big: [keys, over] (a change counts as big when those keys move more than `over` in total, each times its weight),
+  // weight (per key, default 1; the counter-move is capped at 10 / weight), floor (a minimum per key during the
+  // counter-move) and holds (default hold frames per named pose). Per key, or for the whole call, z (the spring's damping,
+  // 0.68; lower overshoots more) and w (its speed, 13; lower is a slower creep or sink) apply only with anticipate.
+  const SW = 13, SZ = 0.68, ANT = 0.12;
+  F.keyer = S => {
+    const W = k => (S.weight && S.weight[k]) || 1;
+    const reach = (a, b, p, q) => { const o = S.blend(a, b, Math.min(1, p)); if (q > 1) S.body.forEach(k => { o[k] = K.lerp(a[k], b[k], q); }); return o; };
+    return (t, keys, dur = 0.45, o = {}) => {
+      let cur = S.resolve(keys[0][1]);
+      for (let i = 1; i < keys.length; i++) {
+        const [ti, pi, ko = {}] = keys[i], tgt = S.resolve(pi);
+        const big = o.anticipate && dur > 0 && S.big[0].reduce((a, k) => a + Math.abs(tgt[k] - cur[k]) * W(k), 0) > S.big[1];
+        if (t < ti - (big ? ANT : 0)) break;
+        let from = cur;
+        if (big) {   // the counter-move: 12% of the change the other way, capped per value, never below a floor
+          from = Object.assign({}, cur);
+          S.body.forEach(k => {
+            const cap = 10 / W(k);
+            from[k] = cur[k] - Math.max(-cap, Math.min(cap, 0.12 * (tgt[k] - cur[k])));
+            if (S.floor && k in S.floor) from[k] = Math.max(S.floor[k], from[k]);
+          });
+          if (t < ti) { cur = S.blend(cur, from, K.smooth(K.prog(t, ti - ANT, ti))); break; }
+        }
+        const z = o.anticipate ? (ko.z ?? o.z ?? SZ) : SZ, w = o.anticipate ? (ko.w ?? o.w ?? SW) : SW;
+        const peak = Math.PI / (w * Math.sqrt(1 - z * z));   // the spring's first overshoot peak, s
+        const hold = o.anticipate ? (ko.hold ?? (typeof pi === "string" ? (S.holds || {})[pi] || 0 : 0)) / F.FPS : 0;
+        const tt = hold && t > ti + peak ? Math.max(ti + peak, t - hold) : t;
+        const sp = dur > 0 ? K.step(tt, ti, w, z) : 1;
+        cur = o.anticipate ? reach(from, tgt, sp, sp) : S.blend(cur, tgt, K.clamp01(sp));
       }
-      const hold = o.anticipate ? (ko.hold ?? (pi === "realise" ? 2 : 0)) / F.FPS : 0;
-      const tt = hold && t > ti + PEAK ? Math.max(ti + PEAK, t - hold) : t;
-      const sp = dur > 0 ? K.step(tt, ti, SW, SZ) : 1;
-      cur = o.anticipate ? reach(from, tgt, sp, sp) : F.blend(cur, tgt, K.clamp01(sp));
-    }
-    return cur;
+      return cur;
+    };
   };
+  // the arms, head and lean together moving more than 80 degrees is a big change; the hips never lift in the counter-move
+  F.at = F.keyer({ resolve, blend: F.blend, body: ["lean", "head", "ls", "le", "rs", "re", "lh", "lk", "rh", "rk", "crouch"],
+                   big: [["lean", "head", "ls", "le", "rs", "re"], 80], floor: { crouch: 0 }, holds: { realise: 2 } });
   // walk cycle: phase in steps (one full cycle = 2 steps); returns a pose plus the vertical bob
   F.walk = (phase, over = {}) => {
     const ph = phase * Math.PI, sR = Math.sin(ph), cR = Math.cos(ph);

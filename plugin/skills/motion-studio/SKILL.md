@@ -57,7 +57,7 @@ To pick topics, `scripts/trends.py` finds TikTok and YouTube videos that broke o
 
 ## Where things live
 
-- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, panelqa.py, gemini.py, align.py, youtube.py, trends.py), `assets/templates/`, `references/` (+ `references/prompts/`).
+- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, closeup.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, panelqa.py, gemini.py, align.py, youtube.py, trends.py), `assets/templates/`, `references/` (+ `references/prompts/`).
 - Shared data (paths from `config`): the audio library with `catalog.json`, the film ledger, optional house notes.
 - One folder per film: `film.html`, `kit.js` and `audio.py` (vendored copies, so films never break on a skill update), `storyboard.md`, `sound.py`, `sources/`, `review/`, `out/`, `notes.json`.
 

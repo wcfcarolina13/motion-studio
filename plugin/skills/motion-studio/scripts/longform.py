@@ -7,7 +7,7 @@ script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
 
-  longform.py init <film>                       copy the engine (film.html, kit.js, figure.js) into the folder
+  longform.py init <film>                       copy the engine (film.html, kit.js, figure.js, closeup.js) into the folder
   longform.py lines <film> [--json]             what the voice says per segment, "say" map applied (feed to TTS, one file per id;
                                                 --json adds speaker, mono); likely misreads go to stderr as SAY: lines
   longform.py voiced <film> [ids] [--speed 1.0]  after voicing: record each clip's voice, pack, speed, words and hash
@@ -155,7 +155,7 @@ def cmd_init(a):
     for d in ("narration", "out", "review", "sources"):
         (film / d).mkdir(parents=True, exist_ok=True)
     shutil.copy(TEMPLATE, film / "film.html")
-    for f in ("kit.js", "figure.js"):
+    for f in ("kit.js", "figure.js", "closeup.js"):
         shutil.copy(HERE / f, film / f)
     # defaults a film made from today on gets, where an older film keeps the old behaviour so its re-renders don't change.
     # script.json overrides each ("anticipate": false)
@@ -769,7 +769,7 @@ def cmd_short(a):
     for d in ("narration", "out", "review", "sources"):
         (dest / d).mkdir(parents=True, exist_ok=True)
     shutil.copy(TEMPLATE, dest / "film.html")
-    for f in ("kit.js", "figure.js"):
+    for f in ("kit.js", "figure.js", "closeup.js"):
         shutil.copy(HERE / f, dest / f)
     if (film / "engine.json").exists():     # the Short moves like its long-form film
         shutil.copy2(film / "engine.json", dest / "engine.json")
