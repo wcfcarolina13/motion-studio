@@ -42,7 +42,7 @@ import shutil
 import subprocess
 import sys
 import hashlib
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -928,8 +928,11 @@ def cmd_stills(a):
     else:
         ts = [round(s["t0"] + (s["t1"] - s["t0"]) * a.at, 2) for s in tl["segments"]]
     out = film / "review" / ("stills-every" if a.every else "stills-segments")
-    out, n, errors = render.stills(film, ts, out)
-    print(f"{n} stills -> {out}" + (f" ({len(errors)} page errors)" if errors else ""))
+    try:
+        out, n, _ = render.stills(film, ts, out)
+    except render.PageError as e:
+        raise SystemExit(f"stills stopped: {e}")
+    print(f"{n} stills -> {out}")
     print("sheet ->", render.sheet(out, out.with_suffix(".png"), cols=6))
 
 
@@ -941,8 +944,11 @@ def frange(a, b, step):
 
 
 def _render_chunk(args):
+    """One chunk of frames to its own mp4. A page error raises render.PageError (never retried); a chunk stops early
+    when another chunk's page error has written the stop file."""
     film, i0, i1, dest, scale = args
     import render
+    stop = Path(dest).parent / "stop"
     tmp = Path(dest).with_suffix(".part.mp4")   # renamed when whole, so a finished chunk is one whose name exists
     with render.Film(Path(film)) as f:
         vf = f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:out_color_matrix=bt709:out_range=tv,format=yuv420p"
@@ -950,16 +956,25 @@ def _render_chunk(args):
                                "-vf", vf, "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
                                "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
                                str(tmp)], stdin=subprocess.PIPE)
-        for i in range(i0, i1):
-            ff.stdin.write(f.shot(i / FPS))
-            if (i - i0) % 900 == 0:
-                print(f"  chunk {i0}: frame {i - i0}/{i1 - i0}", flush=True)
+        try:
+            for i in range(i0, i1):
+                if (i - i0) % 30 == 0 and stop.exists():
+                    raise ChunkStopped(f"chunk {i0} stopped: another chunk hit a page error")
+                ff.stdin.write(f.shot(i / FPS))
+                if (i - i0) % 900 == 0:
+                    print(f"  chunk {i0}: frame {i - i0}/{i1 - i0}", flush=True)
+        except BaseException:
+            ff.stdin.close(); ff.wait()
+            raise
         ff.stdin.close()
         if ff.wait() != 0:
             raise RuntimeError("ffmpeg failed")
-        Path(dest).with_suffix(".errors").write_text(str(len(f.errors)))
         tmp.rename(dest)
-        return dest, len(f.errors)
+        return dest
+
+
+class ChunkStopped(RuntimeError):
+    """A chunk that gave up because another chunk's page error stopped the render."""
 
 
 CHUNK = 900            # frames per render chunk (30 s): a failure loses at most this much, and chunks outnumber workers
@@ -989,7 +1004,15 @@ def render_stamp(film, scale):
     """What the frames depend on: the page, its scripts and timeline (by content), every other file the page can load
     (by size and time; audio, renders and review stills are left out) and the render settings. Kept chunks are reused
     only while this is unchanged."""
-    h = hashlib.sha256(f"{scale} {FPS} {CHUNK}".encode())
+    return _stamp(film, hashlib.sha256(f"{scale} {FPS} {CHUNK}".encode()))
+
+
+def film_stamp(film):
+    """The film as the page sees it (render_stamp without the render settings): what a passing check is tied to."""
+    return _stamp(film, hashlib.sha256(b"film"))
+
+
+def _stamp(film, h):
     skip = {"out", "review", "narration", "music"}
     for p in sorted(film.rglob("*")):
         rel = p.relative_to(film)
@@ -1003,10 +1026,77 @@ def render_stamp(film, scale):
     return h.hexdigest()
 
 
+class JobStatus:
+    """out/<job>.status.json for a long run, so a detached job's state can be read without a live session: state
+    (running, done, failed), when it started and last changed, progress, the last error, and anything noted (a skipped
+    gate). The run ends with one line, DONE or FAILED, naming the job and the film. Use as a context manager."""
+
+    def __init__(self, film, job):
+        self.path, self.job, self.film = film / "out" / f"{job}.status.json", job, film
+        self.d = {"job": job, "film": str(film), "state": "running", "pid": os.getpid(), "started": self._now(),
+                  "progress": "", "last_error": "", "notes": []}
+
+    @staticmethod
+    def _now():
+        import datetime
+        return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+    def update(self, **kw):
+        self.d.update(kw, updated=self._now())
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.d, indent=1) + "\n")
+        tmp.replace(self.path)
+
+    def note(self, text):
+        self.update(notes=self.d["notes"] + [text])
+
+    def __enter__(self):
+        self.update()
+        return self
+
+    def __exit__(self, kind, err, tb):
+        if kind is None or (kind is SystemExit and err.code in (None, 0)):
+            self.update(state="done")
+            print(f"DONE {self.job} {self.film.name}", flush=True)
+            return False
+        msg = "interrupted" if kind is KeyboardInterrupt else str(err) if kind is SystemExit else f"{kind.__name__}: {err}"
+        self.update(state="failed", last_error=msg)
+        print(f"FAILED {self.job} {self.film.name}: {msg.splitlines()[0] if msg else kind.__name__}", flush=True)
+        return False
+
+
+def page_gate(film, what):
+    """Stop `what` if the page throws anywhere (render.page_problems); returns the problems for check's report."""
+    import render
+    found = render.page_problems(film)
+    lines = [f"  {'load' if t is None else f'{t:.2f} s'}{f' ({seg})' if seg else ''}: {m}" for t, seg, m in found]
+    if found and what:
+        raise SystemExit(f"{what} stopped: the page is not clean ({len(found)} problem(s)):\n" + "\n".join(lines))
+    return lines
+
+
 def cmd_render(a):
     film = Path(a.film).resolve()
+    with JobStatus(film, "render") as st:
+        _render(a, film, st)
+
+
+def _render(a, film, st):
     tl = load_timeline(film)
     gate_real_assets(film, tl["segments"], "render")
+    # a render is only started on a version of the film that a check passed (its page ran clean), and on a page that
+    # is clean now: a JavaScript error never heals on a retry, and a render is the most expensive place to find one
+    passed = film / "review" / "check-gate.json"
+    rec = json.loads(passed.read_text()) if passed.exists() else {}
+    if rec.get("stamp") != film_stamp(film) or not rec.get("page_clean"):
+        why = ("no check has been run" if not rec else "the last check found page errors" if not rec.get("page_clean")
+               else "the film changed since the last check")
+        if not a.skip_gate:
+            raise SystemExit(f"render stopped: {why}. Run `check` on this version of the film first (or --skip-gate)")
+        print(f"render: --skip-gate: {why}; rendering anyway", flush=True)
+        st.note(f"gate skipped: {why}")
+    page_gate(film, "render")
     if tl.get("format") == "9x16":          # a Short is a new layout: look at its own contact sheet before spending a render on it
         made = (film / "timeline.js").stat().st_mtime
         sheets = [p for p in (film / "review").glob("stills-*.png") if p.stat().st_mtime >= made]
@@ -1033,18 +1123,40 @@ def cmd_render(a):
         workers = max(1, min(workers, int((gb - HEADROOM_GB) / WORKER_GB)))
         if workers < a.workers:
             print(f"workers: {workers} (asked for {a.workers}; {gb:.1f} GB free at {WORKER_GB} GB each, {HEADROOM_GB} GB kept free)")
+    import render
+    stop = parts / "stop"
+    stop.unlink(missing_ok=True)
+    done = len(jobs) - len(todo)
+    st.update(progress=f"{done}/{len(jobs)} chunks")
     for attempt in range(1 + a.retries):
         if not todo:
             break
-        failed = []
+        failed, page_err = [], None
         with ProcessPoolExecutor(min(workers, len(todo))) as ex:
             futures = {ex.submit(_render_chunk, j): j for j in todo}
             for fu in as_completed(futures):
+                j = futures[fu]
                 try:
                     fu.result()
-                except Exception as e:                      # a crashed page or worker (TargetClosedError, a broken pool)
-                    failed.append(futures[fu])
-                    print(f"  chunk {futures[fu][1]}-{futures[fu][2]} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+                    done += 1
+                    st.update(progress=f"{done}/{len(jobs)} chunks")
+                except render.PageError as e:              # the film's own code threw: stop everything, no retry
+                    if not page_err:
+                        page_err = e
+                        stop.write_text(str(e))
+                        for other in futures:
+                            other.cancel()
+                        st.update(last_error=str(e))
+                except (ChunkStopped, CancelledError):
+                    pass
+                except Exception as e:                      # a crashed page or worker (TargetClosedError, a broken pool, a timeout)
+                    failed.append(j)
+                    st.update(last_error=f"chunk {j[1]}-{j[2]}: {type(e).__name__}: {str(e)[:200]}")
+                    print(f"  chunk {j[1]}-{j[2]} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+        if page_err:
+            stop.unlink(missing_ok=True)
+            raise SystemExit(f"render stopped: {page_err}. A page error is the film's own code and fails the same way "
+                             f"every time, so it is not retried. Fix it and run check (the fix changes the page, so render starts over)")
         todo = failed
         if todo and attempt < a.retries:
             workers = max(1, workers // 2)                  # fewer pages at once on the retry, in case memory was the cause
@@ -1055,8 +1167,7 @@ def cmd_render(a):
     lst = parts / "list.txt"
     lst.write_text("".join(f"file '{Path(j[3]).name}'\n" for j in jobs))
     run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(film / "out" / "silent.mp4")])
-    errs = sum(int(Path(j[3]).with_suffix(".errors").read_text() or 0) for j in jobs if Path(j[3]).with_suffix(".errors").exists())
-    print(f"{n} frames -> {film / 'out' / 'silent.mp4'}" + (f" ({errs} page errors)" if errs else ""))
+    print(f"{n} frames -> {film / 'out' / 'silent.mp4'}")
 
 
 # ── music ─────────────────────────────────────────────────
@@ -1537,6 +1648,11 @@ def film_frame0(film):
 
 
 def cmd_final(a):
+    with JobStatus(Path(a.film).resolve(), "final"):
+        _final(a)
+
+
+def _final(a):
     import verify
     film = Path(a.film).resolve()
     import render
@@ -1934,13 +2050,34 @@ def walk_cues(d):
 
 
 def cmd_check(a):
+    film = Path(a.film).resolve()
+    with JobStatus(film, "check"):
+        _check(a, film)
+
+
+def write_gate(film, page_clean, flags):
+    """review/check-gate.json: the version of the film this check ran on and whether its page ran clean, which
+    render requires (film_stamp)."""
+    (film / "review").mkdir(parents=True, exist_ok=True)
+    (film / "review" / "check-gate.json").write_text(json.dumps(
+        {"stamp": film_stamp(film), "page_clean": page_clean, "flags": flags, "at": JobStatus._now()}, indent=1) + "\n")
+
+
+def _check(a, film):
     """Dead air, text-only stretches, cue landings and one-frame flashes, measured from the timeline and the render."""
     import numpy as np
-    film = Path(a.film).resolve()
     tl = load_timeline(film)
     segs, total = tl["segments"], tl["duration"]
     seg_at = lambda t: next((s["id"] for s in segs if s["t0"] <= t < s["t1"]), "end")
     report, flags = [], []
+    # 0. the page itself: any JavaScript error, console error or unhandled rejection at any segment's start, middle or
+    # end stops the check here (the other tests would trip over the same error) and blocks render until it is fixed
+    problems = page_gate(film, None)
+    if problems:
+        write_gate(film, False, len(problems))
+        (film / "review" / "check.txt").write_text(f"page: {len(problems)} problem(s)\n" + "\n".join(problems) + "\n")
+        raise SystemExit(f"check stopped: the page is not clean ({len(problems)} problem(s)):\n" + "\n".join(problems))
+    report.append("page: clean (no errors at any segment's start, middle or end)")
     # 1. picture variety: how much of the film is words on a background. A text scene type counts unless what it draws
     # covers --picture-min of the frame (a kit pattern that turns it into motion graphics); measured from the page
     pic = picture_share(film, segs) if a.picture_min > 0 else {}
@@ -2094,6 +2231,7 @@ def cmd_check(a):
     for f in flags:
         print("FLAG:", f)
     (film / "review" / "check.txt").write_text("\n".join(report + [""] + ["FLAG: " + f for f in flags]) + "\n")
+    write_gate(film, True, len(flags))
 
 
 def cmd_share(a):
@@ -2220,6 +2358,7 @@ def main():
     p.set_defaults(fn=cmd_stills)
     p = sp.add_parser("render"); p.add_argument("film"); p.add_argument("--workers", type=int, default=4); p.add_argument("--scale", type=float, default=1.0)
     p.add_argument("--retries", type=int, default=2, help="re-runs of a failed chunk before render stops (finished chunks are kept)")
+    p.add_argument("--skip-gate", action="store_true", help="render without a passing check on this version of the film (noted in out/render.status.json)")
     p.add_argument("--fresh", action="store_true", help="discard finished chunks and render every frame again")
     p.set_defaults(fn=cmd_render)
     p = sp.add_parser("music"); p.add_argument("film"); p.add_argument("--default", default="serious"); p.add_argument("--fit", type=float, default=0.6)

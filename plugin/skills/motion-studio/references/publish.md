@@ -10,7 +10,7 @@ A 10-minute render takes about 45 minutes, so every gate runs on the timeline an
 2. Voice, then `voiced`, then `align`. Every clip uses one voice, pack and speed; fix a fast clip with pauses or holds, never with speed.
 3. `timeline`: it stops on a clip that is unrecorded, changed, or voiced differently.
 4. `stills --every 2.5` and look at the contact sheet. A text-only stretch longer than about 6 s is a slide; rebuild it as motion.
-5. `check`: dead air, voice pace drift, text over text, cards over heads, reading text under the size floor, text cut by the frame edge (`critic.md`).
+5. `check`: the page gate (no JavaScript or console errors; `render` refuses a film without a passing check), dead air, voice pace drift, text over text, cards over heads, reading text under the size floor, text cut by the frame edge (`critic.md`).
 6. A suspected fix is measured on stills at the exact times (`stills <film> 61.2 61.25`), not on a new render.
 
 ## Render, mix, final
