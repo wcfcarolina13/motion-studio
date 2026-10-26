@@ -2116,7 +2116,7 @@ def main():
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
     p.add_argument("--overlap-step", type=float, default=0.25,
                    help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
-    p.add_argument("--repeat", type=int, default=4, help="moments rendered twice to check frames are repeatable (0 skips)")
+    p.add_argument("--repeat", type=int, default=8, help="moments rendered twice to check frames are repeatable (0 skips)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
