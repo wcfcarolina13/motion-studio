@@ -17,7 +17,7 @@ Craft notes: keep the protagonist in the accent colour and everyone else in mute
 
 ## Close-ups (closeup.js)
 
-`F.closeup` is a second character for close shots: a head and two stubby hands peeking over an edge (a phone, a desk, the bottom of the frame), acting through big face parts. It has no body. `init` copies closeup.js and the long-form template loads it after figure.js, so a kit layer or a hand-built scene can draw one. Ported from the Trapdoor plum kit's milestone 2 (2026-10-26), where a 10 s test at 8 Mbps showed no grain change and no pops; the port gives byte-identical poses and SVG to the kit's version.
+`F.closeup` is a second character for close shots: a head and two stubby hands peeking over an edge (a phone, a desk, the bottom of the frame), acting through big face parts. It has no body. `init` copies closeup.js and the long-form template loads it after figure.js, so a kit layer or a hand-built scene can draw one. It came from a kit layer (2026-10-26), where a 10 s test at 8 Mbps showed no grain change and no pops, and the port gives byte-identical poses and SVG to the kit's version. `examples/closeup/index.html` plays it on a loop with a scrubber.
 
 ```js
 const me = F.closeup.figure(g, { skin: "#ff7a78", hair: "tuft", glasses: ["halfmoon", "arch", "slit"], front: frontG });

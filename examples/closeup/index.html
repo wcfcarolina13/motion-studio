@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Close-up rig demo</title>
+<style>
+  body { margin: 0; background: #1d1a24; color: #eee; font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  svg { width: 100%; height: auto; display: block; background: #2a2433; border-radius: 6px; }
+  .bar { display: flex; gap: 12px; align-items: center; margin-top: 10px; }
+  input[type=range] { flex: 1; }
+  code { color: #ffd9a0; }
+</style>
+</head>
+<body>
+<main>
+<p>F.closeup (scripts/closeup.js): a head and two hands peeking over an edge, keyed with <code>F.closeup.at</code> and
+<code>F.closeup.idle</code>. Open this file from a clone of the repo; it loads the engine's scripts by relative path.</p>
+<svg id="stage" viewBox="0 0 1920 1080"><defs></defs></svg>
+<div class="bar"><button id="play">Pause</button><input id="t" type="range" min="0" max="12" step="0.01" value="0"><span id="label">0.00 s</span></div>
+</main>
+<script src="../../plugin/skills/motion-studio/scripts/kit.js"></script>
+<script src="../../plugin/skills/motion-studio/scripts/figure.js"></script>
+<script src="../../plugin/skills/motion-studio/scripts/closeup.js"></script>
+<script>
+  const NS = "http://www.w3.org/2000/svg", svg = document.getElementById("stage"), C = F.closeup;
+  const el = (tag, a, p) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); p.appendChild(e); return e; };
+  const back = el("g", {}, svg), edge = el("rect", { x: 0, y: 760, width: 1920, height: 320, fill: "#4a3a52" }, svg), front = el("g", {}, svg);
+  const me = C.figure(back, { glasses: ["halfmoon", "arch", "slit"], front });
+  // the same named poses and key options a film would use: holds on reactions, a slow sink at the end (w)
+  const keys = [[0, "hidden"], [1, "peek"], [2, "up"], [3.5, "worried"], [5, "shocked"], [6.5, "suspicious"],
+                [8, "realise"], [9.5, "relief"], [11, "hidden", { w: 6 }]];
+  const label = document.getElementById("label"), range = document.getElementById("t"), btn = document.getElementById("play");
+  const draw = t => { C.place(me, 960, 760, 420, C.idle(t, 3, C.at(t, keys))); label.textContent = t.toFixed(2) + " s"; range.value = t; };
+  window.seek = draw;
+  let playing = true, t0 = performance.now();
+  btn.onclick = () => { playing = !playing; btn.textContent = playing ? "Pause" : "Play"; t0 = performance.now() - range.value * 1000; };
+  range.oninput = () => { playing = false; btn.textContent = "Play"; draw(+range.value); };
+  const loop = now => { if (playing) draw(((now - t0) / 1000) % 12); requestAnimationFrame(loop); };
+  draw(0); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
