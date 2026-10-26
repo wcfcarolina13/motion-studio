@@ -672,7 +672,7 @@ def cmd_timeline(a):
             dur = d + a.pad + s.get("extra", 0.0)
         else:
             dur = s.get("hold", 3.0)
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3))
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -1917,28 +1917,128 @@ TEXT_STATE = """() => {
 }"""
 
 
-def text_holds(film, total, chapter_ends, step):
+# The pacing probe, installed once on the page check samples. It records, between one sample and the next: every figure
+# placed (F.place and F.closeup's place), with its pose as one vector (joints in degrees, face settings and closeup
+# values weighted to degree-like units, the placement in px), so a figure moving beyond its breathing and sway can be
+# told from one that only idles; every pose key sequence passed to F.at or F.closeup's at; and every element of the
+# drawing whose attributes or text changed (through a MutationObserver), leaving out figures' own parts, <defs>, and
+# things under 32 x 32 px (the background dots). An element counts as moving when its box moves faster than 20 px/s or
+# its opacity changes faster than 0.2 a second; as entering when it first changes, when it shows or hides, or when its
+# colour or text changes. The probe draws nothing and changes nothing the page draws.
+PACE_INSTALL = """() => {
+  if (window.__pace) return;
+  const P = window.__pace = { n: 0, ids: new WeakMap(), placed: [], keys: new Map(), prev: new WeakMap(), fprev: new Map(), roots: new Set(), inFig: new WeakMap() };
+  P.id = e => P.ids.get(e) || (P.ids.set(e, ++P.n), P.n);
+  const FW = { lean: 1, head: 1, ls: 1, le: 1, rs: 1, re: 1, lh: 1, lk: 1, rh: 1, rk: 1, crouch: 40, brow: 20, mouth: 20, open: 20, look: 10, lookY: 10 };
+  const CW = { rise: 90, tilt: 1, slide: 60, squash: 60, hlRise: 45, hlX: 30, hrRise: 45, hrX: 30, hlGrip: 20, hrGrip: 20,
+               brow: 20, mouth: 20, open: 20, look: 10, lookY: 10, pupil: 20, lens: 30 };
+  const wrapPlace = (obj, blend, w, side) => { if (!obj || !obj.place) return; const orig = obj.place;
+    obj.place = function (fig, x, y, h, pose, o) {
+      const r = orig.apply(this, arguments);
+      try { const q = blend(pose, pose, 0), v = [x, y, h, side(fig, o || {}) === 'left' ? -30 : 30];
+        for (const k in w) v.push((q[k] || 0) * w[k]);
+        P.placed.push([fig.root, [fig.root, fig.front].filter(Boolean), v]); } catch (e) {}
+      return r; }; };
+  const wrapAt = obj => { if (!obj || !obj.at) return; const orig = obj.at;
+    obj.at = function (t, keys) {
+      try { if (P.keys.size < 5000) { const k = keys.map(x => [x[0], typeof x[1] === 'string' ? x[1] : JSON.stringify(x[1])]), s = JSON.stringify(k);
+        if (!P.keys.has(s)) P.keys.set(s, k); } } catch (e) {}
+      return orig.apply(this, arguments); }; };
+  if (window.F) { wrapPlace(F, F.blend, FW, (f, o) => o.face || f.o.face); wrapAt(F);
+    if (F.closeup) { wrapPlace(F.closeup, F.closeup.blend, CW, (f, o) => o.facing || f.o.facing); wrapAt(F.closeup); } }
+  const svg = document.getElementById('svg');
+  P.buf = []; P.mo = new MutationObserver(r => { for (const m of r) P.buf.push(m); });   // delivered after each seek returns
+  P.mo.observe(svg, { subtree: true, attributes: true, attributeOldValue: true, characterData: true, childList: true });
+  P.placed = [];
+}"""
+
+PACE_SAMPLE = """dt => {
+  const P = window.__pace, st = document.getElementById('stage').getBoundingClientRect();
+  const recs = P.buf.concat(P.mo.takeRecords()), placed = P.placed; P.buf = []; P.placed = [];
+  placed.forEach(([r, parts]) => parts.forEach(e => P.roots.add(e)));
+  const inFig = e => { if (P.inFig.has(e)) return P.inFig.get(e);
+    let v = false; for (let n = e; n && n.id !== 'svg'; n = n.parentNode) if (P.roots.has(n)) { v = true; break; }
+    P.inFig.set(e, v); return v; };
+  // shown: no display none, hidden or (nearly) see-through ancestor up to the drawing; checkVisibility doesn't see these
+  // on SVG elements. Cached per node for this sample
+  const sc = new Map(), shown = n => { if (!n || n.nodeType !== 1 || n.id === 'svg') return 1;
+    if (sc.has(n)) return sc.get(n); const cs = getComputedStyle(n);
+    const v = cs.display === 'none' || cs.visibility === 'hidden' ? 0 : +cs.opacity * shown(n.parentNode); sc.set(n, v); return v; };
+  const COLOUR = new Set(['fill', 'stroke', 'stop-color', 'href', 'xlink:href', 'class']);
+  const changed = new Map();
+  recs.forEach(m => {
+    const e = m.type === 'characterData' ? m.target.parentElement : m.target;
+    if (!e || e.nodeType !== 1) return;
+    let c = changed.get(e); if (!c) changed.set(e, c = { attrs: new Map(), text: false });
+    if (m.type === 'attributes') { if (!c.attrs.has(m.attributeName)) c.attrs.set(m.attributeName, m.oldValue); }
+    else c.text = true;
+  });
+  const moving = [], A = 32 * 32;
+  const opac = e => ['opacity', 'fill-opacity', 'stroke-opacity'].reduce((a, k) => a * (e.hasAttribute(k) ? +e.getAttribute(k) : 1), 1);
+  changed.forEach((c, e) => {
+    const diff = [...c.attrs].filter(([k, old]) => old !== e.getAttribute(k)).map(([k]) => k);
+    if (!diff.length && !c.text) return;
+    if (e.closest('defs') || inFig(e)) return;
+    const vis = shown(e) > 0.02;
+    const was0 = P.prev.get(e), r = e.getBoundingClientRect(), x0 = Math.max(r.left, st.left), x1 = Math.min(r.right, st.right), y0 = Math.max(r.top, st.top), y1 = Math.min(r.bottom, st.bottom);
+    const area = vis && x1 > x0 && y1 > y0 ? (x1 - x0) * (y1 - y0) : 0, now = { l: r.left, t: r.top, r: r.right, b: r.bottom, area, op: opac(e), vis: area > 0, s: c.text ? e.textContent : was0 && was0.s };
+    const was = P.prev.get(e); P.prev.set(e, now);   // (text set again to the same words is no change)
+    if (now.area < A && !(was && was.area >= A)) return;
+    let go = false;
+    if (!was) go = now.vis;
+    else if (was.vis !== now.vis || (c.text && now.s !== was.s) || diff.some(k => COLOUR.has(k))) go = true;
+    else if (now.vis) go = Math.max(Math.abs(now.l - was.l), Math.abs(now.t - was.t), Math.abs(now.r - was.r), Math.abs(now.b - was.b)) / dt > 20
+                      || Math.abs(now.op - was.op) / dt > 0.2;
+    if (go) moving.push(P.id(e));
+  });
+  const figs = placed.map(([root, parts, v]) => {
+    const id = P.id(root), was = P.fprev.get(id); P.fprev.set(id, v);
+    const r = root.getBoundingClientRect(), vis = shown(root) > 0.02 && r.width > 0
+      && r.right > st.left && r.left < st.right && r.bottom > st.top && r.top < st.bottom;
+    const rate = was ? v.reduce((a, x, i) => a + Math.abs(x - was[i]), 0) / dt : -1;
+    return [id, root.getAttribute('data-who') || '', root.hasAttribute('data-extra') ? 1 : 0, vis ? 1 : 0, Math.round(rate * 10) / 10, Math.round(v[0])];
+  });
+  const hold = [...document.querySelectorAll('#svg [data-hold]')].some(e => shown(e) > 0.02);
+  return [moving, figs, hold ? 1 : 0];
+}"""
+
+PACE_KEYS = "() => window.__pace ? [...window.__pace.keys.values()] : []"
+
+
+def sample_film(film, total, step, pace=True):
+    """One pass over the film every `step` seconds for the text sheet and the pacing tests: at each sample the reading
+    text on screen (TEXT_STATE) and, with pace, what moved or entered since the last sample (PACE_SAMPLE). Returns the
+    samples [(t, text rows, pace or None)] and every pose key sequence the page passed to F.at or F.closeup's at."""
+    import render
+    out = []
+    with render.Film(film) as f:
+        if pace:
+            f.page.evaluate(PACE_INSTALL)
+        for k in range(int(total / step) + 1):
+            t = round(k * step, 3)
+            f.page.evaluate(f"window.seek({min(t, total - 1e-3):.3f})")
+            out.append((t, f.page.evaluate(TEXT_STATE), f.page.evaluate(PACE_SAMPLE, step) if pace else None))
+        keys = f.page.evaluate(PACE_KEYS) if pace else []
+    return out, keys
+
+
+def text_holds(samples, total, chapter_ends, step):
     """The on-screen text sheet: every block of reading text, when it is fully shown in its final state, and how long it
-    holds there. Sampled every `step` seconds. A text element's final state is its last shown string and size; it is
+    holds there. Sampled every `step` seconds (sample_film). A text element's final state is its last shown string and size; it is
     settled from the first sample after which it stays fully shown, with that string and size, moving under 60 px/s in
     its scene (a bubble bobbing with its speaker still reads). Lines of one wrapped block (same segment and font size,
     stacked within 1.7 line heights and overlapping sideways, settling within 1 s and leaving within 0.3 s of each other) are read as one block,
     held from its last line's settle. A block needs max(2 s, 1 s + words / 3) on screen, at least 3 s when marked
     data-payoff (or its segment has "payoff": true) or still up on the last frame before a chapter cut."""
-    import render
     runs, live = [], {}
-    with render.Film(film) as f:
-        n = int(total / step)
-        for k in range(n + 1):
-            t = round(k * step, 3)
-            f.page.evaluate(f"window.seek({min(t, total - 1e-3):.3f})")
-            now = {r[0]: r for r in f.page.evaluate(TEXT_STATE)}
-            for tid in list(live):
-                if tid not in now:
-                    runs.append(live.pop(tid) + [t])
-            for tid, r in now.items():
-                live.setdefault(tid, [r[1], []])[1].append((t, r))
-        runs += [v + [total] for v in live.values()]
+    for t, rows, _ in samples:
+        now = {r[0]: r for r in rows}
+        for tid in list(live):
+            if tid not in now:
+                runs.append(live.pop(tid) + [t])
+        for tid, r in now.items():
+            live.setdefault(tid, [r[1], []])[1].append((t, r))
+    runs += [v + [total] for v in live.values()]
     lines = []
     for seg, samples, t_end in runs:
         # readable stretches: fully shown, moving under 60 px/s, one string and one size throughout; the last one is the
@@ -1989,6 +2089,123 @@ def text_holds(film, total, chapter_ends, step):
             need, why = max(need, 3.0), "before a chapter cut"
         sheet.append({"seg": b["seg"], "text": b["text"], "t": b["t"], "hold": hold, "need": need, "why": why, "words": words})
     return sheet
+
+
+def speech_spans(segs, sc, gap):
+    """When the voice is speaking: each aligned word's span (a narrated segment with no word times counts as speaking
+    from its start to its end less the pad), merged across pauses shorter than `gap` seconds."""
+    narrated = {s["id"] for s in sc.get("segments", []) if s.get("narration")}
+    iv = sorted([(w[1], w[2]) for s in segs for w in s.get("words") or []] +
+                [(s["t0"], max(s["t0"], s["t1"] - 0.45)) for s in segs if not s.get("words") and s["id"] in narrated])
+    out = []
+    for a, b in iv:
+        if out and a - out[-1][1] < gap:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def spoken(spans, a, b):
+    """Seconds of `spans` inside a..b."""
+    return sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans)
+
+
+def pacing(samples, keys, segs, sc, step, a):
+    """Three pacing tests from one sample_film pass, each a flag for judgement rather than a failure.
+    Dead air: the voice pauses (no word within 0.05 s before to 0.15 s after) while at most 3 words of reading text are
+    on screen and nothing moves faster than an idle, for more than a.dead_air seconds. Pose variety: a pose key that
+    repeats the key before it (a beat that changes nothing), and a figure (not a background extra) on screen moving no
+    more than its idle (20 degree-like units a second; breathing and sway are about 8) while the voice speaks for more
+    than a.idle_figure seconds of the stretch. Beat length: a stretch in which nothing new starts moving or enters (a
+    figure starting a new move counts as new; a loop that keeps going does not) while the voice speaks for more than
+    a.beat seconds of it, unless something marked data-hold is on screen in it."""
+    report, flags = [], []
+    t_in, t_out = segs[0]["t0"], segs[-1]["t1"]
+    seg_at = lambda t: next((s["id"] for s in segs if s["t0"] <= t < s["t1"]), segs[-1]["id"])
+    talk = speech_spans(segs, sc, 0.6)                                   # the voice running, over breaths between words
+    words = speech_spans(segs, sc, 0.0)
+    rows = [(t, txt, p) for t, txt, p in samples if p is not None and t_in <= t < t_out]
+    first = samples[0][0] if samples else 0
+    figs_moving, starts = {}, {}
+    per = []
+    for t, txt, (moving, figs, hold) in rows:
+        live = set(map(str, moving))
+        for fid, who, extra, vis, rate, x in figs:
+            go = vis and (rate < 0 or rate > 20)
+            if go and not figs_moving.get(fid):
+                starts[fid] = starts.get(fid, 0) + 1
+            figs_moving[fid] = go
+            if go:
+                live.add(f"f{fid}:{starts[fid]}")
+        nwords = len(re.findall(r"[A-Za-z0-9$%][\w'$%.,-]*", " ".join({r[0]: r[2] for r in txt}.values())))
+        per.append((t, live, figs, hold, nwords))
+    # 1. dead air
+    quiet = lambda t: not any(x - 0.05 <= t + step / 2 <= y + 0.15 for x, y in words)
+    dead, run = [], None
+    for t, live, figs, hold, nwords in per:
+        if t > first and quiet(t) and nwords <= 3 and not live:
+            run = run or [t, nwords]; run[1] = max(run[1], nwords); run.append(t)
+        else:
+            if run and run[-1] + step - run[0] > a.dead_air:
+                dead.append((run[0], run[-1] + step, run[1]))
+            run = None
+    if run and run[-1] + step - run[0] > a.dead_air:
+        dead.append((run[0], run[-1] + step, run[1]))
+    dead = dead if a.dead_air > 0 else []
+    report.append(f"dead air: {len(dead)} pause(s) over {a.dead_air:.1f} s with the voice stopped, 3 words or fewer on screen and nothing moving")
+    for t0, t1, n in dead:
+        flags.append(f"{seg_at(t0)}: dead air from {t0:.1f} to {t1:.1f} s ({t1 - t0:.1f} s): the voice pauses over "
+                     + (f"{n} word{'s' if n != 1 else ''}" if n else "no words") + " on screen and nothing moving")
+    # 2. pose variety: repeated keys, then figures holding idle through the voice
+    reps = set()
+    for k in keys:
+        for (ta, pa), (tb, pb) in zip(k, k[1:]):
+            if pa == pb and t_in <= tb < t_out:
+                reps.add((seg_at(tb), pb if len(pb) < 40 else "the same pose", round(ta, 2), round(tb, 2)))
+    idle, track = [], {}
+    for t, live, figs, hold, nwords in per + [(t_out, set(), [], 0, 0)]:
+        seen = set()
+        for fid, who, extra, vis, rate, x in figs:
+            if extra:
+                continue
+            seen.add(fid)
+            r = track.get(fid)
+            if vis and 0 <= rate <= 20 and not (r and t - r[1] > step * 1.5):
+                track[fid] = [r[0] if r else t, t, who, x] if r else [t, t, who, x]
+            else:
+                if r:
+                    idle.append(r)
+                track.pop(fid, None)
+        for fid in [f for f in track if f not in seen]:
+            idle.append(track.pop(fid))
+    idle = [(t0, t1 + step, who, x, spoken(talk, t0, t1 + step)) for t0, t1, who, x in idle]
+    idle = [r for r in idle if r[4] > a.idle_figure] if a.idle_figure > 0 else []
+    report.append(f"pose variety: {len(reps)} pose key(s) repeating the one before; {len(idle)} stretch(es) of a figure "
+                  f"only idling while the voice speaks over {a.idle_figure:.0f} s")
+    for sid, pose, ta, tb in sorted(reps, key=lambda r: r[3]):
+        flags.append(f"{sid}: pose \"{pose}\" keyed at {tb:.1f} s right after the same pose at {ta:.1f} s: the beat changes nothing")
+    for t0, t1, who, x, sp in idle:
+        flags.append(f"{seg_at(t0)}: {who or f'the figure at x {x}'} only idles from {t0:.1f} to {t1:.1f} s "
+                     f"while the voice speaks for {sp:.1f} s: give it a pose, a look or a move")
+    # 3. beat length
+    beats, known, b0, held = [], set(), None, False
+    for t, live, figs, hold, nwords in per:
+        if b0 is None or live - known:
+            if b0 is not None:
+                beats.append((b0, t, held))
+            known, b0, held = set(live), t, bool(hold)
+        else:
+            held |= bool(hold)
+    if b0 is not None:
+        beats.append((b0, t_out, held))
+    long = [(t0, t1, spoken(talk, t0, t1)) for t0, t1, held in beats if not held]
+    long = [r for r in long if r[2] > a.beat] if a.beat > 0 else []
+    report.append(f"beat length: {len(beats)} beat(s); {len(long)} with the voice running over {a.beat:.0f} s and nothing new moving or entering")
+    for t0, t1, sp in long:
+        flags.append(f"{seg_at(t0)}: one beat from {t0:.1f} to {t1:.1f} s with {sp:.1f} s of voice and nothing new "
+                     f"moving or entering: add a beat, or mark it data-hold (segment \"steady\": true) if it is meant to hold")
+    return report, flags
 
 
 def overlaps(film, segs, step):
@@ -2204,9 +2421,11 @@ def _check(a, film):
                          + (" (MS_GPU_RASTER=1 is set)" if not render.RASTER else ""))
     # 9. on-screen text: every block of reading text, when it is fully shown and for how long (review/text-sheet.tsv);
     # a reveal that moves on before a viewer can read it fails
+    pace = a.text_step > 0 and (a.dead_air > 0 or a.idle_figure > 0 or a.beat > 0)
     if a.text_step > 0:
         ends = [ch["t1"] for ch in tl.get("chapters", [])[:-1] if ch.get("t1")]
-        sheet = text_holds(film, total, ends, a.text_step)
+        samples, keys = sample_film(film, total, a.text_step, pace)
+        sheet = text_holds(samples, total, ends, a.text_step)
         short = [x for x in sheet if x["hold"] < x["need"] - 1e-6]
         rows = ["seg\tfully shown (s)\thold (s)\tneeds (s)\twords\tok\ttext"]
         for x in sheet:
@@ -2219,6 +2438,10 @@ def _check(a, film):
             when = "never fully shown" if x["t"] is None else f"fully shown at {x['t']:.1f} s for {x['hold']:.1f} s"
             flags.append(f"{x['seg']}: \"{x['text'][:60]}\" {when}; needs {x['need']:.1f} s"
                          f" ({x['words']} words{', ' + x['why'] if x['why'] else ''})")
+    # 10. pacing: dead air, pose variety and beat length, from the same samples (flags for judgement, see pacing)
+    if pace:
+        rep, fl = pacing(samples, keys, segs, load_script(film), a.text_step, a)
+        report += rep; flags += fl
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -2388,7 +2611,10 @@ def main():
     p.add_argument("--overlap-step", type=float, default=0.25,
                    help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
     p.add_argument("--repeat", type=int, default=8, help="moments rendered twice to check frames are repeatable (0 skips)")
-    p.add_argument("--text-step", type=float, default=0.1, help="seconds between on-screen text samples for the text sheet and hold test (0 skips)")
+    p.add_argument("--text-step", type=float, default=0.1, help="seconds between on-screen samples for the text sheet, hold test and pacing tests (0 skips them all)")
+    p.add_argument("--dead-air", type=float, default=1.5, help="flag a voice pause longer than this over 3 words or fewer and no motion (0 skips)")
+    p.add_argument("--idle-figure", type=float, default=3.0, help="flag a figure that only idles while the voice speaks longer than this (0 skips)")
+    p.add_argument("--beat", type=float, default=5.0, help="flag a beat with nothing new moving or entering while the voice speaks longer than this (0 skips)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)

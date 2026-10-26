@@ -1132,8 +1132,9 @@ const FULL = new Set(["panel"]);                       // full-frame images: the
 
 // ── build every segment once ─────────────────────────────
 const built = SEGS.map((s, i) => {
-  // data-seg names the segment for check's text sheet; "payoff": true holds all of its text to the payoff minimum (3 s)
-  const tag = Object.assign({ "data-seg": s.id }, s.payoff ? { "data-payoff": 1 } : {});
+  // data-seg names the segment for check's text sheet; "payoff": true holds all of its text to the payoff minimum (3 s);
+  // "steady": true marks it data-hold, a scene meant to stay on one beat, which check's beat-length test leaves be
+  const tag = Object.assign({ "data-seg": s.id }, s.payoff ? { "data-payoff": 1 } : {}, s.steady ? { "data-hold": 1 } : {});
   const g = K.el("g", tag, sceneG);
   s.ov = K.el("g", tag, overlayG);
   const fn = (B[s.type] || B.statement)(s, g);
