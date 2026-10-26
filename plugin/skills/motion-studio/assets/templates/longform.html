@@ -25,6 +25,38 @@ K.setup({ format: TL.format || "16x9", bpm: 60, bars: Math.ceil(TL.duration / 4)
           palette: TL.palette || {} });
 K.DUR = TL.duration; window.STUDIO.duration = TL.duration;
 const C = K.C, W = K.W, H = K.H;
+// the stage's theme: every colour the stage, sms and phone-card scenes draw with, in groups (set, light, shadow, fore,
+// bubble, card), so a kit restyles them from script.json's "theme" instead of patching strings. Each group merges over
+// these defaults, which are the house look, so a film without "theme" renders exactly as before. Any value is an SVG
+// paint, so a gradient a kit defines (e.g. "url(#kit-floor)") works too
+const THEME = (() => {
+  const D = {
+    set: { wall: "#100f0e", wallStreet: "#0d0e10", floor: "#131312", skirting: "#2a2a28", wood: "#2b2724", dark: "#1b1918", line: "#33363a",
+           pot: "#5a3a2a", leaf: "#2f5a3a", leafLight: "#3a6b45", glow: "#3a3222", lampShade: "#c9a45c", building: "#161615", buildingAlt: "#191918",
+           windowLit: "#3a3222", windowDark: "#232321", post: "#2a2a28", glass: "#151a20", windowFrame: "#2a2a28", moon: "#d9d2bd",
+           picture: "#1d1b18", pictureFrame: "#4a3d2c", pictureArt: "#3a4a3e", sofa: "#24211f", cushion: "#7a3b2b", drawer: "#221f1d",
+           bezel: "#0e0f11", screen: "#1f2a36", sheen: "#2a3846", page: "#e9e6df", pageBar: "#cfcbc2", pageDot: "#9a958b", pageUrl: "#f4f2ed",
+           pageInk: "#1d1a17", pageLine: "#bdb8ad", keyboard: "#3a3d42", mug: "#b8562f", paper: "#d9d2bd", paperAlt: "#c4bca5" },
+    // data.light: a falloff to `falloff` on the far side and a pool of `warm` on the near side
+    light: { falloff: "#000", warm: "#ffd9a0" },
+    // floor shadows. The soft look draws `soft` at softOpacity under a blur; the flat look draws `tone` at `opacity`, where
+    // tone defaults to the floor darkened by half (or black when the floor is not a plain hex colour, e.g. a gradient).
+    // blend "multiply" darkens whatever lies under the shadow by the same proportion, so one tone works on a gradient floor
+    shadow: { soft: "#000", softOpacity: 0.6, tone: null, opacity: 0.25, blend: "normal" },
+    // foreground pieces: `soft` for the blurred look; in the flat look `fill` (default the shadow tone) with an `ink`
+    // outline (default the palette's INK) `outline` px wide, where 0 draws none
+    fore: { soft: "#070706", fill: null, ink: null, outline: 6 },
+    bubble: { fill: C.INK, text: C.BG },
+    // phone cards: the sms scene and a stage's notify and sms beats
+    card: { phone: "#151515", stroke: "#3a3a38", screen: "#000", box: "#262628", bubble: "#262628", reply: "#0a84ff", replyText: "#fff",
+            text: C.INK, sub: C.GREY },
+  };
+  // a misspelt group or key would silently keep the house colour, so it stops the page instead
+  const T = TL.theme || {}, bad = Object.entries(T).flatMap(([k, v]) => !D[k] ? [k] : Object.keys(v || {}).filter(x => !(x in D[k])).map(x => k + "." + x));
+  if (bad.length) throw new Error("theme: unknown " + bad.join(", ") + " (see the stage theme in longform.md)");
+  return Object.fromEntries(Object.entries(D).map(([k, v]) => [k, Object.assign({}, v, T[k] || {})]));
+})();
+const SET = THEME.set;
 // 9:16 (a Short re-laid-out from a long-form film): the platform's UI covers the bottom ~22% and a right rail, so
 // each scene keeps what must be read inside SAFE, and the burned-in captions sit just under it.
 const VERT = H > W;
@@ -236,20 +268,20 @@ B.stat = (s, g) => {
 B.sms = (s, g) => {
   const d = s.data;
   const pw = 520, ph = 900, px = W / 2 - pw / 2 + (d.offset || 0), py = V(90, SMID - ph / 2);
-  const phone = K.el("rect", { fill: "#151515", stroke: "#3a3a38", "stroke-width": 3 }, g);
-  const screen = K.el("rect", { fill: "#000" }, g);
-  const notch = K.el("rect", { fill: "#151515" }, g);
+  const CD = THEME.card, phone = K.el("rect", { fill: CD.phone, stroke: CD.stroke, "stroke-width": 3 }, g);
+  const screen = K.el("rect", { fill: CD.screen }, g);
+  const notch = K.el("rect", { fill: CD.phone }, g);
   // the phone is drawn at a phone's proportions, so its message is small; once the message lands the camera pushes in until
   // the message reads at READ, keeping the sender line in frame, then holds still (a held zoom does not shimmer)
   const MS = 30, ML = 40;
-  const who = K.text(d.sender || "+1 (555) 010-0199", { ...AUX, "font-family": SANS, "font-size": 24, fill: C.INK, "text-anchor": "middle" }, g);
-  const whoSub = K.text(d.senderNote || "Text Message", { ...AUX, "font-family": SANS, "font-size": 18, fill: C.GREY, "text-anchor": "middle" }, g);
+  const who = K.text(d.sender || "+1 (555) 010-0199", { ...AUX, "font-family": SANS, "font-size": 24, fill: CD.text, "text-anchor": "middle" }, g);
+  const whoSub = K.text(d.senderNote || "Text Message", { ...AUX, "font-family": SANS, "font-size": 18, fill: CD.sub, "text-anchor": "middle" }, g);
   const lines = wrapWords(d.text, fit(pw - 110 - 48, MS));
-  const bub = K.el("rect", { fill: "#262628" }, g);
-  const tl = lines.map(l => K.text(l, { "font-family": SANS, "font-size": MS, fill: C.INK }, g));
+  const bub = K.el("rect", { fill: CD.bubble }, g);
+  const tl = lines.map(l => K.text(l, { "font-family": SANS, "font-size": MS, fill: CD.text }, g));
   const linkLine = K.el("rect", { fill: C.ACCENT }, g);
-  const reply = d.reply ? K.el("rect", { fill: "#0a84ff" }, g) : null;
-  const replyT = d.reply ? K.text(d.reply, { "font-family": SANS, "font-size": MS, fill: "#fff", "text-anchor": "middle" }, g) : null;
+  const reply = d.reply ? K.el("rect", { fill: CD.reply }, g) : null;
+  const replyT = d.reply ? K.text(d.reply, { "font-family": SANS, "font-size": MS, fill: CD.replyText, "text-anchor": "middle" }, g) : null;
   K.label(d.text, s.t0, s.t1, "text message on a phone");
   return t => {
     const e = env(t, s), o = 1 - e.o;
@@ -268,7 +300,7 @@ B.sms = (s, g) => {
       const k = d.highlight, x = tl[k], len = x.getComputedTextLength();
       const hp = K.eio(K.prog(t, tb + 1.9, tb + 2.5));
       K.set(linkLine, K.rect(bx + 24, by + 54 + k * ML, len * hp, 4));
-      x.setAttribute("fill", hp > 0.5 ? C.ACCENT : C.INK);
+      x.setAttribute("fill", hp > 0.5 ? C.ACCENT : CD.text);
     } else K.set(linkLine, K.rect(0, 0, 0, 0));
     if (reply) {
       const rt = s.t0 + (d.replyAt || 0.6) * (s.t1 - s.t0), rp = K.step(t, rt, 16, 0.7);
@@ -427,89 +459,90 @@ B.title = (s, g) => {   // the cold-open title card
 // the boxes a notification should keep clear of (the monitor's screen).
 function drawSet(kind, g, d = {}) {
   const gy = V(900, SAFE.y1 - 40), sx = W / 1920, X = v => v * sx;   // tall: the ground sits low in the safe area, furniture squeezes in
-  const occ = [], wood = "#2b2724", dark = "#1b1918", line = "#33363a";
-  if (kind !== "blank") K.el("rect", { x: -W / 2, y: -300, width: 2 * W, height: gy + 300, fill: kind === "street" ? "#0d0e10" : "#100f0e" }, g);
-  const floorC = "#131312", floor = K.el("rect", { fill: floorC }, g);
+  const occ = [], wood = SET.wood, dark = SET.dark, line = SET.line;
+  if (kind !== "blank") K.el("rect", { x: -W / 2, y: -300, width: 2 * W, height: gy + 300, fill: kind === "street" ? SET.wallStreet : SET.wall }, g);
+  const floorC = SET.floor, floor = K.el("rect", { fill: floorC }, g);
   K.set(floor, K.rect(-W / 2, gy, 2 * W, H - gy + 200));   // wall and floor reach half a frame past each edge: the camera leans up to 0.35 of that
-  K.el("rect", { x: -W / 2, y: gy - 2, width: 2 * W, height: 3, fill: "#2a2a28" }, g);
+  K.el("rect", { x: -W / 2, y: gy - 2, width: 2 * W, height: 3, fill: SET.skirting }, g);
   // data.light ("left" | "right"): shadows on the floor, cast away from that side, under every prop (`feet`, drawn
   // below) and every figure (the stage frame). Off unless asked for, so older films render the same.
   // data.look "flat" draws them for a flat, outlined art style: hard-edged, one darker tone of the floor (data.shadow
   // overrides it) at 25% opacity, no blur, offset away from the light by 6% of the object's height; the default "soft" blurs
-  const flat = d.look === "flat", tone = d.shadow || K.mix(floorC, "#000000", 0.5);
-  const shade = d.light ? K.el("g", flat ? { opacity: 0.25 } : { filter: `url(#${stageBlur()})` }, g) : null, feet = [];
+  const SD = THEME.shadow, flat = d.look === "flat", tone = d.shadow || SD.tone || (/^#[0-9a-f]{6}$/i.test(floorC) ? K.mix(floorC, "#000000", 0.5) : "#000");
+  const blend = SD.blend !== "normal" ? { style: `mix-blend-mode: ${SD.blend}` } : {};
+  const shade = d.light ? K.el("g", flat ? { opacity: SD.opacity, ...blend } : { filter: `url(#${stageBlur()})`, ...blend }, g) : null, feet = [];
   const r = K.rng(kind.length * 7 + 3);
   const plant = (x, s = 1) => {                          // a potted plant: pot and five leaves
     feet.push([x - 30 * s, x + 30 * s, 195 * s]);
-    K.el("path", { d: `M ${x - 34 * s} ${gy - 70 * s} L ${x + 34 * s} ${gy - 70 * s} L ${x + 26 * s} ${gy} L ${x - 26 * s} ${gy} Z`, fill: "#5a3a2a" }, g);
+    K.el("path", { d: `M ${x - 34 * s} ${gy - 70 * s} L ${x + 34 * s} ${gy - 70 * s} L ${x + 26 * s} ${gy} L ${x - 26 * s} ${gy} Z`, fill: SET.pot }, g);
     [[-40, -150, -0.5], [-14, -190, -0.15], [14, -195, 0.15], [40, -155, 0.5], [0, -140, 0]].forEach(([dx, dy, k]) =>
       K.el("path", { d: `M ${x} ${gy - 70 * s} Q ${x + dx * s * 1.6} ${gy + (dy + 40) * s} ${x + dx * s} ${gy + dy * s} Q ${x + dx * s * 0.3} ${gy + (dy + 70) * s} ${x} ${gy - 70 * s} Z`,
-                     fill: k ? "#2f5a3a" : "#3a6b45" }, g));
+                     fill: k ? SET.leaf : SET.leafLight }, g));
   };
   const lamp = (x, y, h) => {                            // a lamp with a lit shade and a soft pool of light
     feet.push([x - 40, x + 40, h]);
-    K.el("ellipse", { cx: x, cy: y - h + 40, rx: 150, ry: 110, fill: "#3a3222", opacity: 0.25 }, g);
+    K.el("ellipse", { cx: x, cy: y - h + 40, rx: 150, ry: 110, fill: SET.glow, opacity: 0.25 }, g);
     K.el("rect", { x: x - 4, y: y - h + 40, width: 8, height: h - 40, fill: dark }, g);
     K.el("rect", { x: x - 40, y: y - 8, width: 80, height: 8, rx: 4, fill: dark }, g);
-    K.el("path", { d: `M ${x - 34} ${y - h + 50} L ${x - 54} ${y - h + 110} L ${x + 54} ${y - h + 110} L ${x + 34} ${y - h + 50} Z`, fill: "#c9a45c" }, g);
+    K.el("path", { d: `M ${x - 34} ${y - h + 50} L ${x - 54} ${y - h + 110} L ${x + 54} ${y - h + 110} L ${x + 34} ${y - h + 50} Z`, fill: SET.lampShade }, g);
   };
   if (kind === "street") {
     for (let i = 0; i < 9; i++) {
       const bw = X(140 + r() * 160), bh = 220 + r() * 300, bx = X(-60 + i * 240 + r() * 40);
-      K.el("rect", { x: bx, y: gy - bh, width: bw, height: bh, fill: i % 2 ? "#161615" : "#191918" }, g);
+      K.el("rect", { x: bx, y: gy - bh, width: bw, height: bh, fill: i % 2 ? SET.building : SET.buildingAlt }, g);
       for (let wy = gy - bh + 30; wy < gy - 60; wy += 56) for (let wx = bx + 22; wx < bx + bw - 30; wx += 46)
-        if (r() > 0.55) K.el("rect", { x: wx, y: wy, width: 20, height: 28, fill: r() > 0.7 ? "#3a3222" : "#232321" }, g);
+        if (r() > 0.55) K.el("rect", { x: wx, y: wy, width: 20, height: 28, fill: r() > 0.7 ? SET.windowLit : SET.windowDark }, g);
     }
     feet.push([X(1500) - 30, X(1500) + 40, 440]);
-    K.el("rect", { x: X(1500), y: gy - 430, width: 10, height: 430, fill: "#2a2a28" }, g);
-    K.el("rect", { x: X(1500) - 40, y: gy - 440, width: 70, height: 14, rx: 7, fill: "#2a2a28" }, g);
-    K.el("ellipse", { cx: X(1505), cy: gy - 420, rx: 120, ry: 60, fill: "#3a3222", opacity: 0.3 }, g);   // the street lamp's glow
+    K.el("rect", { x: X(1500), y: gy - 430, width: 10, height: 430, fill: SET.post }, g);
+    K.el("rect", { x: X(1500) - 40, y: gy - 440, width: 70, height: 14, rx: 7, fill: SET.post }, g);
+    K.el("ellipse", { cx: X(1505), cy: gy - 420, rx: 120, ry: 60, fill: SET.glow, opacity: 0.3 }, g);   // the street lamp's glow
   } else if (kind === "room") {
-    K.el("rect", { x: X(220), y: gy - 670, width: X(360), height: 300, rx: 6, fill: "#151a20", stroke: "#2a2a28", "stroke-width": 8 }, g);
-    K.el("rect", { x: X(400) - 4, y: gy - 670, width: 8, height: 300, fill: "#2a2a28" }, g);
-    K.el("circle", { cx: X(520), cy: gy - 610, r: 22, fill: "#d9d2bd", opacity: 0.8 }, g);                 // the moon in the window
-    K.el("rect", { x: X(820), y: gy - 640, width: X(200), height: 150, fill: "#1d1b18", stroke: "#4a3d2c", "stroke-width": 10 }, g);   // a framed picture
-    K.el("path", { d: `M ${X(840)} ${gy - 505} L ${X(890)} ${gy - 580} L ${X(930)} ${gy - 540} L ${X(960)} ${gy - 575} L ${X(1000)} ${gy - 505} Z`, fill: "#3a4a3e" }, g);
-    K.el("rect", { x: X(1240), y: gy - 170, width: X(520), height: 120, rx: 26, fill: "#24211f" }, g);
+    K.el("rect", { x: X(220), y: gy - 670, width: X(360), height: 300, rx: 6, fill: SET.glass, stroke: SET.windowFrame, "stroke-width": 8 }, g);
+    K.el("rect", { x: X(400) - 4, y: gy - 670, width: 8, height: 300, fill: SET.windowFrame }, g);
+    K.el("circle", { cx: X(520), cy: gy - 610, r: 22, fill: SET.moon, opacity: 0.8 }, g);                 // the moon in the window
+    K.el("rect", { x: X(820), y: gy - 640, width: X(200), height: 150, fill: SET.picture, stroke: SET.pictureFrame, "stroke-width": 10 }, g);   // a framed picture
+    K.el("path", { d: `M ${X(840)} ${gy - 505} L ${X(890)} ${gy - 580} L ${X(930)} ${gy - 540} L ${X(960)} ${gy - 575} L ${X(1000)} ${gy - 505} Z`, fill: SET.pictureArt }, g);
+    K.el("rect", { x: X(1240), y: gy - 170, width: X(520), height: 120, rx: 26, fill: SET.sofa }, g);
     K.el("rect", { x: X(1220), y: gy - 230, width: X(560), height: 90, rx: 30, fill: wood }, g);
     feet.push([X(1230), X(1770), 230]);
     K.el("rect", { x: X(1250), y: gy - 50, width: 18, height: 50, fill: dark }, g); K.el("rect", { x: X(1750) - 18, y: gy - 50, width: 18, height: 50, fill: dark }, g);
-    K.el("rect", { x: X(1300), y: gy - 210, width: 90, height: 70, rx: 14, fill: "#7a3b2b" }, g);          // a cushion
+    K.el("rect", { x: X(1300), y: gy - 210, width: 90, height: 70, rx: 14, fill: SET.cushion }, g);          // a cushion
     lamp(X(1840), gy, 420);
     plant(X(1100), 0.9);
   } else if (kind === "desk") {
     const dx0 = X(980), dx1 = X(1780), top = gy - 300, cx = (dx0 + dx1) / 2;
     feet.push([dx0, dx1, 300]);
     K.el("rect", { x: dx0, y: top, width: dx1 - dx0, height: 22, rx: 4, fill: wood }, g);
-    K.el("rect", { x: dx0 + 30, y: top + 22, width: 16, height: 278, fill: "#221f1d" }, g);
-    K.el("rect", { x: dx1 - 190, y: top + 22, width: 160, height: 200, rx: 4, fill: "#221f1d" }, g);      // a drawer unit
+    K.el("rect", { x: dx0 + 30, y: top + 22, width: 16, height: 278, fill: SET.drawer }, g);
+    K.el("rect", { x: dx1 - 190, y: top + 22, width: 160, height: 200, rx: 4, fill: SET.drawer }, g);      // a drawer unit
     [70, 140].forEach(y => K.el("rect", { x: dx1 - 135, y: top + 22 + y - 30, width: 50, height: 8, rx: 4, fill: line }, g));
     // the monitor at a monitor's size beside a person: bezel, lit screen, neck and foot. data.screen puts a browser page on
     // it, as set dressing: its text is too small to read, so say what matters in a notification or bubble too
     const sw = 380, sh = 230, sxl = cx - sw / 2, syt = top - 70 - sh;
     K.el("rect", { x: cx - 14, y: top - 72, width: 28, height: 60, fill: line }, g);
     K.el("rect", { x: cx - 80, y: top - 14, width: 160, height: 14, rx: 6, fill: line }, g);
-    K.el("rect", { x: sxl - 14, y: syt - 14, width: sw + 28, height: sh + 28, rx: 14, fill: "#0e0f11", stroke: line, "stroke-width": 3 }, g);
-    K.el("rect", { x: sxl, y: syt, width: sw, height: sh, rx: 4, fill: d.screen ? "#e9e6df" : "#1f2a36" }, g);
+    K.el("rect", { x: sxl - 14, y: syt - 14, width: sw + 28, height: sh + 28, rx: 14, fill: SET.bezel, stroke: line, "stroke-width": 3 }, g);
+    K.el("rect", { x: sxl, y: syt, width: sw, height: sh, rx: 4, fill: d.screen ? SET.page : SET.screen }, g);
     if (d.screen) {
       const sc = d.screen, us = Math.min(24, Math.floor((sw - 70) / (0.55 * Math.max(8, (sc.url || "").length))));
-      K.el("rect", { x: sxl, y: syt, width: sw, height: 40, rx: 4, fill: "#cfcbc2" }, g);
-      [0, 1, 2].forEach(k => K.el("circle", { cx: sxl + 14 + k * 16, cy: syt + 20, r: 4, fill: "#9a958b" }, g));
-      K.el("rect", { x: sxl + 62, y: syt + 8, width: sw - 74, height: 24, rx: 12, fill: "#f4f2ed" }, g);
-      K.text(sc.url || "", { ...AUX, "font-family": SANS, "font-size": us, fill: "#1d1a17", x: sxl + 74, y: syt + 20 + us * 0.36 }, g);
-      if (sc.title) K.text(sc.title, { ...AUX, "font-family": SANS, "font-weight": 700, "font-size": 30, fill: "#1d1a17", x: sxl + 20, y: syt + 84 }, g);
+      K.el("rect", { x: sxl, y: syt, width: sw, height: 40, rx: 4, fill: SET.pageBar }, g);
+      [0, 1, 2].forEach(k => K.el("circle", { cx: sxl + 14 + k * 16, cy: syt + 20, r: 4, fill: SET.pageDot }, g));
+      K.el("rect", { x: sxl + 62, y: syt + 8, width: sw - 74, height: 24, rx: 12, fill: SET.pageUrl }, g);
+      K.text(sc.url || "", { ...AUX, "font-family": SANS, "font-size": us, fill: SET.pageInk, x: sxl + 74, y: syt + 20 + us * 0.36 }, g);
+      if (sc.title) K.text(sc.title, { ...AUX, "font-family": SANS, "font-weight": 700, "font-size": 30, fill: SET.pageInk, x: sxl + 20, y: syt + 84 }, g);
       for (let k = 0; k < (sc.lines ?? 4); k++)
-        K.el("rect", { x: sxl + 20, y: syt + (sc.title ? 104 : 60) + k * 26, width: (sw - 40) * (k % 3 === 2 ? 0.6 : 0.9), height: 10, rx: 5, fill: "#bdb8ad" }, g);
+        K.el("rect", { x: sxl + 20, y: syt + (sc.title ? 104 : 60) + k * 26, width: (sw - 40) * (k % 3 === 2 ? 0.6 : 0.9), height: 10, rx: 5, fill: SET.pageLine }, g);
       if (sc.url) K.label(sc.url + (sc.title ? " — " + sc.title : ""), 0, 1e9, "screen on the desk");
       occ.push({ x0: sxl - 14, x1: sxl + sw + 14, y0: syt - 14, y1: syt + sh + 14 });
     } else {
-      K.el("path", { d: `M ${sxl + 30} ${syt + sh - 30} L ${sxl + sw * 0.4} ${syt + 40} L ${sxl + sw * 0.55} ${syt + 40} L ${sxl + 60} ${syt + sh - 30} Z`, fill: "#2a3846", opacity: 0.8 }, g);   // a sheen
+      K.el("path", { d: `M ${sxl + 30} ${syt + sh - 30} L ${sxl + sw * 0.4} ${syt + 40} L ${sxl + sw * 0.55} ${syt + 40} L ${sxl + 60} ${syt + sh - 30} Z`, fill: SET.sheen, opacity: 0.8 }, g);   // a sheen
     }
-    K.el("rect", { x: cx - 150, y: top - 16, width: 230, height: 14, rx: 4, fill: "#3a3d42" }, g);         // keyboard
-    K.el("rect", { x: dx0 + 70, y: top - 56, width: 44, height: 56, rx: 6, fill: "#b8562f" }, g);         // a mug
-    K.el("path", { d: `M ${dx0 + 114} ${top - 46} q 22 4 0 30`, fill: "none", stroke: "#b8562f", "stroke-width": 7 }, g);
-    K.el("rect", { x: dx1 - 170, y: top - 12, width: 120, height: 12, fill: "#d9d2bd" }, g);              // papers
-    K.el("rect", { x: dx1 - 160, y: top - 20, width: 110, height: 8, fill: "#c4bca5" }, g);
+    K.el("rect", { x: cx - 150, y: top - 16, width: 230, height: 14, rx: 4, fill: SET.keyboard }, g);         // keyboard
+    K.el("rect", { x: dx0 + 70, y: top - 56, width: 44, height: 56, rx: 6, fill: SET.mug }, g);         // a mug
+    K.el("path", { d: `M ${dx0 + 114} ${top - 46} q 22 4 0 30`, fill: "none", stroke: SET.mug, "stroke-width": 7 }, g);
+    K.el("rect", { x: dx1 - 170, y: top - 12, width: 120, height: 12, fill: SET.paper }, g);              // papers
+    K.el("rect", { x: dx1 - 160, y: top - 20, width: 110, height: 8, fill: SET.paperAlt }, g);
     plant(X(1880), 0.8);
   }
   // a contact shadow per prop: a blurred ellipse on the floor pushed away from the light, or in the flat look a hard one
@@ -517,8 +550,8 @@ function drawSet(kind, g, d = {}) {
   const away = d.light === "left" ? 1 : -1;
   if (shade) feet.forEach(([a, b, ht]) => { const w = b - a;
     K.el("ellipse", flat ? { cx: (a + b) / 2 + away * 0.06 * ht, cy: gy + 0.06 * ht * 0.5, rx: w * 0.6, ry: 12 + 0.03 * ht, fill: tone }
-                         : { cx: (a + b) / 2 + away * 0.22 * w, cy: gy + 6, rx: w * 0.7, ry: 18, fill: "#000", opacity: 0.6 }, shade); });
-  return { gy, occ, shade, away, flat, tone };
+                         : { cx: (a + b) / 2 + away * 0.22 * w, cy: gy + 6, rx: w * 0.7, ry: 18, fill: SD.soft, opacity: SD.softOpacity }, shade); });
+  return { gy, occ, shade, away, flat, tone, blend };
 }
 let stageBlurId = null;
 function stageBlur() {   // one soft blur shared by stage shadows and the foreground
@@ -532,11 +565,11 @@ function stageBlur() {   // one soft blur shared by stage shadows and the foregr
 // at the edges, under every bubble and card. Off unless asked for. In the flat look (data.look "flat") they are solid
 // shapes in the floor's darker tone with an ink outline (data.ink, else the palette's INK), unblurred, to match a flat,
 // outlined art style. Returns the group and its left and right halves, which the stage slides outward clear of the cast
-function drawForeground(kind, g, flat = false, tone = "#070706", ink = C.INK) {
+function drawForeground(kind, g, flat = false, tone = THEME.fore.soft, ink = C.INK) {
   // pieces stand on the frame's bottom corners, from the floor's front edge up to about knee height of a figure, dark and
   // out of focus. A tall frame keeps them as short as a wide one: below its floor is YouTube's control area
   const fg = K.el("g", flat ? { "data-fore": "" } : { "data-fore": "", filter: `url(#${stageFgBlur()})`, opacity: 0.9 }, g), gy = V(900, SAFE.y1 - 40), top = gy - 150, bot = flat ? H + 20 : gy + V(200, 240);   // a hard-edged piece runs off the frame rather than end mid-floor
-  const paint = flat ? { fill: tone, stroke: ink, "stroke-width": 6, "stroke-linejoin": "round" } : { fill: "#070706" };
+  const FG = THEME.fore, paint = !flat ? { fill: FG.soft } : FG.outline > 0 ? { fill: FG.fill || tone, stroke: ink, "stroke-width": FG.outline, "stroke-linejoin": "round" } : { fill: FG.fill || tone };
   const gl = K.el("g", {}, fg), gr = K.el("g", {}, fg), at = x => x < W / 2 ? gl : gr;
   let ledge = null;
   const P = (d, x) => K.el("path", { d, ...paint }, at(x)), R = (x, y, w, h, rx = 0) => K.el("rect", { x, y, width: w, height: h, rx, ...paint }, at(x + w / 2));
@@ -564,8 +597,8 @@ function stageFgBlur() {   // the foreground is nearer the lens than the focus: 
   return stageFgBlurId;
 }
 function bubble(g) {   // a speech or thought bubble that pops from a point; text wraps inside
-  const box = K.el("rect", { fill: C.INK }, g), tail = K.el("path", { fill: C.INK }, g);
-  const lines = [0, 1, 2, 3].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.BG, "text-anchor": "middle" }, g));
+  const box = K.el("rect", { fill: THEME.bubble.fill }, g), tail = K.el("path", { fill: THEME.bubble.fill }, g);
+  const lines = [0, 1, 2, 3].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: THEME.bubble.text, "text-anchor": "middle" }, g));
   const L = pitch(READ, 1.15);
   const size = str => { const ls = wrapWords(str || "", fit(V(640, 560), READ)).slice(0, 4); return [ls, Math.max(...ls.map(l => l.length), 6) * READ * 0.55 + 56, ls.length * L + 34]; };
   const cxOf = (x, w, ox) => Math.min(Math.max(x, ox + w / 2 + 20), ox + W - w / 2 - 20);
@@ -604,20 +637,20 @@ const EMOTE = { "?": "?", "!": "!", "$": "$", "…": "…", "x": "✕" };
 B.stage = (s, g) => {
   const d = s.data, set = drawSet(d.set || "blank", g, d), gy = set.gy;
   const kick = d.kicker ? maskText(d.kicker, { ...AUX, "font-family": SANS, "font-size": 28, fill: C.ACCENT, "letter-spacing": 5 }, s.ov) : null;
-  const cast = {}, order = [], feetShade = set.shade ? K.el("g", set.flat ? { opacity: 0.25 } : { filter: `url(#${stageBlur()})` }, g) : null;
+  const cast = {}, order = [], feetShade = set.shade ? K.el("g", set.flat ? { opacity: THEME.shadow.opacity, ...set.blend } : { filter: `url(#${stageBlur()})`, ...set.blend }, g) : null;
   (d.cast || []).forEach((c, i) => { cast[c.id] = { c, fig: F.figure(g, c), seed: i * 3 + 1,
-    sh: feetShade && K.el("ellipse", set.flat ? { fill: set.tone } : { fill: "#000", opacity: 0.6 }, feetShade) }; order.push(c.id); });
+    sh: feetShade && K.el("ellipse", set.flat ? { fill: set.tone } : { fill: THEME.shadow.soft, opacity: THEME.shadow.softOpacity }, feetShade) }; order.push(c.id); });
   // the light: a warm pool on the light side over the set and figures, falling off to dark on the far side; under bubbles
   // and cards, so text keeps its contrast. On a set this dark a shadow only reads where the light lands. The flat look
   // has no gradients: its light is only the hard shadows
   if (d.light && !set.flat) { const id = "stl" + s.id.replace(/\W/g, ""), L = d.light === "left";
     const gr = K.el("linearGradient", { id, x1: L ? 0 : 1, x2: L ? 1 : 0, y1: 0, y2: 0 }, K.defs);
-    [[0, 0], [0.45, 0.05], [1, 0.42]].forEach(([o, a]) => K.el("stop", { offset: o, "stop-color": "#000", "stop-opacity": a }, gr));
+    [[0, 0], [0.45, 0.05], [1, 0.42]].forEach(([o, a]) => K.el("stop", { offset: o, "stop-color": THEME.light.falloff, "stop-opacity": a }, gr));
     const gw = K.el("radialGradient", { id: id + "w", cx: L ? "8%" : "92%", cy: "62%", r: "62%" }, K.defs);
-    [[0, 0.17], [0.55, 0.06], [1, 0]].forEach(([o, a]) => K.el("stop", { offset: o, "stop-color": "#ffd9a0", "stop-opacity": a }, gw));
+    [[0, 0.17], [0.55, 0.06], [1, 0]].forEach(([o, a]) => K.el("stop", { offset: o, "stop-color": THEME.light.warm, "stop-opacity": a }, gw));
     K.el("rect", { x: -400, y: -300, width: W + 800, height: H + 600, fill: `url(#${id}w)` }, set.shade.parentNode.insertBefore(K.el("g", {}, g), set.shade));
     K.el("rect", { x: -400, y: -300, width: W + 800, height: H + 600, fill: `url(#${id})` }, g); }
-  const fore = d.foreground ? drawForeground(d.set || "blank", g, set.flat, set.tone, d.ink || C.INK) : null;
+  const fore = d.foreground ? drawForeground(d.set || "blank", g, set.flat, set.tone, d.ink || THEME.fore.ink || C.INK) : null;
   const fx = K.el("g", {}, g);
   const beats = (d.beats || []).map(b => Object.assign({ T: b.t != null ? b.t : s.t0 + (b.time || 0) * (s.t1 - s.t0) }, b)).sort((a, b) => a.T - b.T);
   const lean = H > W ? 0 : 0.35, camK = camKeys(s.t0, W / 2, beats.filter(b => b.who && cast[b.who]).map(b => [b.T, K.lerp(W / 2, cast[b.who].c.x * W, lean)]));
@@ -655,13 +688,13 @@ B.stage = (s, g) => {
   if (d.kicker) K.label(d.kicker, s.t0, s.t1, "scene label");
   const bubbles = {}, emotes = {}, notes = {}, msgs = {};
   order.forEach(id => { bubbles[id] = bubble(fx); emotes[id] = K.text("", { "font-family": SANS, "font-size": 70, "font-weight": 700, fill: C.ACCENT, "text-anchor": "middle" }, fx);
-    const n = K.el("g", {}, fx); notes[id] = { g: n, box: K.el("rect", { fill: "#262628", stroke: "#3a3a38", "stroke-width": 2 }, n),
-      from: K.text("", { ...AUX, "font-family": SANS, "font-size": V(26, 24), fill: C.GREY }, n), lines: [0, 1, 2, 3, 4, 5].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.INK }, n)) };
+    const n = K.el("g", {}, fx); notes[id] = { g: n, box: K.el("rect", { fill: THEME.card.box, stroke: THEME.card.stroke, "stroke-width": 2 }, n),
+      from: K.text("", { ...AUX, "font-family": SANS, "font-size": V(26, 24), fill: THEME.card.sub }, n), lines: [0, 1, 2, 3, 4, 5].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: THEME.card.text }, n)) };
     // an sms beat: the message itself on a patch of phone screen, laid out like the sms scene (sender, "Text Message", the body
     // in a grey bubble). The black screen keeps the small sender lines off whatever set dressing sits behind
-    const m = K.el("g", {}, fx); msgs[id] = { g: m, scr: K.el("rect", { fill: "#000", stroke: "#3a3a38", "stroke-width": 2 }, m), who: K.text("", { ...AUX, "font-family": SANS, "font-size": V(26, 24), fill: C.INK }, m),
-      sub: K.text("", { ...AUX, "font-family": SANS, "font-size": V(22, 20), fill: C.GREY }, m), tail: K.el("path", { fill: "#262628" }, m),
-      bub: K.el("rect", { fill: "#262628" }, m), lines: [0, 1, 2, 3, 4, 5].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: C.INK }, m)) }; });
+    const m = K.el("g", {}, fx); msgs[id] = { g: m, scr: K.el("rect", { fill: THEME.card.screen, stroke: THEME.card.stroke, "stroke-width": 2 }, m), who: K.text("", { ...AUX, "font-family": SANS, "font-size": V(26, 24), fill: THEME.card.text }, m),
+      sub: K.text("", { ...AUX, "font-family": SANS, "font-size": V(22, 20), fill: THEME.card.sub }, m), tail: K.el("path", { fill: THEME.card.bubble }, m),
+      bub: K.el("rect", { fill: THEME.card.bubble }, m), lines: [0, 1, 2, 3, 4, 5].map(() => K.text("", { "font-family": SANS, "font-size": READ, fill: THEME.card.text }, m)) }; });
   return t => {
     const e = env(t, s), o = 1 - e.o;
     if (kick) placeMask(kick, V(90, 70), V(120, SAFE.y0 + 20), e.i * o, "start");
