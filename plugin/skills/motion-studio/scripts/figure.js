@@ -153,7 +153,8 @@
     const shirt = sil ? SIL : o.shirt, pants = sil ? "#2b2b27" : o.pants, shoes = sil ? "#222220" : o.shoes;
     const rim = {};
     const shade = c => c.startsWith("#") ? K.mix(c, "#000000", 0.28) : c;
-    const root = K.el("g", {}, parent);
+    // data-who names the character (opts.id: a stage cast id) for check's pacing tests; it draws nothing
+    const root = K.el("g", o.id ? { "data-who": o.id } : {}, parent);
     const flip = K.el("g", {}, root);
     const limb = (color, w, parentG) => K.el("path", Object.assign({ fill: "none", stroke: color, "stroke-width": w, "stroke-linecap": "round", "stroke-linejoin": "round" }, parentG ? {} : {}), parentG || flip);
     const g = {};
@@ -270,6 +271,7 @@
     const hairs = opts.hairs || ["short", "short", "long", "bun", "curly", "cap", "bald"];
     for (let i = 0; i < n; i++) out.push(F.figure(parent, Object.assign({ skin: Math.floor(r() * 5), hairColor: Math.floor(r() * 4),
       hair: hairs[Math.floor(r() * hairs.length)], shirt: shirts[Math.floor(r() * shirts.length)] }, opts.each || {})));
+    out.forEach(f => f.root.setAttribute("data-extra", 1));   // background people: check's idle-figure test leaves them be
     return out;
   };
 })();

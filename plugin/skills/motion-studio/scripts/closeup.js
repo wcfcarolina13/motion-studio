@@ -155,7 +155,7 @@
     // the edge: everything behind it is clipped to the half-plane above y (updated by place)
     const clip = el("clipPath", { id: id + "edge", clipPathUnits: "userSpaceOnUse" }, defs);
     const edge = el("rect", { x: -1e5, y: -1e5, width: 2e5, height: 1e5 }, clip);
-    const root = el("g", { "clip-path": `url(#${id}edge)` }, parent);
+    const root = el("g", Object.assign({ "clip-path": `url(#${id}edge)` }, o.id ? { "data-who": o.id } : {}), parent);
     const body = el("g", {}, root);
     const front = el("g", {}, o.front || parent);
     const g = {};
