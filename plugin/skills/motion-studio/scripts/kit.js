@@ -83,6 +83,24 @@
   K.show = (e, on) => { e.style.display = on ? "" : "none"; };
   K.rect = (x, y, w, h, rx = 0) => { w = Math.max(0, w); h = Math.max(0, h); return { x, y, width: w, height: h, rx: Math.min(rx, w / 2, h / 2) }; };
   K.text = (str, attrs, parent) => { const e = K.el("text", Object.assign({ "font-family": "Georgia, serif", fill: K.C.INK }, attrs), parent); e.textContent = str; return e; };
+  // standard symbols, drawn here on a 24-unit grid as filled shapes: use these rather than an improvised mark, which a
+  // phone viewer can't read (a lone chevron for "share" was unreadable on an end screen, 2026-11-03). K.icon(name,
+  // { x, y, size, fill }, parent) draws one with its top-left at x, y, size px square, marked data-icon for check's
+  // legibility test (at least 18 px when the frame is shown 360 px wide, about 96 px on a 1920 frame)
+  K.ICONS = {
+    share: "M14 5 L22 12 L14 19 V15 C8.5 15 4.8 16.8 2 21 C3 15 6.5 10 14 9 Z",                       // a curved arrow pointing right
+    play: "M8 5 L19 12 L8 19 Z",
+    bell: "M12 2.5 C8.4 2.5 6 5.1 6 8.6 V13.5 L4 16.5 V17.5 H20 V16.5 L18 13.5 V8.6 C18 5.1 15.6 2.5 12 2.5 Z M9.5 19 C9.8 20.5 10.8 21.5 12 21.5 C13.2 21.5 14.2 20.5 14.5 19 Z",
+    like: "M2 10 H6 V21 H2 Z M8 21 V10 L12.5 3 C13.8 3 14.8 4 14.6 5.3 L14 9 H20 C21.2 9 22.1 10.1 21.9 11.3 L20.6 19.3 C20.4 20.3 19.5 21 18.5 21 Z",
+    comment: "M3 4 H21 V16 H9 L4 21 V16 H3 Z",
+    next: "M3 10.5 H15.5 L10.5 5.5 L12.6 3.4 L21.2 12 L12.6 20.6 L10.5 18.5 L15.5 13.5 H3 Z",     // an arrow pointing right
+  };
+  K.icon = (name, { x = 0, y = 0, size = 96, fill } = {}, parent) => {
+    if (!K.ICONS[name]) throw new Error(`K.icon: unknown icon "${name}" (${Object.keys(K.ICONS).join(", ")})`);
+    const g = K.el("g", { "data-icon": name, transform: `translate(${x} ${y}) scale(${size / 24})` }, parent);
+    K.el("path", { d: K.ICONS[name], fill: fill || K.C.INK, "fill-rule": "evenodd" }, g);
+    return g;
+  };
   K.group = (id, parent) => K.el("g", id ? { id } : {}, parent || K.svg.querySelector("#world") || K.svg);
   K.banded = id => { const g = K.group(id); g.setAttribute("clip-path", "url(#band)"); return g; };
   // camera on a group: world point (cx, cy) at frame centre, zoom z (drive z with K.kfLog)

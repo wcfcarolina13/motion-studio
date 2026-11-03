@@ -2274,6 +2274,57 @@ def walk_cues(d):
             yield from walk_cues(v)
 
 
+# Every data-icon fully shown now (0.95 opacity or more after its parents), with its box on the frame, and whether an
+# end screen (a group marked data-endscreen) is fully shown
+ICONS = """() => {
+  const shown = n => { let o = 1; for (; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) {
+      const cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') return 0; o *= +cs.opacity; } return o; };
+  const st = document.getElementById('stage').getBoundingClientRect();
+  const icons = [...document.querySelectorAll('#svg [data-icon]')].map((e, i) => [i, e.getAttribute('data-icon') || 'icon', shown(e), e.getBoundingClientRect()])
+    .filter(([, , o, r]) => o >= 0.95 && r.width > 0 && r.right > st.left && r.left < st.right && r.bottom > st.top && r.top < st.bottom)
+    .map(([i, n, , r]) => [i, n, r.width, r.height]);
+  return [icons, [...document.querySelectorAll('#svg [data-endscreen]')].some(e => shown(e) >= 0.95) ? 1 : 0];
+}"""
+
+
+def end_screen(film, floor, step=0.5):
+    """(report, flags) for icons and the end screen. Sampled every `step` s: each icon marked data-icon at its largest
+    while fully shown must be at least `floor` px on its longer side (the drawn symbol's, not its 24-unit box) when the frame is shown 360 px wide (a 16:9 video
+    on a phone held upright). The end screen (data-endscreen), at the middle of its last fully shown stretch, is saved
+    360 px wide as review/endscreen-360.png for a look at phone size."""
+    import render
+    best, runs, on = {}, [], None
+    with render.Film(film) as f:
+        k360 = 360 / f.w
+        for k in range(int(f.dur / step) + 1):
+            t = min(k * step, f.dur - 1e-3)
+            f.seek(t)
+            icons, end = f.page.evaluate(ICONS)
+            for i, name, w, h in icons:
+                if i not in best or max(w, h) > best[i][1]:
+                    best[i] = (name, max(w, h), t)
+            if end and on is None:
+                on = t
+            elif not end and on is not None:
+                runs.append((on, t - step)); on = None
+        if on is not None:
+            runs.append((on, f.dur))
+        report, flags = [], []
+        if runs:
+            t = round(sum(runs[-1]) / 2, 3)
+            png = f.shot(t)
+            out = film / "review" / "endscreen-360.png"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", "-", "-vf", "scale=360:-2:flags=lanczos", str(out)], input=png, check=True)
+            report.append(f"end screen: {out.relative_to(film)} at {t:.1f} s, 360 px wide: look at it at phone size")
+    small = [(n, px * k360, t) for n, px, t in best.values() if px * k360 < floor]
+    if best:
+        report.append(f"icons: {len(best)} marked, {len(small)} under {floor:.0f} px at 360 px wide")
+    flags += [f"icon \"{n}\" at {t:.1f} s is {px:.0f} px at 360 px wide (needs {floor:.0f}): draw it so its longer side is at least "
+              f"{floor / k360:.0f} px on this frame" for n, px, t in small]
+    return report, flags
+
+
 def cmd_check(a):
     film = Path(a.film).resolve()
     with JobStatus(film, "check"):
@@ -2450,6 +2501,11 @@ def _check(a, film):
     if pace:
         rep, fl = pacing(samples, keys, segs, load_script(film), a.text_step, a)
         report += rep; flags += fl
+    # 11. icons and the end screen at phone size: every marked icon big enough to read 360 px wide, and the end screen
+    # saved at that width for a look
+    if a.icon_min > 0:
+        rep, fl = end_screen(film, a.icon_min)
+        report += rep; flags += fl
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -2610,6 +2666,7 @@ def main():
     p = sp.add_parser("credits"); p.add_argument("film"); p.set_defaults(fn=cmd_credits)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
+    p.add_argument("--icon-min", type=float, default=18, help="smallest longer side of a data-icon, px, with the frame 360 px wide (0 skips)")
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
