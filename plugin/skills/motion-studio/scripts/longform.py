@@ -655,6 +655,52 @@ def resolve_cues(node, words, seg, problems, cues):
             resolve_cues(v, words, seg, problems, cues)
 
 
+TRANSITION_HOLD = 0.3   # s a transition beat waits beyond a continuation before it starts (owner's note, 2026-11-03)
+
+
+def transition_holds(film, sc, hold, pad, allwords):
+    """{segment id: (how it joins the one before, seconds held after it)}. A segment's "join" is "transition" (a new
+    place, subject or chapter) or "continue"; unset, it is a transition where a new chapter starts and a continuation
+    elsewhere. The segment before a transition holds longer, so its last picture and the voice gap both run longer:
+    long enough that the voice gap into the transition is the film's usual continuation gap (the median, from the
+    aligned words) plus `hold`. Clips start and end with different amounts of silence, so a flat `hold` added to
+    every transition left some under that; without word times it is a flat `hold`. A Short takes its holds from its
+    long-form film's timeline, so each segment lasts as long as it does there and the sound cut still lines up."""
+    def edges(s):   # silence before the first word and after the last, from the aligned words, or None
+        w = allwords.get(s["id"])
+        clip = film / "narration" / f"{s['id']}.mp3"
+        if not (s.get("narration") and w and w.get("text") == s.get("narration") and w.get("words") and clip.exists()):
+            return None
+        return w["words"][0]["t0"], duration(clip) - w["words"][-1]["t1"]
+    segs = sc["segments"]
+    ed = {s["id"]: edges(s) for s in segs}
+    natural = {s["id"]: ed[p["id"]][1] + pad + p.get("extra", 0.0) + ed[s["id"]][0]
+               for p, s in zip(segs, segs[1:]) if ed[p["id"]] and ed[s["id"]]}
+    out, chapter, prev = {}, None, None
+    for s in sc["segments"]:
+        j = s.get("join")
+        if j not in (None, "continue", "transition"):
+            raise SystemExit(f'{s["id"]}: "join" must be "continue" or "transition", not {j!r}')
+        new_ch = bool(s.get("chapter")) and s.get("chapter") != chapter
+        if s.get("chapter"):
+            chapter = s["chapter"]
+        j = j or ("transition" if new_ch and prev else "continue")
+        out[s["id"]] = (j, 0.0)
+        prev = s["id"]
+    cont = sorted(natural[k] for k, (j, _) in out.items() if j == "continue" and k in natural)
+    base = cont[len(cont) // 2] if cont else None
+    for p, s in zip(segs, segs[1:]):
+        if out[s["id"]][0] == "transition" and hold:
+            add = max(0.0, base + hold - natural[s["id"]]) if base is not None and s["id"] in natural else hold
+            out[p["id"]] = (out[p["id"]][0], round(add, 3))
+    if sc.get("short_of"):
+        parent = (film / sc["short_of"]["film"]).resolve()
+        if (parent / "timeline.js").exists():
+            pseg = {x["id"]: x for x in load_timeline(parent)["segments"]}
+            out = {k: (j, pseg[k].get("hold_after", 0.0) if k in pseg else h) for k, (j, h) in out.items()}
+    return out
+
+
 def cmd_timeline(a):
     film = Path(a.film).resolve()
     sc = load_script(film)
@@ -662,6 +708,7 @@ def cmd_timeline(a):
     allwords = json.loads(wj.read_text()) if wj.exists() else {}
     t, segs, clips, chapters, problems, cues = a.lead, [], [], [], [], []
     moods = sc.get("moods", {})
+    holds = transition_holds(film, sc, a.transition_hold, a.pad, allwords)
     for s in sc["segments"]:
         clip = film / "narration" / f"{s['id']}.mp3"
         if s.get("narration"):
@@ -672,8 +719,9 @@ def cmd_timeline(a):
             dur = d + a.pad + s.get("extra", 0.0)
         else:
             dur = s.get("hold", 3.0)
+        dur += holds[s["id"]][1]
         seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady") if k in s}
-        seg.update(t0=round(t, 3), t1=round(t + dur, 3))
+        seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
             seg["words"] = [[x["w"], round(t + x["t0"], 3), round(t + x["t1"], 3)] for x in w["words"]]
@@ -2274,6 +2322,30 @@ def walk_cues(d):
             yield from walk_cues(v)
 
 
+def join_gaps(segs, hold):
+    """The voice gap at each join between spoken segments (last word of one to first word of the next), and a flag for
+    each transition whose gap is under the median continuation gap plus `hold` (less 0.02 s of rounding). With no
+    continuation joins to measure, the usual gap is the smallest transition gap minus `hold`, so only an uneven
+    transition is flagged. Segments made before joins existed count as continuations unless a chapter starts there."""
+    gaps = []
+    for p, s in zip(segs, segs[1:]):
+        if p.get("words") and s.get("words"):
+            j = s.get("join") or ("transition" if s.get("chapter") and s.get("chapter") != p.get("chapter") else "continue")
+            gaps.append((s["id"], j, s["words"][0][1] - p["words"][-1][2]))
+    cont = sorted(g for _, j, g in gaps if j == "continue")
+    trans = [(sid, g) for sid, j, g in gaps if j == "transition"]
+    if not gaps or not hold:
+        return [], []
+    base = cont[len(cont) // 2] if cont else min(g for _, g in trans) - hold
+    short = [(sid, g) for sid, g in trans if g < base + hold - 0.02]
+    report = [f"joins: {len(cont)} continuation(s), usual voice gap {base:.2f} s; {len(trans)} transition(s), "
+              f"{len(short)} under {base + hold:.2f} s"]
+    flags = [f"{sid}: transition voice gap {g:.2f} s, under the usual {base:.2f} s plus {hold:.2f} s: hold the last picture "
+             f"before it longer (extra on the segment before, or \"join\": \"continue\" if it isn't a new place or subject)"
+             for sid, g in short]
+    return report, flags
+
+
 def cmd_check(a):
     film = Path(a.film).resolve()
     with JobStatus(film, "check"):
@@ -2450,6 +2522,10 @@ def _check(a, film):
     if pace:
         rep, fl = pacing(samples, keys, segs, load_script(film), a.text_step, a)
         report += rep; flags += fl
+    # 11. transition holds: the voice gap into a transition segment must be at least the film's usual gap at a
+    # continuation plus the transition hold, so a new place or chapter gets its breath
+    rep, fl = join_gaps(segs, a.transition_hold)
+    report += rep; flags += fl
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -2582,7 +2658,9 @@ def main():
     p.add_argument("--redo", action="store_true"); p.set_defaults(fn=cmd_upscale)
     p = sp.add_parser("align"); p.add_argument("film"); p.add_argument("--redo", action="store_true"); p.set_defaults(fn=cmd_align)
     p = sp.add_parser("timeline"); p.add_argument("film"); p.add_argument("--pad", type=float, default=0.45)
-    p.add_argument("--lead", type=float, default=0.3); p.add_argument("--tail", type=float, default=1.5); p.set_defaults(fn=cmd_timeline)
+    p.add_argument("--lead", type=float, default=0.3); p.add_argument("--tail", type=float, default=1.5)
+    p.add_argument("--transition-hold", type=float, default=TRANSITION_HOLD, help="extra seconds before a transition segment starts (0: none)")
+    p.set_defaults(fn=cmd_timeline)
     p = sp.add_parser("captions"); p.add_argument("film"); p.add_argument("--lang", required=True)
     p.add_argument("--text", required=True, help='JSON {"<segment id>": "translated line"}'); p.set_defaults(fn=cmd_captions)
     p = sp.add_parser("stills"); p.add_argument("film"); p.add_argument("--every", type=float); p.add_argument("--at", type=float, default=0.75)
@@ -2610,6 +2688,7 @@ def main():
     p = sp.add_parser("credits"); p.add_argument("film"); p.set_defaults(fn=cmd_credits)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
+    p.add_argument("--transition-hold", type=float, default=TRANSITION_HOLD, help="a transition's voice gap must beat the usual gap by this (0 skips)")
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
