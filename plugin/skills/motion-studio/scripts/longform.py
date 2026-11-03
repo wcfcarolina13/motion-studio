@@ -1674,6 +1674,14 @@ def _final(a):
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
     ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
+    # the channel logo in its own colours wherever it appears: a style pack or grade must never recolour it
+    import brand
+    rep, probs = brand.brand_problems(film, load_script(film))
+    for line in rep:
+        print("INFO", line)
+    for p in probs:
+        print("FAIL brand:", p)
+    ok = ok and not probs
     print(out)
     sys.exit(0 if ok else 1)
 
@@ -2450,6 +2458,11 @@ def _check(a, film):
     if pace:
         rep, fl = pacing(samples, keys, segs, load_script(film), a.text_step, a)
         report += rep; flags += fl
+    # 11. brand: every logo a kit marks data-logo is drawn in the channel's palette (brand.py); final fails on it too
+    if not a.no_brand:
+        import brand
+        rep, probs = brand.brand_problems(film, load_script(film))
+        report += rep; flags += ["brand: " + p for p in probs]
     # pronunciation: what the voice will likely misread in the text it was given
     sp = say_problems(load_script(film))
     report.append(f"pronunciation: {len(sp)} likely misread(s) in the voiced text")
@@ -2610,6 +2623,7 @@ def main():
     p = sp.add_parser("credits"); p.add_argument("film"); p.set_defaults(fn=cmd_credits)
     p = sp.add_parser("final"); p.add_argument("film"); p.set_defaults(fn=cmd_final)
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
+    p.add_argument("--no-brand", action="store_true", help="skip the logo colour check (final still runs it)")
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
     p.add_argument("--max-text", type=float, default=0.4); p.add_argument("--max-text-run", type=float, default=25.0)
