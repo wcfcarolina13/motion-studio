@@ -2378,6 +2378,9 @@ def end_screen(film, floor, step=0.5):
         report.append(f"icons: {len(best)} marked, {len(small)} under {floor:.0f} px at 360 px wide")
     flags += [f"icon \"{n}\" at {t:.1f} s is {px:.0f} px at 360 px wide (needs {floor:.0f}): draw it so its longer side is at least "
               f"{floor / k360:.0f} px on this frame" for n, px, t in small]
+    return report, flags
+
+
 def join_gaps(segs, hold):
     """The voice gap at each join between spoken segments (last word of one to first word of the next), and a flag for
     each transition whose gap is under the median continuation gap plus `hold` (less 0.02 s of rounding). With no
