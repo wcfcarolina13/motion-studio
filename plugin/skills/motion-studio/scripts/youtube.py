@@ -14,6 +14,8 @@ type "Desktop app", and save its JSON as ~/.motion-studio/youtube/client_secret.
   youtube.py upload FILE --title T [--description-file F] [--tags a,b] [--privacy private|unlisted|public]
                     [--category 27] [--thumbnail PNG] [--made-for-kids] [--synthetic]
                     [--language en] [--localizations titles.json]   {"es": {"title", "description"?}, "pt-BR": {...}}
+                    [--pre-upload-check "CMD"] [--package DIR]   (or YT_PRE_UPLOAD_CHECK): CMD runs first, with DIR as its
+                    last argument; a non-zero exit refuses the upload before any call to YouTube
   youtube.py set-privacy VIDEO_ID private|unlisted|public [--synthetic | --not-synthetic]
                     re-sends the AI disclosure every time (the channel's "synthetic" unless a flag says otherwise)
   youtube.py captions VIDEO_ID FILE.vtt [--language en] [--name English]   add a caption track (longform.py writes one)
@@ -34,6 +36,8 @@ import json
 import mimetypes
 import os
 import secrets
+import shlex
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -208,11 +212,34 @@ def with_disclosure(desc, line):
     return (desc.rstrip() + "\n\n" + line).lstrip()
 
 
+def pre_upload_check(cmd, package=None):
+    """Run the owner's pre-upload check, if one is set: `cmd` is split like a shell line (no pipes or &&; wrap those in
+    sh -c '...') and run without a shell, with `package` appended as its last argument. A non-zero exit, or a command
+    that can't be started, refuses the upload with the command's own output as the reason. Returns quietly when
+    `cmd` is empty."""
+    if not cmd:
+        if package:
+            raise SystemExit("--package is only passed to a pre-upload check: set --pre-upload-check or YT_PRE_UPLOAD_CHECK")
+        return
+    argv = shlex.split(cmd) + ([str(package)] if package else [])
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as e:
+        raise SystemExit(f"refusing upload: pre-upload check could not run ({argv[0]}: {e.strerror or e})")
+    out = "\n".join(x.strip() for x in (r.stdout, r.stderr) if x.strip())
+    if r.returncode != 0:
+        raise SystemExit("refusing upload: " + (out or f"pre-upload check failed (exit {r.returncode})"))
+    if out:
+        print(out)
+    print(f"pre-upload check passed: {shlex.join(argv)}")
+
+
 def cmd_upload(a):
     path = Path(a.file)
     size = path.stat().st_size
     if a.privacy == "public" and not a.yes_public:
         raise SystemExit("refusing public upload without --yes-public")
+    pre_upload_check(a.pre_upload_check or os.environ.get("YT_PRE_UPLOAD_CHECK", ""), a.package)
     check_channel()
     cfg = channel_cfg()
     line = cfg.get("disclosure", "")
@@ -347,6 +374,9 @@ def main():
     p.add_argument("--synthetic", action="store_true", help="declare altered or synthetic content")
     p.add_argument("--language", help="default language of title and audio (else the channel's, else en)")
     p.add_argument("--localizations", help='JSON {"es": {"title", "description"?}, ...}; the disclosure line is added to each')
+    p.add_argument("--pre-upload-check", help="command run before any upload call; a non-zero exit refuses the upload "
+                                              "(default: $YT_PRE_UPLOAD_CHECK)")
+    p.add_argument("--package", help="folder passed to the pre-upload check as its last argument")
     p.set_defaults(fn=cmd_upload)
     p = sp.add_parser("set-privacy"); p.add_argument("video_id"); p.add_argument("privacy", choices=["private", "unlisted", "public"])
     p.add_argument("--yes-public", action="store_true")
