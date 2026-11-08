@@ -24,7 +24,8 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
-  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh id|w.wav | --no-whoosh] [--bed-db -25.5] [--no-sfx]
+  longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh id|w.wav | --no-whoosh] [--bed-db DB | --bed-gap LU]
+                  [--bed-profile auto|short|long] [--bed-dip 3] [--bed-exempt REASON] [--no-sfx]
   longform.py credits <film>                    out/credits.txt: the attribution lines for every sound the mix used
   longform.py render <film> [--workers 4] [--scale 1.0] [--fresh]
   longform.py final <film>                      mux render + mix, verify
@@ -1561,8 +1562,66 @@ def library_whoosh():
     return hits[0] if hits else None
 
 
+# How far the ducked music bed sits under the voice, in LU (integrated loudness of the voice stem minus the ducked bed
+# stem, both measured by ebur128 before the final mix). A Short's bed sits closer than a long film's: a phone in the
+# hand, a shorter piece (the owner's picks, 2026-11-08, after a bed 28 LU under the voice couldn't be heard).
+# profile: (target, note below, note above)
+BED_PROFILES = {"short": (16.0, 14.0, 18.0), "long": (18.0, 16.0, 20.0)}
+BED_GAP_MAX = 22.0     # further under the voice than this, the bed can't be heard on a phone at a comfortable level
+BED_GAP_MIN = 10.0     # closer than this, it fights the words
+BED_BAND_MIN = 10.0    # in 1-4 kHz, where consonants carry, the bed must stay at least this far under the voice
+BED_START_DB = -14.7   # first guess when the gap sets the level; a library bed lands near 18 LU here
+
+
+def lufs(wav, pre=""):
+    """Integrated loudness (LUFS) of a file by ebur128, after an optional filter chain; None when it's silent."""
+    af = (pre + "," if pre else "") + "ebur128"
+    err = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(wav), "-af", af, "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    tail = err[err.rfind("Summary:"):]
+    try:
+        v = float(tail.split("I:")[1].split("LUFS")[0])
+    except (IndexError, ValueError):
+        return None
+    return None if v < -69 else v
+
+
+BAND = "highpass=f=1000:poles=2,lowpass=f=4000:poles=2"     # 12 dB/octave each side
+
+
+def bed_gaps(voice, bed):
+    """(full-band gap, 1-4 kHz gap) in LU between a voice stem and a ducked bed stem. The full gap is None when either
+    stem is silent. The band gap is None when the voice has nothing there to mask, and inf when the bed has nothing
+    there (it can't mask what it doesn't play)."""
+    v, b, vb, bb = lufs(voice), lufs(bed), lufs(voice, BAND), lufs(bed, BAND)
+    gap = None if v is None or b is None else round(v - b, 2)
+    band = None if vb is None else float("inf") if bb is None else round(vb - bb, 2)
+    return gap, band
+
+
+def bed_verdict(gap, band, profile):
+    """(problems, notes) for a measured gap: problems stop the mix, notes are printed."""
+    target, lo, hi = BED_PROFILES[profile]
+    probs, notes = [], []
+    if gap is None:
+        probs.append("the bed or the voice measured silent, so the gap couldn't be measured")
+        return probs, notes
+    if gap > BED_GAP_MAX:
+        probs.append(f"the bed sits {gap:.1f} LU under the voice, over {BED_GAP_MAX:.0f}: it can't be heard. Raise it "
+                     f"(--bed-gap {target:.0f} sets it for you)")
+    elif gap < BED_GAP_MIN:
+        probs.append(f"the bed sits only {gap:.1f} LU under the voice, under {BED_GAP_MIN:.0f}: it fights the words. Lower it")
+    elif not lo <= gap <= hi:
+        notes.append(f"the bed sits {gap:.1f} LU under the voice, outside the {profile} range {lo:.0f}-{hi:.0f} (target {target:.0f})")
+    if band is not None and band < BED_BAND_MIN:
+        probs.append(f"in 1-4 kHz the bed comes within {band:.1f} LU of the voice (needs {BED_BAND_MIN:.0f}): it masks consonants. "
+                     "Dip the bed there (--bed-dip 3 cuts 3 dB at 2.5 kHz) rather than lowering the whole bed")
+    return probs, notes
+
+
 def cmd_mix(a):
-    """Narration on top; the music bed ducked under the voice; an optional whoosh at each chapter start."""
+    """Narration on top; the music bed ducked under the voice; an optional whoosh at each chapter start. With a bed, the
+    gap between voice and ducked bed is measured, and a bed too quiet, too loud or crowding the words stops the mix."""
     film = Path(a.film).resolve()
     if load_script(film).get("short_of") and not a.remix:
         raise SystemExit("this is a Short: `timeline` already cut its sound from the long-form mix (out/mix.wav). "
@@ -1572,6 +1631,7 @@ def cmd_mix(a):
     narr = film / "out" / "narration.wav"
     sounds = {}                                          # what the mix used, for `credits`
     inputs = ["-i", str(narr)]
+    dip = f",equalizer=f=2500:t=q:w=1:g={-abs(a.bed_dip)}" if a.bed_dip else ""   # a presence dip where consonants carry
     filt = []
     if a.plan:
         plan = json.loads((film / "out" / "music_plan.json").read_text())
@@ -1582,8 +1642,8 @@ def cmd_mix(a):
         sounds["music"] = list(dict.fromkeys(r["track"] for r in plan["runs"]))
         bed = build_bed(film, plan, total)
         inputs += ["-i", str(bed)]
-        filt.append(f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={a.bed_db}dB,afade=t=in:d=1.0[bed]")
-        filt.append("[bed][key]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=600[ducked]")
+        filt.append("[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=@BED_DB@dB" + dip + ",afade=t=in:d=1.0[bed]")
+        filt.append("[bed][key]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=600,asplit=2[ducked][bstem]")
         mix_in = ["[voice]", "[ducked]"]
     elif a.music:
         tracks = [Path(p) for p in a.music.split(",")]
@@ -1597,13 +1657,14 @@ def cmd_mix(a):
         for i in range(1, len(seq)):
             filt.append(f"[{i + 1}:a]aformat=sample_rates=48000:channel_layouts=stereo[r{i}]")
             filt.append(f"[m{i - 1}][r{i}]acrossfade=d=4:c1=tri:c2=tri[m{i}]")
-        filt.append(f"[m{len(seq) - 1}]atrim=0:{total},volume={a.bed_db}dB,afade=t=in:d=1.5,afade=t=out:st={max(0, total - 4)}:d=4[bed]")
-        filt.append("[bed][key]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=600[ducked]")
+        filt.append(f"[m{len(seq) - 1}]atrim=0:{total},volume=@BED_DB@dB" + dip + f",afade=t=in:d=1.5,afade=t=out:st={max(0, total - 4)}:d=4[bed]")
+        filt.append("[bed][key]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=600,asplit=2[ducked][bstem]")
         mix_in = ["[voice]", "[ducked]"]
     else:
         mix_in = ["[voice]"]
     # the voice also keys the ducking, so it is split only when there is a bed to duck: an unused split output fails the graph
-    key = ",asplit=2[voice][key]" if "[ducked]" in mix_in else "[voice]"
+    has_bed = "[ducked]" in mix_in
+    key = ",asplit=3[voice][key][vstem]" if has_bed else "[voice]"
     filt.insert(0, "[0:a]aformat=sample_rates=48000:channel_layouts=stereo" + key)
     whoosh = None
     if a.whoosh and Path(a.whoosh).exists():
@@ -1637,9 +1698,52 @@ def cmd_mix(a):
         mix_in.append("[sfx]")
     filt.append("".join(mix_in) + f"amix=inputs={len(mix_in)}:normalize=0:dropout_transition=0,atrim=0:{total}[pre]")
     script = film / "out" / "mix.filter"
-    script.write_text(";".join(filt))
     pre = film / "out" / "premix.wav"
-    run(["ffmpeg", "-v", "error", "-y", *inputs, *filter_file(script), "-map", "[pre]", "-ar", "48000", str(pre)])
+    vstem, bstem = film / "out" / "voice-stem.wav", film / "out" / "bed-stem.wav"
+
+    def premix(db):
+        script.write_text(";".join(filt).replace("@BED_DB@", f"{db:.2f}"))
+        f32 = ["-ar", "48000", "-c:a", "pcm_f32le"]     # float, so a bed raised above 0 dB can't clip before loudnorm
+        stems = ["-map", "[vstem]", *f32, str(vstem), "-map", "[bstem]", *f32, str(bstem)] if has_bed else []
+        run(["ffmpeg", "-v", "error", "-y", *inputs, *filter_file(script), "-map", "[pre]", *f32, str(pre), *stems])
+
+    if has_bed:
+        profile = a.bed_profile if a.bed_profile != "auto" else ("short" if tl.get("format") == "9x16" else "long")
+        target = a.bed_gap if a.bed_gap is not None else BED_PROFILES[profile][0]
+        auto = a.bed_db is None
+        db = BED_START_DB if auto else a.bed_db
+        premix(db)
+        gap, band = bed_gaps(vstem, bstem)
+        # the ducking's gain reduction follows the voice (the sidechain key), not the bed, so the bed's loudness moves
+        # one for one with its gain: one corrected pass lands the gap; a second only if rounding or the -70 LUFS gate
+        # left it off
+        for _ in range(2):
+            if not auto or gap is None or abs(gap - target) <= 0.3:
+                break
+            db = round(db + gap - target, 2)
+            premix(db)
+            gap, band = bed_gaps(vstem, bstem)
+        probs, notes = bed_verdict(gap, band, profile)
+        check = {"profile": profile, "target_lu": target, "bed_db": db, "set_by": "gap" if auto else "--bed-db",
+                 "gap_lu": gap, "band_gap_lu": "bed silent there" if band == float("inf") else band, "dip_db": a.bed_dip or 0, "problems": probs, "notes": notes,
+                 "exempt": a.bed_exempt or None}
+        (film / "out" / "bed_check.json").write_text(json.dumps(check, indent=1) + "\n")
+        print(f"bed: {db:.2f} dB ({check['set_by']}), {gap if gap is not None else '?'} LU under the voice "
+              f"({profile} target {target:.0f}), {'?' if band is None else 'bed silent' if band == float('inf') else f'{band} LU'} in 1-4 kHz -> out/bed_check.json")
+        for n in notes:
+            print("  note:", n)
+        for p_ in probs:
+            print(("  EXEMPT: " if a.bed_exempt else "  STOP: ") + p_)
+        if probs and not a.bed_exempt:
+            old = film / "out" / "mix.wav"
+            if old.exists():
+                old.unlink()                         # a stale mix must not reach `final`
+            raise SystemExit("mix stopped: the music bed fails its level check (sound.md, The bed under the voice). "
+                             "Fix the level, or for a build already published pass --bed-exempt \"<why>\" with its old --bed-db")
+        if a.bed_exempt:
+            print(f"  exempt from the bed check: {a.bed_exempt}")
+    else:
+        premix(0)
     # two-pass loudness to -14 LUFS; -2.5 dBTP leaves room for the AAC encode's overshoot
     meas = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(pre), "-af", "loudnorm=I=-14:TP=-2.5:LRA=11:print_format=json", "-f", "null", "-"],
                           capture_output=True, text=True).stderr
@@ -2744,7 +2848,12 @@ def main():
     p = sp.add_parser("mix"); p.add_argument("film"); p.add_argument("--plan", action="store_true"); p.add_argument("--music")
     p.add_argument("--whoosh", help="a file or catalog id for the chapter-start whoosh (default: the library clip with role whoosh)")
     p.add_argument("--no-whoosh", dest="whoosh", action="store_const", const="", help="no whoosh at chapter starts")
-    p.add_argument("--bed-db", type=float, default=-25.5)
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--bed-db", type=float, help="the bed's gain in dB, fixed (default: set from the voice gap)")
+    g.add_argument("--bed-gap", type=float, help="LU the ducked bed sits under the voice (default: the profile's, 16 short / 18 long)")
+    p.add_argument("--bed-profile", choices=["auto", "short", "long"], default="auto", help="auto: short for a 9x16 film")
+    p.add_argument("--bed-dip", type=float, default=0, help="cut the bed by this many dB at 2.5 kHz, where consonants carry")
+    p.add_argument("--bed-exempt", metavar="REASON", help="a build already published: measure and record the bed, but don't stop on it")
     p.add_argument("--sfx", action=argparse.BooleanOptionalAction, default=True,
                    help="UI sounds from the timeline: phone buzz, message ping, card pin, stamp (on by default; --no-sfx)")
     p.add_argument("--sfx-drawn", action="store_true", help="fill kinds with no recorded clip with code-drawn placeholders")
