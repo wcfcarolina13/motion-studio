@@ -69,7 +69,7 @@
   <h2>Note at playhead</h2>
   <form id="noteForm">
     <textarea id="noteText" placeholder="Drag on the frame to circle what's wrong, then say what to change. e.g. this caption is unclear · hard cut here"></textarea>
-    <div class="row"><span><span id="noteAt">at 0.00 s</span> <span id="circled"></span></span><button type="submit">Pin note ⏎</button></div>
+    <div class="row"><span><span id="noteAt">at 0.00 s</span> <span id="circled"></span></span><span><button type="button" id="discard" title="drop this circle and text without saving (esc)" hidden>Discard</button> <button type="submit">Pin note ⏎</button></span></div>
   </form>
   <div class="notesHead"><h2>Notes</h2>
     <button id="showRings" class="on" title="show the circles of notes on this frame (O)">circles on frame</button>
@@ -274,7 +274,13 @@ $("noteText").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shi
 
 // ── circling on the frame ────────────────────────────────
 // region is in film pixels (the frame's own size), so it means the same thing at any window size
-function setRegion(r) { region = r; $("circled").textContent = r ? "· circled" : ""; drawRing(); }
+function setRegion(r) { region = r; $("circled").textContent = r ? "· circled" : ""; drawRing(); syncDiscard(); }
+// a draft is a circle and/or typed text not yet pinned; Discard (or esc) drops both
+const hasDraft = () => !!region || $("noteText").value.trim() !== "";
+function syncDiscard() { $("discard").hidden = !hasDraft(); }
+function discardDraft() { $("noteText").value = ""; $("noteText").blur(); setRegion(null); }
+$("discard").onclick = discardDraft;
+$("noteText").addEventListener("input", syncDiscard);
 function drawRing() {
   const ink = $("ink"); ink.querySelectorAll(".ring, .tag").forEach(e => e.remove());
   const ring = (r, cls, label) => {
@@ -326,8 +332,8 @@ $("speed").onchange = e => { speed = +e.target.value; if (playing) { pause(); pl
 $("loop").onclick = () => { loop = !loop; $("loop").classList.toggle("on", loop); };
 $("mute").onclick = () => { muted = !muted; audio.muted = muted; $("mute").textContent = muted ? "muted" : "sound on"; $("mute").classList.toggle("on", muted); };
 window.addEventListener("keydown", e => {
-  if (e.target.tagName === "TEXTAREA") { if (e.key === "Escape") e.target.blur(); return; }
-  if (e.key === "Escape") { selected = null; setRegion(null); renderNotes(); return; }
+  if (e.target.tagName === "TEXTAREA") { if (e.key === "Escape") discardDraft(); return; }
+  if (e.key === "Escape") { selected = null; discardDraft(); renderNotes(); return; }
   const step = e.shiftKey ? (beat() || 0.5) : 1 / FPS;
   if (e.code === "Space") { e.preventDefault(); playing ? pause() : play(); }
   else if (e.key === "ArrowRight") { pause(); seek(t + step); }
