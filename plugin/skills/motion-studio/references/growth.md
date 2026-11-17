@@ -2,7 +2,7 @@
 
 This seat decides whether a stranger's thumb stops and stays. It owns **packaging**: frame 0, the hook, the loop, the title, the cover and the publish slot. Facts belong to the claim audit, meaning to the creative director and timing to the picture editor. It argues for attention inside the truth rules, never around them.
 
-Adopted 2026-11-16, after Bradley rejected two rounds of roadkill Short titles as "LinkedIn posts". The research behind it is in `research/shorts-business-trial/growth/shorts-growth-research-2026-11-16.md`. Source tags: [YT] YouTube official, [M] measured study, [P] practitioner, [J] synthesis.
+Adopted 2026-11-16, after Bradley rejected two rounds of roadkill Short titles as "LinkedIn posts". The research behind it is in `research/shorts-business-trial/growth/shorts-growth-research-2026-11-16.md`. Source tags: [YT] YouTube official, [M] measured study, [P] practitioner, [J] synthesis. Additions of 2026-11-17 come from a study of the @Become_Viral faceless-channel method (`research/become-viral-study-2026-11-17.md`); its numbers are the account's own and unverified, so those items are [P] and are tested like anything else.
 
 ## What matters, in order
 
@@ -16,7 +16,7 @@ Adopted 2026-11-16, after Bradley rejected two rounds of roadkill Short titles a
 
 ## When it runs
 
-1. **On the script, before voicing.** Run the pre-voice checklist below. Write the hook and the last line first [P].
+1. **On the script, before voicing.** Run the pre-voice checklist below. Write the hooks and the last line first [P].
 2. **On the package, before upload.** Check title, frame 0 and cover together.
 3. **After publish:**
    - 1 h: breakage only (processing, claims, wrong channel).
@@ -27,7 +27,9 @@ Adopted 2026-11-16, after Bradley rejected two rounds of roadkill Short titles a
 ## Pre-voice checklist
 
 - [ ] Frame 0 reads muted, like a thumbnail: one centred subject, 3 objects at most, already mid-action, with no setup or title card [P].
+- [ ] 3–5 hooks were written for this Short (first line plus what frame 0 shows), and the best one was picked. Log the runners-up in the title log, so a dud can be rebuilt from the next one [P, Become_Viral].
 - [ ] The hook lands in under 3 s and opens a question that the last line answers [P].
+- [ ] When the Short models a winner, its skeleton was read from the winner's transcript: the hook word for word, each open loop, where the pace shifts, and how the end hands off to the next video. Get the transcript with `yt-dlp --write-auto-subs --skip-download` or local Whisper. Reuse the skeleton only, never the words, footage or title [P, Become_Viral].
 - [ ] The payoff is foreshadowed by 3 s [P].
 - [ ] Beats are linked by "but" or "so", never "and then". There's no intro [P].
 - [ ] The picture changes every 2–3 s, and there's a peak in the middle [P].
@@ -42,8 +44,19 @@ Adopted 2026-11-16, after Bradley rejected two rounds of roadkill Short titles a
 - It should sound like a person texting a friend. No colon-subtitle pitch ("Starting a X Business: About $Y"), no "here's how", no consultant words. If it would fit on LinkedIn, rewrite it (Bradley, 2026-11-16).
 - Include the word people would search (roadkill, porta-potty).
 - A specific number beats a round one ($75.73, not $75). Use one number per title.
-- **The series option** [J, from Koerner]: one fixed series title plus a part number in a box on frame 0, with the business named on screen rather than in the title. The title then stops pitching and signals "the show you've seen before". It's Bradley's call; it hasn't been tried on Shoestring.
+- **Question openers** are one title angle: "Could a…", "Which…", "How long would…". They are spoken style and fit the "would you" angle. The evidence is one channel's titles [P, Become_Viral], so test them as an arm, not as a rule.
+- **The series option** [J, from Koerner]: one fixed series title plus a part number in a box on frame 0, with the business named on screen rather than in the title. The title then stops pitching and signals "the show you've seen before". Become_Viral makes the same case from the other side: series built for binge viewing, 2–5 formats with one title shape and one thumbnail layout, only the subject changing [P]. That is a second, independent source for the option, not proof. It's Bradley's call; it hasn't been tried on Shoestring.
 - Re-titling a live Short is low risk [P]. Re-uploading a dud is not (spam risk): rebuild it with a new hook instead [P].
+
+## Screening a title: truth first, then BENS
+
+Every candidate goes through the truth gate below first. A title that fails it is dropped, never softened, and never scored. Only the survivors are screened by BENS [P, Become_Viral]:
+- **Big:** would a stranger with no interest in the business care?
+- **Easy:** is it understood in one read, at phone size, with the cut?
+- **New:** is it an angle the viewer hasn't seen this week?
+- **Safe** is the truth gate, already passed.
+
+A title that misses one of Big, Easy or New is weaker; it isn't banned. Use BENS to rank, not to veto.
 
 ## Truth gate (non-negotiable, checked before anything goes to Bradley)
 
@@ -72,7 +85,12 @@ Adopted 2026-11-16, after Bradley rejected two rounds of roadkill Short titles a
    - AVD and loops;
    - subscribers per 1,000 engaged views;
    - traffic sources (Studio → video Insights).
-2. Compare each number with the median of the last 10 Shorts.
+2. Compare each number with the median of the last 10 Shorts, and read the **floor** beside it: the median of the bottom third of those 10 (the 2nd-worst of the worst 3) [P, Become_Viral]. Read it for engaged views and for stayed.
+   - Floor rising, with a Short or two at 5x the median: the format works; make more of it.
+   - Floor flat: change the format (hook, length, series), not the topic area.
+   - Floor near zero: recheck the topic area itself.
+
+   The median shows the typical Short; the floor shows whether the worst ones are getting better. Until there are 10 Shorts, read neither as a trend.
 3. Diagnose:
    - **Low stayed:** the hook or frame 0.
    - **Good stayed, low APV:** pacing. Find the first steep drop on the retention curve.
