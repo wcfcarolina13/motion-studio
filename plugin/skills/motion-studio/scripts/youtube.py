@@ -29,6 +29,7 @@ While the consent screen is in Testing, Google expires the refresh token after 7
 app to In production for a lasting token.
 """
 import argparse
+import subprocess
 import http.server
 import json
 import mimetypes
@@ -209,6 +210,13 @@ def with_disclosure(desc, line):
 
 
 def cmd_upload(a):
+    # Translation gate (2026-11-04): no upload with unchecked translations. --package is the folder holding them.
+    if not a.package:
+        raise SystemExit("refusing upload without --package <dir>: translations must pass translation_check.py first")
+    check = Path(__file__).resolve().parents[5] / "tools" / "translation_check.py"
+    r = subprocess.run([sys.executable, str(check), "check", a.package], capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit("refusing upload: " + r.stdout.strip())
     path = Path(a.file)
     size = path.stat().st_size
     if a.privacy == "public" and not a.yes_public:
@@ -225,6 +233,9 @@ def cmd_upload(a):
         "status": {"privacyStatus": a.privacy, "selfDeclaredMadeForKids": a.made_for_kids,
                    "containsSyntheticMedia": a.synthetic or bool(cfg.get("synthetic"))},
     }
+    if a.publish_at:        # scheduled release: YouTube only accepts publishAt on a private upload, and flips it public then
+        if a.privacy != "private": raise SystemExit("--publish-at needs --privacy private (YouTube makes it public at that time)")
+        meta["status"]["publishAt"] = a.publish_at
     parts = "snippet,status"
     if a.localizations:     # titles (and descriptions) per language; the disclosure line stays the same in each
         loc = json.loads(Path(a.localizations).read_text())
@@ -342,9 +353,10 @@ def main():
     p = sp.add_parser("upload"); p.add_argument("file"); p.add_argument("--title", required=True)
     p.add_argument("--description"); p.add_argument("--description-file"); p.add_argument("--tags")
     p.add_argument("--privacy", default="private", choices=["private", "unlisted", "public"])
-    p.add_argument("--yes-public", action="store_true"); p.add_argument("--category", default="27")
+    p.add_argument("--package", help="folder with the captions and translations, checked before upload"); p.add_argument("--yes-public", action="store_true"); p.add_argument("--category", default="27")
     p.add_argument("--thumbnail"); p.add_argument("--made-for-kids", action="store_true")
     p.add_argument("--synthetic", action="store_true", help="declare altered or synthetic content")
+    p.add_argument("--publish-at", help="schedule the public release, ISO 8601 UTC, e.g. 2026-11-16T19:00:00Z (private upload only)")
     p.add_argument("--language", help="default language of title and audio (else the channel's, else en)")
     p.add_argument("--localizations", help='JSON {"es": {"title", "description"?}, ...}; the disclosure line is added to each')
     p.set_defaults(fn=cmd_upload)
