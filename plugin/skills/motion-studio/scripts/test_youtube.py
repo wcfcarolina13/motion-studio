@@ -66,7 +66,7 @@ class Stop(Exception):
     """Raised by the stubbed check_channel: the upload got past the pre-upload check."""
 
 
-def upload(tmp, check=None, package=None, env=None):
+def upload(tmp, check=None, package=None, env=None, cfg=None):
     """cmd_upload up to its first call to YouTube (check_channel, stubbed to raise Stop)."""
     f = tmp / "film.mp4"
     f.write_bytes(b"x")
@@ -74,6 +74,7 @@ def upload(tmp, check=None, package=None, env=None):
     def stop():
         raise Stop
     with mock.patch.object(youtube, "check_channel", stop), mock.patch.object(youtube, "api", mock.Mock(side_effect=AssertionError)), \
+            mock.patch.object(youtube, "channel_cfg", lambda: cfg or {}), \
             mock.patch.dict(youtube.os.environ, env or {}, clear=False), mock.patch("builtins.print"):
         if env is None:
             youtube.os.environ.pop("YT_PRE_UPLOAD_CHECK", None)
@@ -117,6 +118,18 @@ class PreUploadCheck(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             upload(self.tmp, check="no-such-command-here")
         self.assertIn("could not run", str(e.exception.code))
+
+    def test_the_channels_own_check_is_used(self):
+        with self.assertRaises(SystemExit):
+            upload(self.tmp, package="pkg", cfg={"pre_upload_check": "false"})
+        with self.assertRaises(Stop):
+            upload(self.tmp, package="pkg", cfg={"pre_upload_check": "true"})
+
+    def test_the_cli_parses(self):
+        import subprocess, sys
+        r = subprocess.run([sys.executable, youtube.__file__, "upload", "--help"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertIn("--package", r.stdout)
 
     def test_package_without_a_check_is_refused(self):
         with self.assertRaises(SystemExit):

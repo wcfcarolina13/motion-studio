@@ -26,12 +26,12 @@ with --channel records which YouTube channel the token reaches in channels.json;
 checks the token still reaches it, so one show's video can't land on another show's channel. channels.json may also
 hold, per slug: "disclosure" (a line appended word for word to the description and to every localized description,
 so the AI disclosure reads the same in every language), "synthetic": true (declare altered or synthetic content)
-and "language" (the default language of titles and audio).
+"language" (the default language of titles and audio) and "pre_upload_check" (a command every upload to that
+channel must pass first, given --package as its last argument; see upload --pre-upload-check).
 While the consent screen is in Testing, Google expires the refresh token after 7 days; run `auth` again, or move the
 app to In production for a lasting token.
 """
 import argparse
-import subprocess
 import http.server
 import json
 import mimetypes
@@ -236,18 +236,14 @@ def pre_upload_check(cmd, package=None):
 
 
 def cmd_upload(a):
-    # Translation gate (2026-11-04): no upload with unchecked translations. --package is the folder holding them.
-    if not a.package:
-        raise SystemExit("refusing upload without --package <dir>: translations must pass translation_check.py first")
-    check = Path(__file__).resolve().parents[5] / "tools" / "translation_check.py"
-    r = subprocess.run([sys.executable, str(check), "check", a.package], capture_output=True, text=True)
-    if r.returncode:
-        raise SystemExit("refusing upload: " + r.stdout.strip())
     path = Path(a.file)
     size = path.stat().st_size
     if a.privacy == "public" and not a.yes_public:
         raise SystemExit("refusing public upload without --yes-public")
-    pre_upload_check(a.pre_upload_check or os.environ.get("YT_PRE_UPLOAD_CHECK", ""), a.package)
+    # the flag, else the environment, else the channel's own "pre_upload_check" in channels.json, so a gate a channel
+    # depends on (a translation check) stays on without anyone remembering to set it
+    pre_upload_check(a.pre_upload_check or os.environ.get("YT_PRE_UPLOAD_CHECK", "") or channel_cfg().get("pre_upload_check", ""),
+                     a.package)
     check_channel()
     cfg = channel_cfg()
     line = cfg.get("disclosure", "")
@@ -380,14 +376,14 @@ def main():
     p = sp.add_parser("upload"); p.add_argument("file"); p.add_argument("--title", required=True)
     p.add_argument("--description"); p.add_argument("--description-file"); p.add_argument("--tags")
     p.add_argument("--privacy", default="private", choices=["private", "unlisted", "public"])
-    p.add_argument("--package", help="folder with the captions and translations, checked before upload"); p.add_argument("--yes-public", action="store_true"); p.add_argument("--category", default="27")
+    p.add_argument("--yes-public", action="store_true"); p.add_argument("--category", default="27")
     p.add_argument("--thumbnail"); p.add_argument("--made-for-kids", action="store_true")
     p.add_argument("--synthetic", action="store_true", help="declare altered or synthetic content")
     p.add_argument("--publish-at", help="schedule the public release, ISO 8601 UTC, e.g. 2026-11-16T19:00:00Z (private upload only)")
     p.add_argument("--language", help="default language of title and audio (else the channel's, else en)")
     p.add_argument("--localizations", help='JSON {"es": {"title", "description"?}, ...}; the disclosure line is added to each')
     p.add_argument("--pre-upload-check", help="command run before any upload call; a non-zero exit refuses the upload "
-                                              "(default: $YT_PRE_UPLOAD_CHECK)")
+                                              "(default: $YT_PRE_UPLOAD_CHECK, else the channel's \"pre_upload_check\")")
     p.add_argument("--package", help="folder passed to the pre-upload check as its last argument")
     p.set_defaults(fn=cmd_upload)
     p = sp.add_parser("set-privacy"); p.add_argument("video_id"); p.add_argument("privacy", choices=["private", "unlisted", "public"])
