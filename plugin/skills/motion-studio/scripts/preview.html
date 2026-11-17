@@ -274,11 +274,15 @@ function drawRing() {
     ink.appendChild(d);
     if (label) { const g = document.createElement("div"); g.className = "tag"; g.textContent = label; g.style.left = r.x * scale + "px"; g.style.top = r.y * scale + "px"; ink.appendChild(g); }
   };
-  // a note's circle shows while the playhead is within half a second of it (always, when it is the selected note)
+  // a note's circle shows only while the playhead is within half a second of it; leaving that window drops the selection
+  const near = n => Math.abs(n.t - t) <= 0.5;
+  if (selected !== null && !notes.some(n => n.id === selected && near(n))) {
+    selected = null; document.querySelectorAll(".note.sel").forEach(e => e.classList.remove("sel"));
+  }
   notes.forEach(n => {
     if (!n.region || hidden.has(n.id) || (hideDone && n.status === "done")) return;
     const sel = selected === n.id;
-    if (sel || (showRings && Math.abs(n.t - t) <= 0.5)) ring(n.region, " saved" + (sel ? " sel" : ""), "#" + n.id);
+    if ((sel && near(n)) || (showRings && near(n))) ring(n.region, " saved" + (sel ? " sel" : ""), "#" + n.id);
   });
   if (region) ring(region, "", "");
 }
@@ -314,7 +318,7 @@ $("loop").onclick = () => { loop = !loop; $("loop").classList.toggle("on", loop)
 $("mute").onclick = () => { muted = !muted; audio.muted = muted; $("mute").textContent = muted ? "muted" : "sound on"; $("mute").classList.toggle("on", muted); };
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "TEXTAREA") { if (e.key === "Escape") e.target.blur(); return; }
-  if (e.key === "Escape") { setRegion(null); return; }
+  if (e.key === "Escape") { selected = null; setRegion(null); renderNotes(); return; }
   const step = e.shiftKey ? (beat() || 0.5) : 1 / FPS;
   if (e.code === "Space") { e.preventDefault(); playing ? pause() : play(); }
   else if (e.key === "ArrowRight") { pause(); seek(t + step); }
