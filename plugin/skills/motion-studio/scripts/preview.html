@@ -19,6 +19,21 @@
   #viewer { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
   #frame { position: relative; box-shadow: 0 0 0 1px var(--line); }
   #frame iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: #0b0b0b; }
+  #ink { position: absolute; inset: 0; cursor: crosshair; z-index: 2; }
+  #ink .ring { position: absolute; border: 3px solid #ff5a1f; border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,0,0,.6), inset 0 0 0 2px rgba(0,0,0,.6); pointer-events: none; }
+  #circled { color: var(--accent); }
+  .note img { display: block; width: 100%; margin-top: 6px; border-radius: 4px; border: 1px solid var(--line); }
+  .note.sel { border-color: var(--accent); }
+  .note.off { opacity: .35; }
+  .note .eye { float: right; background: none; border: 0; padding: 0 2px; color: var(--grey); font-size: 12px; }
+  .note .eye:hover { color: var(--ink); }
+  #ink .ring.saved { border-color: #ffd23f; border-style: dashed; }
+  #ink .ring.saved.sel { border-style: solid; border-width: 4px; }
+  #ink .tag { position: absolute; background: #ffd23f; color: #111; font: 600 11px/1 -apple-system, sans-serif; padding: 2px 5px; border-radius: 3px; pointer-events: none; transform: translateY(-100%); }
+  .notesHead { display: flex; align-items: center; gap: 6px; margin: 12px 12px 6px; }
+  .notesHead h2 { margin: 0; flex: 1; }
+  .notesHead button { font-size: 11px; padding: 2px 7px; }
+  .note .pending { color: var(--grey); font-size: 11px; margin-top: 4px; }
   aside { grid-row: 2 / 4; grid-column: 2; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
   aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--grey); margin: 12px 12px 6px; }
   #noteForm { padding: 0 12px 10px; border-bottom: 1px solid var(--line); }
@@ -49,16 +64,18 @@
   <span id="clock">0.00 s</span>
   <span id="flash">reloaded</span>
 </header>
-<div id="viewer"><div id="frame"><iframe id="film"></iframe></div></div>
+<div id="viewer"><div id="frame"><iframe id="film"></iframe><div id="ink" title="drag to circle what's wrong; click to clear"></div></div></div>
 <aside>
   <h2>Note at playhead</h2>
   <form id="noteForm">
-    <textarea id="noteText" placeholder="e.g. hard cut here · slow this push to 0.7× · this caption is unclear"></textarea>
-    <div class="row"><span id="noteAt">at 0.00 s</span><button type="submit">Pin note ⏎</button></div>
+    <textarea id="noteText" placeholder="Drag on the frame to circle what's wrong, then say what to change. e.g. this caption is unclear · hard cut here"></textarea>
+    <div class="row"><span><span id="noteAt">at 0.00 s</span> <span id="circled"></span></span><button type="submit">Pin note ⏎</button></div>
   </form>
-  <h2>Notes</h2>
+  <div class="notesHead"><h2>Notes</h2>
+    <button id="showRings" class="on" title="show the circles of notes on this frame (O)">circles on frame</button>
+    <button id="hideDone" title="hide notes marked done (D)">hide done</button></div>
   <div id="notes"></div>
-  <div class="help"><kbd>space</kbd> play · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows beat · <kbd>[</kbd><kbd>]</kbd> bar · <kbd>n</kbd> note · <kbd>L</kbd> loop · <kbd>M</kbd> mute</div>
+  <div class="help"><kbd>space</kbd> play · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows beat · <kbd>[</kbd><kbd>]</kbd> bar · <kbd>n</kbd> note · drag on frame: circle · <kbd>esc</kbd> clear circle · click a note: jump + show it · ✓ done / ↺ reopen · 👁 hide/show a note · <kbd>O</kbd> circles · <kbd>D</kbd> done · <kbd>L</kbd> loop · <kbd>M</kbd> mute</div>
 </aside>
 <div id="timeline"><svg id="tl"></svg></div>
 <script>
@@ -66,7 +83,10 @@ const $ = id => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
 const FPS = 30;
 let info, W = null, DUR = 1, S = null, t = 0, playing = false, speed = 1, loop = false, muted = false;
-let lastMtime = 0, clockStart = 0, tStart = 0, notes = [];
+let lastMtime = 0, clockStart = 0, tStart = 0, notes = [], lastNotes = "", scale = 1, region = null;
+let selected = null, showRings = true, hideDone = false;
+const hidden = new Set(JSON.parse(localStorage.getItem("ms-hidden-notes") || "[]"));   // per-browser, never written to notes.json
+const saveHidden = () => { try { localStorage.setItem("ms-hidden-notes", JSON.stringify([...hidden])); } catch (e) {} };
 const audio = new Audio();
 audio.preload = "auto";
 
@@ -113,12 +133,14 @@ function fit() {
   const f = $("film"), v = $("viewer");
   const fw = +f.dataset.w || 1080, fh = +f.dataset.h || 1350;
   const s = Math.min((v.clientWidth - 24) / fw, (v.clientHeight - 24) / fh);
+  scale = s;
   f.style.transform = `scale(${s})`;
   $("frame").style.width = fw * s + "px"; $("frame").style.height = fh * s + "px";
 }
-window.addEventListener("resize", () => { fit(); drawTimeline(); });
+window.addEventListener("resize", () => { fit(); drawTimeline(); drawRing(); });
 
 function seek(x) {
+  setTimeout(drawRing, 0);
   t = clamp(x, 0, DUR - 1e-4);
   if (W && W.seek) W.seek(t);
   $("clock").textContent = fmt(t) + barBeat(t);
@@ -141,6 +163,7 @@ function tick() {
   if (sc && x >= sc.to) { x = sc.from; tStart = x; clockStart = performance.now(); if (info.mix) audio.currentTime = x; }
   if (x >= DUR) { seek(DUR - 1e-4); pause(); return; }
   t = x; if (W && W.seek) W.seek(t);
+  if (notes.some(n => n.region && Math.abs(n.t - t) < 0.6)) drawRing(); else if ($("ink").querySelector(".saved")) drawRing();
   $("clock").textContent = fmt(t) + barBeat(t);
   $("noteAt").textContent = "at " + fmt(t) + barBeat(t);
   drawPlayhead();
@@ -169,7 +192,7 @@ function drawTimeline() {
   const el = (tag, a) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); svg.appendChild(e); return e; };
   if (S) {
     S.scenes.forEach((s, i) => {
-      el("rect", { x: t2x(s.from), y: 6, width: t2x(s.to) - t2x(s.from) - 1, height: 26, fill: i % 2 ? "#232321" : "#1d1d1c" });
+      el("rect", { x: t2x(s.from), y: 6, width: Math.max(0, t2x(s.to) - t2x(s.from) - 1), height: 26, fill: i % 2 ? "#232321" : "#1d1d1c" });
       const lbl = el("text", { x: t2x(s.from) + 6, y: 23, fill: "#969691", "font-size": 11 }); lbl.textContent = s.name;
     });
     const B = bar(), bt = beat();
@@ -187,7 +210,7 @@ function drawTimeline() {
       if (x % 5 === 0) { const n = el("text", { x: t2x(x) + 3, y: 46, fill: "#6d6c68", "font-size": 10 }); n.textContent = x + "s"; }
     }
   }
-  notes.forEach(n => {
+  notes.filter(n => !hidden.has(n.id) && !(hideDone && n.status === "done")).forEach(n => {
     const g = el("g", {});
     el("line", { x1: t2x(n.t), x2: t2x(n.t), y1: 76, y2: h - 6, stroke: n.status === "open" ? "#e8772e" : "#5f7f5a", "stroke-width": 2 });
     el("circle", { cx: t2x(n.t), cy: 80, r: 5, fill: n.status === "open" ? "#e8772e" : "#5f7f5a" });
@@ -203,17 +226,40 @@ window.addEventListener("mouseup", () => { dragging = false; });
 
 // ── notes ────────────────────────────────────────────────
 async function loadNotes() {
-  try { notes = (await (await fetch("/api/notes")).json()).notes; } catch (e) { return; }
+  let fresh;
+  try { fresh = (await (await fetch("/api/notes")).json()).notes; } catch (e) { return; }
+  if (JSON.stringify(fresh) === lastNotes) return;      // unchanged: don't rebuild (and re-fetch every still)
+  lastNotes = JSON.stringify(fresh); notes = fresh;
+  renderNotes();
+}
+function renderNotes() {
   const box = $("notes"); box.innerHTML = "";
-  [...notes].sort((a, b) => a.t - b.t).forEach(n => {
+  [...notes].sort((a, b) => a.t - b.t).filter(n => !(hideDone && n.status === "done")).forEach(n => {
     const d = document.createElement("div");
-    d.className = "note" + (n.status === "done" ? " done" : "");
+    d.className = "note" + (n.status === "done" ? " done" : "") + (selected === n.id ? " sel" : "") + (hidden.has(n.id) ? " off" : "");
     d.innerHTML = `<div class="meta">#${n.id} · ${fmt(n.t)}${n.where ? " · " + n.where : ""}</div><div></div>` + (n.reply ? `<div class="reply"></div>` : "");
     d.children[1].textContent = n.text; if (n.reply) d.children[2].textContent = "↳ " + n.reply;
-    d.onclick = () => { pause(); seek(n.t); };
+    if (n.still) { const im = document.createElement("img"); im.src = `/w/${encodeURIComponent(info.film)}/${n.still}?v=${n.id}`; im.alt = "frame " + n.id; im.title = "open the full still";
+      im.onclick = ev => { ev.stopPropagation(); window.open(im.src, "_blank"); }; d.appendChild(im); }
+    else if (n.still_error) { const e = document.createElement("div"); e.className = "pending"; e.textContent = "no still: " + n.still_error; d.appendChild(e); }
+    else if (n.status === "open") { const e = document.createElement("div"); e.className = "pending"; e.textContent = "saving the frame…"; d.appendChild(e); }
+    d.onclick = () => { pause(); selected = selected === n.id ? null : n.id; if (selected) { hidden.delete(n.id); saveHidden(); seek(n.t); } renderNotes(); drawRing(); };
+    const eye = document.createElement("button"); eye.className = "eye"; eye.textContent = hidden.has(n.id) ? "◌" : "👁";
+    eye.title = hidden.has(n.id) ? "show this note's circle and marker" : "hide this note's circle and marker";
+    eye.onclick = ev => { ev.stopPropagation(); hidden.has(n.id) ? hidden.delete(n.id) : hidden.add(n.id); saveHidden(); renderNotes(); drawRing(); };
+    d.children[0].prepend(eye);
+    const tick = document.createElement("button"); tick.className = "eye";
+    tick.textContent = n.status === "done" ? "↺" : "✓";
+    tick.title = n.status === "done" ? "reopen this note" : "mark this note done";
+    tick.onclick = async ev => {
+      ev.stopPropagation();
+      await fetch(`/api/notes/${n.id}/${n.status === "done" ? "open" : "done"}`, { method: "POST" });
+      loadNotes();
+    };
+    d.children[0].prepend(tick);
     box.appendChild(d);
   });
-  drawTimeline();
+  drawTimeline(); drawRing();
 }
 $("noteForm").addEventListener("submit", async e => {
   e.preventDefault();
@@ -221,12 +267,58 @@ $("noteForm").addEventListener("submit", async e => {
   if (!text) return;
   const sc = sceneAt(t);
   await fetch("/api/notes", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ t, text, where: (sc ? sc.name : "") + barBeat(t).replace(" · ", " ") }) });
-  $("noteText").value = ""; $("noteText").blur(); loadNotes();
+    body: JSON.stringify({ t, text, region, where: (sc ? sc.name : "") + barBeat(t).replace(" · ", " ") }) });
+  $("noteText").value = ""; $("noteText").blur(); setRegion(null); loadNotes();
 });
 $("noteText").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("noteForm").requestSubmit(); } });
 
+// ── circling on the frame ────────────────────────────────
+// region is in film pixels (the frame's own size), so it means the same thing at any window size
+function setRegion(r) { region = r; $("circled").textContent = r ? "· circled" : ""; drawRing(); }
+function drawRing() {
+  const ink = $("ink"); ink.querySelectorAll(".ring, .tag").forEach(e => e.remove());
+  const ring = (r, cls, label) => {
+    const d = document.createElement("div"); d.className = "ring" + cls;
+    Object.assign(d.style, { left: r.x * scale + "px", top: r.y * scale + "px", width: r.w * scale + "px", height: r.h * scale + "px" });
+    ink.appendChild(d);
+    if (label) { const g = document.createElement("div"); g.className = "tag"; g.textContent = label; g.style.left = r.x * scale + "px"; g.style.top = r.y * scale + "px"; ink.appendChild(g); }
+  };
+  // a note's circle shows only while the playhead is within half a second of it; leaving that window drops the selection
+  const near = n => Math.abs(n.t - t) <= 0.5;
+  if (selected !== null && !notes.some(n => n.id === selected && near(n))) {
+    selected = null; document.querySelectorAll(".note.sel").forEach(e => e.classList.remove("sel"));
+  }
+  notes.forEach(n => {
+    if (!n.region || hidden.has(n.id) || (hideDone && n.status === "done")) return;
+    const sel = selected === n.id;
+    if ((sel && near(n)) || (showRings && near(n))) ring(n.region, " saved" + (sel ? " sel" : ""), "#" + n.id);
+  });
+  if (region) ring(region, "", "");
+}
+let drawFrom = null;
+$("ink").addEventListener("mousedown", e => {
+  e.preventDefault(); pause();
+  const b = $("ink").getBoundingClientRect();
+  drawFrom = { x: e.clientX - b.left, y: e.clientY - b.top };
+});
+window.addEventListener("mousemove", e => {
+  if (!drawFrom) return;
+  const b = $("ink").getBoundingClientRect();
+  const x = clamp(e.clientX - b.left, 0, b.width), y = clamp(e.clientY - b.top, 0, b.height);
+  region = { x: Math.min(x, drawFrom.x) / scale, y: Math.min(y, drawFrom.y) / scale, w: Math.abs(x - drawFrom.x) / scale, h: Math.abs(y - drawFrom.y) / scale };
+  drawRing();
+});
+window.addEventListener("mouseup", () => {
+  if (!drawFrom) return;
+  drawFrom = null;
+  if (!region || region.w * scale < 6 || region.h * scale < 6) { setRegion(null); return; }   // a click clears
+  setRegion({ x: Math.round(region.x), y: Math.round(region.y), w: Math.round(region.w), h: Math.round(region.h) });
+  $("noteText").focus();
+});
+
 // ── controls ─────────────────────────────────────────────
+$("showRings").onclick = () => { showRings = !showRings; $("showRings").classList.toggle("on", showRings); drawRing(); };
+$("hideDone").onclick = () => { hideDone = !hideDone; $("hideDone").classList.toggle("on", hideDone); renderNotes(); };
 $("play").onclick = () => playing ? pause() : play();
 $("barBack").onclick = () => { pause(); const B = bar() || 1; seek(Math.max(0, Math.ceil(t / B - 1e-6) - 1) * B); };
 $("barFwd").onclick = () => { pause(); const B = bar() || 1; seek(Math.floor(t / B + 1e-6 + 1) * B); };
@@ -235,6 +327,7 @@ $("loop").onclick = () => { loop = !loop; $("loop").classList.toggle("on", loop)
 $("mute").onclick = () => { muted = !muted; audio.muted = muted; $("mute").textContent = muted ? "muted" : "sound on"; $("mute").classList.toggle("on", muted); };
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "TEXTAREA") { if (e.key === "Escape") e.target.blur(); return; }
+  if (e.key === "Escape") { selected = null; setRegion(null); renderNotes(); return; }
   const step = e.shiftKey ? (beat() || 0.5) : 1 / FPS;
   if (e.code === "Space") { e.preventDefault(); playing ? pause() : play(); }
   else if (e.key === "ArrowRight") { pause(); seek(t + step); }
@@ -243,6 +336,8 @@ window.addEventListener("keydown", e => {
   else if (e.key === "[") $("barBack").onclick();
   else if (e.key === "n") { e.preventDefault(); pause(); $("noteText").focus(); }
   else if (e.key === "l" || e.key === "L") $("loop").onclick();
+  else if (e.key === "o" || e.key === "O") $("showRings").onclick();
+  else if (e.key === "d" || e.key === "D") $("hideDone").onclick();
   else if (e.key === "m" || e.key === "M") $("mute").onclick();
 });
 init();

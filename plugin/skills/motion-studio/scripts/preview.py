@@ -5,19 +5,26 @@ and a small API:
   GET  /api/info            film name, film URL, mix URL (out/mix.wav if present)
   GET  /api/mtime           newest mtime of the film's sources and mix: the page polls it to hot-reload
   GET  /api/notes           notes.json
-  POST /api/notes           {"t": 12.3, "text": "hard cut here"} -> appends an open note
+  POST /api/notes/<id>/done|open   the owner ticks a note done, or reopens it
+  POST /api/notes           {"t": 12.3, "text": "hard cut here", "region"?: {"x","y","w","h"} in film pixels}
+                            -> appends an open note, then saves a still of that exact frame (the region circled on it)
+                            to review/notes/note-<id>.png in the background and records it as the note's "still"
 Files are served with byte ranges, so the audio element can seek (python's http.server cannot).
 """
 import json
 import mimetypes
 import os
 import re
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 WATCH = ("*.html", "*.js", "*.css", "*.json", "*.svg", "*.png", "*.jpg")
+
+
+LOCK = threading.Lock()       # notes.json is written by request threads and still threads
 
 
 def notes_path(film):
@@ -31,6 +38,57 @@ def load_notes(film):
 
 def save_notes(film, data):
     notes_path(film).write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def _update_note(film, note_id, **fields):
+    with LOCK:
+        data = load_notes(film)
+        for n in data["notes"]:
+            if n["id"] == note_id:
+                n.update(fields)
+        save_notes(film, data)
+
+
+# The circle is drawn into the film's own page before the shot, so the still is the rendered frame, pixel for pixel,
+# with the owner's mark on it (no image library needed).
+MARK = """r => {
+    const st = document.getElementById('stage');
+    if (getComputedStyle(st).position === 'static') st.style.position = 'relative';
+    const d = document.createElement('div');
+    const pad = 6;
+    Object.assign(d.style, { position: 'absolute', left: (r.x - pad) + 'px', top: (r.y - pad) + 'px',
+        width: (r.w + 2 * pad) + 'px', height: (r.h + 2 * pad) + 'px', borderRadius: '50%', boxSizing: 'border-box',
+        border: '6px solid #ff5a1f', boxShadow: '0 0 0 3px rgba(0,0,0,.65), inset 0 0 0 3px rgba(0,0,0,.65)',
+        zIndex: 2147483647, pointerEvents: 'none' });
+    st.appendChild(d);
+}"""
+
+
+def take_still(film: Path, note_id: int, t: float, region=None):
+    """Save note <id>'s frame as review/notes/note-<id>.png, with its region circled. Runs in a background thread."""
+    try:
+        import render
+        out = film / "review" / "notes" / f"note-{note_id}.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with render.Film(film) as f:
+            f.seek(t)
+            if region:
+                f.page.evaluate(MARK, region)
+            out.write_bytes(f.page.locator("#stage").screenshot(type="png", animations="disabled"))
+        _update_note(film, note_id, still=str(out.relative_to(film)))
+    except BaseException as e:      # SystemExit from render included: the note stands without a picture
+        _update_note(film, note_id, still_error=str(e)[:300])
+
+
+def _region(body):
+    r = body.get("region")
+    if not isinstance(r, dict):
+        return None
+    try:
+        r = {k: round(float(r[k])) for k in ("x", "y", "w", "h")}
+    except (KeyError, TypeError, ValueError):
+        return None
+    return r if r["w"] >= 4 and r["h"] >= 4 else None
 
 
 def make_handler(film: Path):
@@ -104,17 +162,38 @@ def make_handler(film: Path):
             self.send_error(404)
 
         def do_POST(self):
+            m = re.fullmatch(r"/api/notes/(\d+)/(done|open)", self.path)
+            if m:                       # the owner ticks a note done (or reopens it) from the page
+                nid, status = int(m.group(1)), m.group(2)
+                with LOCK:
+                    data = load_notes(film)
+                    for n in data["notes"]:
+                        if n["id"] == nid:
+                            n["status"] = status
+                            if status == "done":
+                                n["resolved"], n["closed_by"] = time.strftime("%Y-%m-%d %H:%M:%S"), "owner"
+                            else:
+                                for k in ("closed_by", "resolved", "reply"):
+                                    n.pop(k, None)
+                            save_notes(film, data)
+                            return self._json(n)
+                return self._json({"error": f"no note #{nid}"}, 404)
             if self.path != "/api/notes":
                 return self.send_error(404)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             text = str(body.get("text", "")).strip()
             if not text:
                 return self._json({"error": "empty note"}, 400)
-            data = load_notes(film)
-            note = {"id": 1 + max((n["id"] for n in data["notes"]), default=0), "t": round(float(body.get("t", 0)), 3),
-                    "where": body.get("where", ""), "text": text, "status": "open", "created": time.strftime("%Y-%m-%d %H:%M:%S")}
-            data["notes"].append(note)
-            save_notes(film, data)
+            region = _region(body)
+            with LOCK:
+                data = load_notes(film)
+                note = {"id": 1 + max((n["id"] for n in data["notes"]), default=0), "t": round(float(body.get("t", 0)), 3),
+                        "where": body.get("where", ""), "text": text, "status": "open", "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+                if region:
+                    note["region"] = region
+                data["notes"].append(note)
+                save_notes(film, data)
+            threading.Thread(target=take_still, args=(film, note["id"], note["t"], region), daemon=True).start()
             return self._json(note)
 
     return Handler
@@ -132,6 +211,11 @@ def list_notes(film: Path, show_all=False):
         if show_all or n["status"] == "open":
             reply = f"  -> {n['reply']}" if n.get("reply") else ""
             print(f"#{n['id']} [{n['status']}] t={n['t']:.2f}s {n.get('where', '')}: {n['text']}{reply}")
+            if n.get("still"):
+                r = n.get("region")
+                print(f"     still: {film / n['still']}" + (f"  (circled x={r['x']} y={r['y']} w={r['w']} h={r['h']} px)" if r else ""))
+            elif n.get("still_error"):
+                print(f"     still failed: {n['still_error']}")
     if not any(n["status"] == "open" for n in notes):
         print("no open notes")
 
