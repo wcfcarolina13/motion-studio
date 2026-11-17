@@ -153,16 +153,22 @@ function play() {
   playing = true; $("play").textContent = "❚❚";
   tStart = t; clockStart = performance.now();
   if (info.mix) { audio.currentTime = t; audio.playbackRate = speed; audio.play().catch(() => {}); }
+  if (W && W.play) W.play(t, speed);
   requestAnimationFrame(tick);
 }
-function pause() { playing = false; $("play").textContent = "▶"; audio.pause(); }
+function pause() { playing = false; $("play").textContent = "▶"; audio.pause(); if (W && W.pause) W.pause(); }
 function tick() {
   if (!playing) return;
   let x = info.mix && !audio.paused && speed === audio.playbackRate ? audio.currentTime : tStart + (performance.now() - clockStart) / 1000 * speed;
   const sc = loop ? sceneAt(tStart) : null;
   if (sc && x >= sc.to) { x = sc.from; tStart = x; clockStart = performance.now(); if (info.mix) audio.currentTime = x; }
   if (x >= DUR) { seek(DUR - 1e-4); pause(); return; }
-  t = x; if (W && W.seek) W.seek(t);
+  // A film backed by a video file (a review wrapper around a rendered cut) exposes play/pause/time: it plays natively
+  // and is only corrected when it drifts. Seeking a video every frame forces a decode from the last keyframe each time
+  // and freezes playback; films drawn in code keep the per-frame seek.
+  t = x;
+  if (W && W.play) { if (W.time && Math.abs(W.time() - t) > 0.3) W.play(t, speed); }
+  else if (W && W.seek) W.seek(t);
   if (notes.some(n => n.region && Math.abs(n.t - t) < 0.6)) drawRing(); else if ($("ink").querySelector(".saved")) drawRing();
   $("clock").textContent = fmt(t) + barBeat(t);
   $("noteAt").textContent = "at " + fmt(t) + barBeat(t);
