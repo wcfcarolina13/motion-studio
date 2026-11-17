@@ -134,7 +134,8 @@ def cmd_final(a):
     if not mix.exists():
         print("INFO no out/mix.wav yet: final is silent")
     s = _studio(film)
-    ok = verify.verify(final, bpm=s["bpm"] if s else None, sheet_dest=film / "review" / "final-contact.png", bg=_bg(s))
+    ok = verify.verify(final, bpm=s["bpm"] if s else None, sheet_dest=film / "review" / "final-contact.png", bg=_bg(s),
+                       stills=(s or {}).get("stills"))   # the board's deliberate holds, [[t0, t1], ...] in seconds
     print(final)
     sys.exit(0 if ok else 1)
 
@@ -150,7 +151,8 @@ def cmd_verify(a):
         if not video:
             raise SystemExit("no final render in out/; run `final` first")
         s = _studio(film)
-    ok = verify.verify(video, bpm=s["bpm"] if s else None, sheet_dest=(video.parent.parent / "review" / "final-contact.png") if s else None, bg=_bg(s))
+    ok = verify.verify(video, bpm=s["bpm"] if s else None, sheet_dest=(video.parent.parent / "review" / "final-contact.png") if s else None, bg=_bg(s),
+                       stills=(s or {}).get("stills"))
     sys.exit(0 if ok else 1)
 
 
