@@ -75,7 +75,7 @@
     <button id="showRings" class="on" title="show the circles of notes on this frame (O)">circles on frame</button>
     <button id="hideDone" title="hide notes marked done (D)">hide done</button></div>
   <div id="notes"></div>
-  <div class="help"><kbd>space</kbd> play · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows beat · <kbd>[</kbd><kbd>]</kbd> bar · <kbd>n</kbd> note · drag on frame: circle · <kbd>esc</kbd> clear circle · click a note: jump + show it · 👁 hide/show a note · <kbd>O</kbd> circles · <kbd>D</kbd> done · <kbd>L</kbd> loop · <kbd>M</kbd> mute</div>
+  <div class="help"><kbd>space</kbd> play · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows beat · <kbd>[</kbd><kbd>]</kbd> bar · <kbd>n</kbd> note · drag on frame: circle · <kbd>esc</kbd> clear circle · click a note: jump + show it · ✓ done / ↺ reopen · 👁 hide/show a note · <kbd>O</kbd> circles · <kbd>D</kbd> done · <kbd>L</kbd> loop · <kbd>M</kbd> mute</div>
 </aside>
 <div id="timeline"><svg id="tl"></svg></div>
 <script>
@@ -248,6 +248,15 @@ function renderNotes() {
     eye.title = hidden.has(n.id) ? "show this note's circle and marker" : "hide this note's circle and marker";
     eye.onclick = ev => { ev.stopPropagation(); hidden.has(n.id) ? hidden.delete(n.id) : hidden.add(n.id); saveHidden(); renderNotes(); drawRing(); };
     d.children[0].prepend(eye);
+    const tick = document.createElement("button"); tick.className = "eye";
+    tick.textContent = n.status === "done" ? "↺" : "✓";
+    tick.title = n.status === "done" ? "reopen this note" : "mark this note done";
+    tick.onclick = async ev => {
+      ev.stopPropagation();
+      await fetch(`/api/notes/${n.id}/${n.status === "done" ? "open" : "done"}`, { method: "POST" });
+      loadNotes();
+    };
+    d.children[0].prepend(tick);
     box.appendChild(d);
   });
   drawTimeline(); drawRing();

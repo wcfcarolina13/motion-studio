@@ -5,6 +5,7 @@ and a small API:
   GET  /api/info            film name, film URL, mix URL (out/mix.wav if present)
   GET  /api/mtime           newest mtime of the film's sources and mix: the page polls it to hot-reload
   GET  /api/notes           notes.json
+  POST /api/notes/<id>/done|open   the owner ticks a note done, or reopens it
   POST /api/notes           {"t": 12.3, "text": "hard cut here", "region"?: {"x","y","w","h"} in film pixels}
                             -> appends an open note, then saves a still of that exact frame (the region circled on it)
                             to review/notes/note-<id>.png in the background and records it as the note's "still"
@@ -161,6 +162,22 @@ def make_handler(film: Path):
             self.send_error(404)
 
         def do_POST(self):
+            m = re.fullmatch(r"/api/notes/(\d+)/(done|open)", self.path)
+            if m:                       # the owner ticks a note done (or reopens it) from the page
+                nid, status = int(m.group(1)), m.group(2)
+                with LOCK:
+                    data = load_notes(film)
+                    for n in data["notes"]:
+                        if n["id"] == nid:
+                            n["status"] = status
+                            if status == "done":
+                                n["resolved"], n["closed_by"] = time.strftime("%Y-%m-%d %H:%M:%S"), "owner"
+                            else:
+                                for k in ("closed_by", "resolved", "reply"):
+                                    n.pop(k, None)
+                            save_notes(film, data)
+                            return self._json(n)
+                return self._json({"error": f"no note #{nid}"}, 404)
             if self.path != "/api/notes":
                 return self.send_error(404)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
