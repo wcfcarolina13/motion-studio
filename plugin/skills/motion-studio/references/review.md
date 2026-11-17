@@ -18,6 +18,11 @@
 - Pictures agree with captions (a forest of branched trees under "fewer branches" contradicts it).
 - Screen/time budget matches the contract.
 - Sound: cues land on their events; the drop is on the turn.
+- **Motion from frame 0** (2026-11-17): a loop frame is still only AT the seam; motion ramps up from 0 there (a scene-clock strength that is 0 at the seam), never a hold of seconds. The picture changes every 2-3 s. Gate: `motioncheck` (no 0.5 s window in the first 3 s, and no 2 s stretch, under the floor).
+- **People and props read with no context**: a hand shows its owner (head, mask, suit) in the pack's own style; a vehicle has its defining parts. Blind-read questions: "whose hand is this?", "what is this object?".
+- **No idle placeholders**: a prop appears only on the beat that uses it; a blank card, an empty calendar or a sign with no text fails. Blind-read question: "is anything on screen not doing anything?"
+- **Nothing covers reading text**: check draw order, not just positions (`layoutcheck` OCCLUDED compares logged paints drawn after a text box).
+- **Review link before publishing**: the studio preview runs with the cut loaded, and its URL goes in the review message.
 
 ## Timings the tools assume
 
@@ -38,6 +43,8 @@ Even dimensions · yuv420p · fast start (moov before mdat) · clean decode · f
 | The Write tool stores typographic characters (an ellipsis, a curly apostrophe) literally, even when you typed a backslash-u escape | match the literal character when editing a file, not the escape sequence |
 | `window.seek` calling itself (recursion, nothing renders) | the kit's `K.run` wires it; don't redefine `seek` |
 | `const` used before its declaration in film.html | page error on render; declare shared constants first |
+| Whisper word times run early through a take (0.74 s by the loop seam on golf-ball v8), so a scene cut opens mid-word | map each line's words onto the take's measured pauses (silencedetect) before cutting; assert every mid-take clip opens in silence |
+| A loop bed jumps at the seam because the cut length lands on a downbeat | try whole-bar lengths either side (golf v6: 15 bars failed, 16 passed) before changing the bed |
 | A mask clipping descenders ("g", "p") | mask rect extends ~0.25 em below the baseline |
 | A strip turning into text reads as a strikethrough | the strip becomes the line the text rises from, then retracts below it |
 | Panels or items summing wider than their container | compute widths from the space; check the last frame before the transition |
