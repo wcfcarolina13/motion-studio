@@ -49,6 +49,33 @@ Every clip mix plays is written to `out/sounds_used.json`. `longform.py credits 
 
 A clip with `"role": "whoosh"` plays at each chapter start by default (`--whoosh <id|file>` picks another, `--no-whoosh` turns it off). `pop` clips are catalogued but nothing in the timeline places them yet.
 
+## The bed under the voice
+
+A fixed bed gain hides how loud the music lands once it is ducked: tracks differ by ten decibels or more, and the ducking takes off a different amount under every voice. A bed at -25 dB measured about 28 LU under the voice and could not be heard on a phone without the voice hurting (the owner, 2026-11-08). So `longform.py mix` sets and checks the bed by the gap, in LU, between the voice stem's integrated loudness and the ducked bed stem's (ebur128, before the final mix; both stems are kept in `out/voice-stem.wav` and `out/bed-stem.wav`).
+
+| Profile | Target | Noted outside | Used for |
+|---|---|---|---|
+| short | 16 LU | 14-18 | a 9x16 film, by default |
+| long | 18 LU | 16-20 | everything else |
+
+`--bed-profile short|long` overrides the choice; `--bed-gap LU` sets another target. With neither `--bed-db` nor `--bed-gap`, `mix` sets the bed's gain itself: it mixes once at -14.7 dB, measures, moves the gain by the difference, and mixes again. The ducking's gain reduction follows the voice (the sidechain key), not the bed, so the bed's loudness moves one for one with its gain and one correction lands within 0.3 LU. `--bed-db DB` fixes the gain instead and only checks it.
+
+Whatever sets the gain, the mix stops, writes no `out/mix.wav` and deletes an old one, when:
+- the bed sits more than 22 LU under the voice (it can't be heard);
+- it sits less than 10 LU under (it fights the words);
+- in the 1-4 kHz band, where consonants carry, it comes within 10 LU of the voice (12 dB/octave filters at each edge). Cut the bed there with `--bed-dip 3` (a 3 dB dip at 2.5 kHz, Q 1) rather than lowering the whole bed.
+
+A gap inside the hard limits but outside the profile's range is printed as a note. Every mix with a bed writes `out/bed_check.json` (profile, target, gain, gaps, dip, problems, exemption).
+
+A build already published keeps its old sound: `--bed-db <its old gain> --bed-exempt "<why>"` measures and records the bed but doesn't stop. The reason goes into `bed_check.json`.
+
+Trade-offs:
+- Integrated loudness is a whole-film average. A plan that changes tracks can still have one quiet or loud run, so listen at the track changes.
+- The automatic level can raise a quiet track well above 0 dB of gain. The premix is float, so nothing clips before loudnorm, but a very quiet file is usually a poor master.
+- A Short cut from its long film keeps the long film's mix and its 18 LU gap. `mix --remix` on the Short gives it its own 16 LU bed.
+- The setting pass mixes the film twice, about 12 s on a 53 s film, mostly ebur128.
+- The thresholds came from one owner's ears on phone playback.
+
 ## Encoding the delivered audio
 
 `final` (long-form, Shorts, and `studio.py final`) encodes the mix to AAC, then decodes the result and measures its highest sample. A lossy encode can overshoot its source: ffmpeg's own AAC turned a toll-text mix that peaked at -2.5 dBFS into a +4.7 dBFS spike, which is an audible click (2026-10-23). The track must decode at -1 dBFS or lower, which also leaves room for YouTube's own re-encode. Encodes are tried in order until one passes: 192k; 256k; 256k behind a peak limiter at -2 dBFS, run on 4x-oversampled audio so it catches peaks between samples; and the same at -3 dBFS. Any attempt after the first is printed. If none passes, `final` stops. The encoder is AudioToolbox's `aac_at` where ffmpeg has it (macOS), because it held -2.3 dBTP on the mix that clicked; elsewhere it is ffmpeg's `aac`. Trade-offs: the limiter rungs shave the loudest transients by a decibel or two, and only on films that need them. The measurement sees what a player decodes, not what YouTube's re-encode will do.
