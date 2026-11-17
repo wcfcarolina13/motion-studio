@@ -23,6 +23,16 @@
   #ink .ring { position: absolute; border: 3px solid #ff5a1f; border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,0,0,.6), inset 0 0 0 2px rgba(0,0,0,.6); pointer-events: none; }
   #circled { color: var(--accent); }
   .note img { display: block; width: 100%; margin-top: 6px; border-radius: 4px; border: 1px solid var(--line); }
+  .note.sel { border-color: var(--accent); }
+  .note.off { opacity: .35; }
+  .note .eye { float: right; background: none; border: 0; padding: 0 2px; color: var(--grey); font-size: 12px; }
+  .note .eye:hover { color: var(--ink); }
+  #ink .ring.saved { border-color: #ffd23f; border-style: dashed; }
+  #ink .ring.saved.sel { border-style: solid; border-width: 4px; }
+  #ink .tag { position: absolute; background: #ffd23f; color: #111; font: 600 11px/1 -apple-system, sans-serif; padding: 2px 5px; border-radius: 3px; pointer-events: none; transform: translateY(-100%); }
+  .notesHead { display: flex; align-items: center; gap: 6px; margin: 12px 12px 6px; }
+  .notesHead h2 { margin: 0; flex: 1; }
+  .notesHead button { font-size: 11px; padding: 2px 7px; }
   .note .pending { color: var(--grey); font-size: 11px; margin-top: 4px; }
   aside { grid-row: 2 / 4; grid-column: 2; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
   aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--grey); margin: 12px 12px 6px; }
@@ -61,9 +71,11 @@
     <textarea id="noteText" placeholder="Drag on the frame to circle what's wrong, then say what to change. e.g. this caption is unclear · hard cut here"></textarea>
     <div class="row"><span><span id="noteAt">at 0.00 s</span> <span id="circled"></span></span><button type="submit">Pin note ⏎</button></div>
   </form>
-  <h2>Notes</h2>
+  <div class="notesHead"><h2>Notes</h2>
+    <button id="showRings" class="on" title="show the circles of notes on this frame (O)">circles on frame</button>
+    <button id="hideDone" title="hide notes marked done (D)">hide done</button></div>
   <div id="notes"></div>
-  <div class="help"><kbd>space</kbd> play · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows beat · <kbd>[</kbd><kbd>]</kbd> bar · <kbd>n</kbd> note · drag on frame: circle · <kbd>esc</kbd> clear circle · <kbd>L</kbd> loop · <kbd>M</kbd> mute</div>
+  <div class="help"><kbd>space</kbd> play · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows beat · <kbd>[</kbd><kbd>]</kbd> bar · <kbd>n</kbd> note · drag on frame: circle · <kbd>esc</kbd> clear circle · click a note: jump + show it · 👁 hide/show a note · <kbd>O</kbd> circles · <kbd>D</kbd> done · <kbd>L</kbd> loop · <kbd>M</kbd> mute</div>
 </aside>
 <div id="timeline"><svg id="tl"></svg></div>
 <script>
@@ -72,6 +84,9 @@ const NS = "http://www.w3.org/2000/svg";
 const FPS = 30;
 let info, W = null, DUR = 1, S = null, t = 0, playing = false, speed = 1, loop = false, muted = false;
 let lastMtime = 0, clockStart = 0, tStart = 0, notes = [], lastNotes = "", scale = 1, region = null;
+let selected = null, showRings = true, hideDone = false;
+const hidden = new Set(JSON.parse(localStorage.getItem("ms-hidden-notes") || "[]"));   // per-browser, never written to notes.json
+const saveHidden = () => { try { localStorage.setItem("ms-hidden-notes", JSON.stringify([...hidden])); } catch (e) {} };
 const audio = new Audio();
 audio.preload = "auto";
 
@@ -125,6 +140,7 @@ function fit() {
 window.addEventListener("resize", () => { fit(); drawTimeline(); drawRing(); });
 
 function seek(x) {
+  setTimeout(drawRing, 0);
   t = clamp(x, 0, DUR - 1e-4);
   if (W && W.seek) W.seek(t);
   $("clock").textContent = fmt(t) + barBeat(t);
@@ -147,6 +163,7 @@ function tick() {
   if (sc && x >= sc.to) { x = sc.from; tStart = x; clockStart = performance.now(); if (info.mix) audio.currentTime = x; }
   if (x >= DUR) { seek(DUR - 1e-4); pause(); return; }
   t = x; if (W && W.seek) W.seek(t);
+  if (notes.some(n => n.region && Math.abs(n.t - t) < 0.6)) drawRing(); else if ($("ink").querySelector(".saved")) drawRing();
   $("clock").textContent = fmt(t) + barBeat(t);
   $("noteAt").textContent = "at " + fmt(t) + barBeat(t);
   drawPlayhead();
@@ -193,7 +210,7 @@ function drawTimeline() {
       if (x % 5 === 0) { const n = el("text", { x: t2x(x) + 3, y: 46, fill: "#6d6c68", "font-size": 10 }); n.textContent = x + "s"; }
     }
   }
-  notes.forEach(n => {
+  notes.filter(n => !hidden.has(n.id) && !(hideDone && n.status === "done")).forEach(n => {
     const g = el("g", {});
     el("line", { x1: t2x(n.t), x2: t2x(n.t), y1: 76, y2: h - 6, stroke: n.status === "open" ? "#e8772e" : "#5f7f5a", "stroke-width": 2 });
     el("circle", { cx: t2x(n.t), cy: 80, r: 5, fill: n.status === "open" ? "#e8772e" : "#5f7f5a" });
@@ -213,19 +230,27 @@ async function loadNotes() {
   try { fresh = (await (await fetch("/api/notes")).json()).notes; } catch (e) { return; }
   if (JSON.stringify(fresh) === lastNotes) return;      // unchanged: don't rebuild (and re-fetch every still)
   lastNotes = JSON.stringify(fresh); notes = fresh;
+  renderNotes();
+}
+function renderNotes() {
   const box = $("notes"); box.innerHTML = "";
-  [...notes].sort((a, b) => a.t - b.t).forEach(n => {
+  [...notes].sort((a, b) => a.t - b.t).filter(n => !(hideDone && n.status === "done")).forEach(n => {
     const d = document.createElement("div");
-    d.className = "note" + (n.status === "done" ? " done" : "");
+    d.className = "note" + (n.status === "done" ? " done" : "") + (selected === n.id ? " sel" : "") + (hidden.has(n.id) ? " off" : "");
     d.innerHTML = `<div class="meta">#${n.id} · ${fmt(n.t)}${n.where ? " · " + n.where : ""}</div><div></div>` + (n.reply ? `<div class="reply"></div>` : "");
     d.children[1].textContent = n.text; if (n.reply) d.children[2].textContent = "↳ " + n.reply;
-    if (n.still) { const im = document.createElement("img"); im.src = `/w/${encodeURIComponent(info.film)}/${n.still}?v=${n.id}`; im.alt = "frame " + n.id; d.appendChild(im); }
+    if (n.still) { const im = document.createElement("img"); im.src = `/w/${encodeURIComponent(info.film)}/${n.still}?v=${n.id}`; im.alt = "frame " + n.id; im.title = "open the full still";
+      im.onclick = ev => { ev.stopPropagation(); window.open(im.src, "_blank"); }; d.appendChild(im); }
     else if (n.still_error) { const e = document.createElement("div"); e.className = "pending"; e.textContent = "no still: " + n.still_error; d.appendChild(e); }
     else if (n.status === "open") { const e = document.createElement("div"); e.className = "pending"; e.textContent = "saving the frame…"; d.appendChild(e); }
-    d.onclick = () => { pause(); seek(n.t); };
+    d.onclick = () => { pause(); selected = selected === n.id ? null : n.id; if (selected) { hidden.delete(n.id); saveHidden(); seek(n.t); } renderNotes(); drawRing(); };
+    const eye = document.createElement("button"); eye.className = "eye"; eye.textContent = hidden.has(n.id) ? "◌" : "👁";
+    eye.title = hidden.has(n.id) ? "show this note's circle and marker" : "hide this note's circle and marker";
+    eye.onclick = ev => { ev.stopPropagation(); hidden.has(n.id) ? hidden.delete(n.id) : hidden.add(n.id); saveHidden(); renderNotes(); drawRing(); };
+    d.children[0].prepend(eye);
     box.appendChild(d);
   });
-  drawTimeline();
+  drawTimeline(); drawRing();
 }
 $("noteForm").addEventListener("submit", async e => {
   e.preventDefault();
@@ -242,11 +267,20 @@ $("noteText").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shi
 // region is in film pixels (the frame's own size), so it means the same thing at any window size
 function setRegion(r) { region = r; $("circled").textContent = r ? "· circled" : ""; drawRing(); }
 function drawRing() {
-  const ink = $("ink"); ink.querySelectorAll(".ring").forEach(e => e.remove());
-  if (!region) return;
-  const d = document.createElement("div"); d.className = "ring";
-  Object.assign(d.style, { left: region.x * scale + "px", top: region.y * scale + "px", width: region.w * scale + "px", height: region.h * scale + "px" });
-  ink.appendChild(d);
+  const ink = $("ink"); ink.querySelectorAll(".ring, .tag").forEach(e => e.remove());
+  const ring = (r, cls, label) => {
+    const d = document.createElement("div"); d.className = "ring" + cls;
+    Object.assign(d.style, { left: r.x * scale + "px", top: r.y * scale + "px", width: r.w * scale + "px", height: r.h * scale + "px" });
+    ink.appendChild(d);
+    if (label) { const g = document.createElement("div"); g.className = "tag"; g.textContent = label; g.style.left = r.x * scale + "px"; g.style.top = r.y * scale + "px"; ink.appendChild(g); }
+  };
+  // a note's circle shows while the playhead is within half a second of it (always, when it is the selected note)
+  notes.forEach(n => {
+    if (!n.region || hidden.has(n.id) || (hideDone && n.status === "done")) return;
+    const sel = selected === n.id;
+    if (sel || (showRings && Math.abs(n.t - t) <= 0.5)) ring(n.region, " saved" + (sel ? " sel" : ""), "#" + n.id);
+  });
+  if (region) ring(region, "", "");
 }
 let drawFrom = null;
 $("ink").addEventListener("mousedown", e => {
@@ -270,6 +304,8 @@ window.addEventListener("mouseup", () => {
 });
 
 // ── controls ─────────────────────────────────────────────
+$("showRings").onclick = () => { showRings = !showRings; $("showRings").classList.toggle("on", showRings); drawRing(); };
+$("hideDone").onclick = () => { hideDone = !hideDone; $("hideDone").classList.toggle("on", hideDone); renderNotes(); };
 $("play").onclick = () => playing ? pause() : play();
 $("barBack").onclick = () => { pause(); const B = bar() || 1; seek(Math.max(0, Math.ceil(t / B - 1e-6) - 1) * B); };
 $("barFwd").onclick = () => { pause(); const B = bar() || 1; seek(Math.floor(t / B + 1e-6 + 1) * B); };
@@ -287,6 +323,8 @@ window.addEventListener("keydown", e => {
   else if (e.key === "[") $("barBack").onclick();
   else if (e.key === "n") { e.preventDefault(); pause(); $("noteText").focus(); }
   else if (e.key === "l" || e.key === "L") $("loop").onclick();
+  else if (e.key === "o" || e.key === "O") $("showRings").onclick();
+  else if (e.key === "d" || e.key === "D") $("hideDone").onclick();
   else if (e.key === "m" || e.key === "M") $("mute").onclick();
 });
 init();
