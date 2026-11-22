@@ -14,6 +14,8 @@
 - The chain reads in order; each scene is made from the previous one.
 - Something moves on every beat; no hold over ~1 s except the final card.
 - Text is never covered, crossed or clipped (descenders included); no caption lint on the render.
+- Text reads against what is actually behind it: 3:1 per glyph at least (`check` text contrast), and no more than 3 flashes a second (`check` flash rate). Both are flags while they are tuned.
+- **Shown and pull**: when a line says something happens or works, it is on screen, doing it, at that moment; each scene ends on something unresolved that the next one answers.
 - No fades; no translucent layers that look like render glitches in a still.
 - Pictures agree with captions (a forest of branched trees under "fewer branches" contradicts it).
 - Screen/time budget matches the contract.
