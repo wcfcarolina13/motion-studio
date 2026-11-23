@@ -52,12 +52,13 @@ plugin/skills/motion-studio/
   scripts/studio.py           the CLI: new, stills, draft, final, verify, serve, notes, mix, fetch, measure, blindpack…
   scripts/kit.js              the engine: springs, keyframes, camera, mask captions, clip helpers (copied into each film)
   scripts/figure.js           rigged SVG people: poses, faces, walk cycle, idle motion, crowds
+  scripts/stack.py + stack.js sprite stacks: fake-3D pixel props carved from four flat drawings, drawn on a canvas
   scripts/longform.py         long narrated films: align, timeline, music by mood, render, mix, check
   scripts/align.py            offline word timestamps for narration you already have
   scripts/youtube.py          private-by-default YouTube upload, thumbnail, captions (standard library only)
   scripts/audio.py            the audio library, track measurement, and the Mix every film's sound.py uses
   scripts/preview.*           the live preview server and page
-  references/                 story, motion vocabulary, sound, review checklists, the review panel, formats, long-form, figures, critic
+  references/                 story, motion vocabulary, sound, review checklists, the review panel, formats, long-form, figures, critic, sprite stacks
   assets/templates/           film.html, longform.html, storyboard.md, sound.py, ledger.md
 ```
 
@@ -85,6 +86,8 @@ Version 1.1 (long-form) took ideas, not code, from repos shared on X in October 
 - [howseen-ai/claude-motion-design](https://github.com/howseen-ai/claude-motion-design): the one-frame flash detector and caption timing rules.
 - [charlie947/motion-graphics-skills](https://github.com/charlie947/motion-graphics-skills): a critic that reports only what it observes.
 - [LottieFiles/motion-design-skill](https://github.com/LottieFiles/motion-design-skill), [haidrrrry/claude-remotion-skill](https://github.com/haidrrrry/claude-remotion-skill), [t3knobox/klik-anim-skill-creation](https://github.com/t3knobox/klik-anim-skill-creation) (no licence: ideas only): pacing and emotion-to-motion rules.
+
+Sprite stacks (November 2026) took the method, not code, from Daniel White's [danielwh2/sprite-stacking](https://github.com/danielwh2/sprite-stacking) (MIT, [@dwhitedesign](https://x.com/dwhitedesign/status/2124594744693338273)): four orthographic views carved into a layer strip, and the rendering rules (true-centre rotation, one outline, round once, grow layers in). `stack.py` and `stack.js` are written fresh.
 
 Left out on purpose: generated or synthesized music and sound (breaks the licensed-recording rule), paid avatar and voice APIs, and Open Edit (its installer adds an auto-updating session hook; X attached a warning note).
 

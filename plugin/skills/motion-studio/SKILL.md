@@ -56,11 +56,13 @@ Films are one HTML file where every style is a pure function of time (`window.se
 
 When the film is narrated and longer than about a minute, use `scripts/longform.py` instead of `studio.py new`: the narration sets the clock, scenes are built from `script.json` segments, beats land on spoken words, figures act scenes out, music is picked per chapter mood, and `check` measures dead air before anyone watches. The workflow, script format and scene types are in `references/longform.md`; figures in `references/figures.md`; the critic pass in `references/critic.md`. `longform.py share` builds a streaming page for sending a draft as a private artifact link. Uploads go through `scripts/youtube.py` and default to private; never publish publicly without the user's explicit go-ahead. The order from locked script to public video (gates before the full render, upload, the Advanced-features check, publishing the episode and its Short in one sitting, the Studio-only steps, the 48-hour review) is in `references/publish.md`. Extra dependency for word timing: `pip install pocketsphinx`.
 
+For pixel-art films, props that turn (a bin, a stall, a van) are sprite stacks: four flat drawings carved into layers by `scripts/stack.py carve`, drawn on a canvas by `scripts/stack.js`. Look at the check sheet it writes before using a strip. → `references/sprite-stacks.md`
+
 To pick topics, `scripts/trends.py` finds TikTok and YouTube videos that broke out against their own creator's median views, from free sources only. It picks topics; it never downloads footage. → `references/trends.md`
 
 ## Where things live
 
-- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, closeup.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, panelqa.py, gemini.py, align.py, youtube.py, trends.py), `assets/templates/`, `references/` (+ `references/prompts/`).
+- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, closeup.js, stack.py + stack.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, panelqa.py, gemini.py, align.py, youtube.py, trends.py), `assets/templates/`, `references/` (+ `references/prompts/`).
 - Shared data (paths from `config`): the audio library with `catalog.json`, the film ledger, optional house notes.
 - One folder per film: `film.html`, `kit.js` and `audio.py` (vendored copies, so films never break on a skill update), `storyboard.md`, `sound.py`, `sources/`, `review/`, `out/`, `notes.json`.
 
