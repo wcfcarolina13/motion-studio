@@ -9,15 +9,19 @@ os.environ['HF_HUB_DISABLE_XET'] = '1'
 import time
 import huggingface_hub as hub
 
+def alive():                        # the render waits for setup while this file keeps getting touched
+    open('/content/setup_alive', 'w').write(str(time.time()))
+
 def fetch(fn, *a, tries=6, **kw):
     for n in range(tries):
+        alive()
         try:
             return fn(*a, **kw)
         except Exception as e:      # 429s and dropped connections surface as several exception types
             if n == tries - 1: raise
             wait = min(300, 30 * 2 ** n)
             print(f'download failed ({type(e).__name__}: {str(e)[:120]}); retry {n + 1}/{tries - 1} in {wait} s', flush=True)
-            time.sleep(wait)
+            for _ in range(wait // 30): time.sleep(30); alive()
 snapshot_download = lambda *a, **kw: fetch(hub.snapshot_download, *a, **kw)
 hf_hub_download = lambda *a, **kw: fetch(hub.hf_hub_download, *a, **kw)
 import torch

@@ -5,11 +5,14 @@ from diffusers import WanImageToVideoPipeline, WanTransformer3DModel, GGUFQuanti
 from diffusers.utils import export_to_video, load_image
 # A dropped `colab exec` connection does not stop the remote setup: wait for its paths file instead of failing,
 # but not forever: a setup that crashed never writes it, and an endless wait burns units until someone notices.
-waited = 0
+# The limit counts from setup's last sign of life (it touches /content/setup_alive before each download and while
+# waiting to retry), so a slow download or a run of retries doesn't trip it; one stuck download still can.
+start = time.time()
 while not (os.path.exists('/content/paths.txt') and len(open('/content/paths.txt').read().split()) == 4):
-    if waited >= int(os.environ.get('SETUP_WAIT', 2700)):
-        raise SystemExit('FAILED: setup did not finish (no /content/paths.txt after %d s)' % waited)
-    print('waiting for setup', flush=True); time.sleep(30); waited += 30
+    last = max(start, os.path.getmtime('/content/setup_alive') if os.path.exists('/content/setup_alive') else 0)
+    if time.time() - last >= int(os.environ.get('SETUP_WAIT', 2700)):
+        raise SystemExit('FAILED: setup did not finish (no sign of life for %d s)' % (time.time() - last))
+    print('waiting for setup', flush=True); time.sleep(30)
 D14, HI, LO, LI = open('/content/paths.txt').read().split()
 q = GGUFQuantizationConfig(compute_dtype=torch.bfloat16)
 hi = WanTransformer3DModel.from_single_file(HI, quantization_config=q, config=D14, subfolder='transformer', torch_dtype=torch.bfloat16)
