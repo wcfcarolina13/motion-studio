@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sprite stack proof</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  #stage { position: relative; overflow: hidden; }
+  svg, canvas { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div id="stage">
+<canvas id="px"></canvas>
+<svg id="svg"><defs></defs><g id="world"></g><g id="top"></g></svg>
+<div id="caps"></div>
+</div>
+<script src="kit.js"></script>
+<script src="stack.js"></script>
+<script>
+// Proof for stack.js: two Shoestring props carved from four flat drawings each (examples/stack/draw_props.py),
+// growing in, turning, a change of camera pitch, and an exploded view. Every frame is a function of t.
+// To render it: studio.py new stack-demo --format 16x9, replace that folder's film.html with this file, run
+// draw_props.py <folder>, then stack.py carve <folder>/bin-views.png <folder>/props/bin.png --film <folder> and
+// stack.py carve <folder>/stand-views.png <folder>/props/stand.png; then studio.py final <folder> --sub 1.
+const PAL = { BG: "#efe7d6", INK: "#1f1f2a", GREY: "#8a8272", ACCENT: "#c7372f", PANEL: "#e4dac4" };
+const { b, C } = K.setup({ format: "16x9", bpm: 120, bars: 5, palette: PAL, title: "Sprite stack proof" });
+K.scene("grow", 0, 1);
+K.scene("turn", 1, 3);
+K.scene("pitch", 3, 4);
+K.scene("layers", 4, 5);
+
+const bin = Stack.load("props/bin.png", 22);
+const stand = Stack.load("props/stand.png", 28);
+window.STUDIO.ready = Stack.ready();
+
+const cv = document.getElementById("px");
+cv.width = K.W; cv.height = K.H;
+const ctx = cv.getContext("2d");
+
+K.caption([["Four flat drawings, carved into layers."]], b(0, 0.25), b(2) - 0.26);
+K.caption([["Each layer turns, squashes and lifts one pixel."]], b(2, 0.25), b(4) - 0.26);
+K.caption([["So a pixel prop reads as solid."]], b(4, 0.25), b(5) - 0.1);
+
+const SC = 8, GROUND = 760;
+function pavement(pitch) {
+  // flat pixel paving under the props, squashed by the same pitch so the floor and the stacks agree
+  const rows = 6, tile = 12 * SC;
+  for (let r = 0; r < rows; r++) {
+    const h = Math.round(tile * pitch / 2), y = GROUND - 2 * h + r * h;
+    for (let x = -tile; x < K.W + tile; x += tile) {
+      const off = (r % 2) * tile / 2;
+      ctx.fillStyle = (r + Math.floor((x + off) / tile)) % 2 ? "#e2d6bd" : "#d8ccad";
+      ctx.fillRect(x + off, y, tile - SC, h - SC);
+    }
+  }
+}
+
+K.run(t => {
+  ctx.clearRect(0, 0, K.W, K.H);
+  const pitch = K.kf(t, [[b(3), 0.75], [b(3, 2), 0.95], [b(4), 0.75]]);
+  pavement(pitch);
+  const shadow = { color: "#1f1f2a", opacity: 0.22, dx: 3, dy: 2 };
+  // the bin grows in facing us, then turns once, easing in and out
+  const binTurn = K.kf(t, [[b(0, 0.6), 0], [b(3), Math.PI * 2]], K.smooth) + 0.35;
+  Stack.draw(ctx, bin, 680, GROUND, { turn: binTurn, pitch, scale: SC, shadow, grow: K.eio(K.prog(t, b(0, 0.2), b(0, 2.6))) });
+  // the stand grows in second and turns slowly the other way; its layers part and close at the end
+  const standTurn = -0.5 - 0.6 * K.eio(K.prog(t, b(1), b(4)));
+  const spacing = K.kf(t, [[b(4), 1], [b(4, 1.5), 2.4], [b(4, 3.4), 1]]);
+  Stack.draw(ctx, stand, 1260, GROUND, { turn: standTurn, pitch, spacing, scale: SC, shadow, grow: K.eio(K.prog(t, b(1), b(1, 2.4))) });
+});
+</script>
+</body>
+</html>
