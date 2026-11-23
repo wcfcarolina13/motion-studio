@@ -77,9 +77,9 @@ People and evidence (their own set; they wipe on and off left to right instead o
   - `assets/colab/wan22_i2v_14b.ipynb` renders Wan 2.2 I2V-A14B (8-bit GGUF, 1280x720, 81 frames, 30 steps). It reads `in/` (images plus `jobs.json`: id, image, motion, frames, steps, w, h, seed) and writes `out/` under a Google Drive folder (`ROOT` in its first cell). It skips clips that already exist and logs `timings.tsv`.
   - Pick the largest GPU offered and High-RAM, then Run all, and keep the tab open until the last cell prints DONE; Colab favours active notebooks.
   - Terms: the account holder accepts Colab's Terms of Service themselves (the first run shows an Agree dialog). Colab's FAQ restricts mining, proxies, deepfakes and dodging usage limits, not running a notebook like this one; check the FAQ again before automating the browser, since its rules on remote control change with the plan.
-  - **Preferred: the official Colab CLI** (`google-colab-cli`, Apache-2.0; on the Mac at `~/.local/bin/colab` since 2026-11-23). No browser tab and no Drive mount.
-    - `assets/colab/cli/run_colab.sh` asks for a GPU (G4, then A100, then L4), uploads `in/` (images plus `jobs.json`), runs `remote_setup.py` then `remote_render.py`, downloads `out/*.mp4`, and always runs `colab stop` on exit. It logs `colab usage` (balance and rate) before and after to `usage.log`.
-    - Run it as a `longjob`.
+  - **Preferred: the official Colab CLI** (`google-colab-cli`, Apache-2.0, installed as `colab`, looked for in `~/.local/bin` too). No browser tab and no Drive mount.
+    - `assets/colab/cli/run_colab.sh <in_dir> [out_dir]` asks for a GPU (G4, then A100, then L4), uploads the images and `jobs.json` from `in_dir`, runs `remote_setup.py` then `remote_render.py`, downloads each clip to `out_dir` (default `in_dir/../out`), and always runs `colab stop` on exit. A failed upload, setup or render stops the run there. It logs `colab usage` (balance and rate) before and after to `out_dir/usage.log`.
+    - A render takes hours: run it detached, with its output going to a log.
   - **CLI sign-in gotcha:** the first run prints a Google sign-in URL and waits for a code.
     - The code is tied to the run that printed the URL (PKCE). A code from another run's link fails with `InvalidGrantError: (invalid_grant) Invalid code verifier`.
     - The account holder signs in once in their own Terminal (`colab sessions`), using the link printed in that same window. Never relay the link or the code through chat: the code is a credential.
