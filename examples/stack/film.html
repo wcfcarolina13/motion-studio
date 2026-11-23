@@ -20,8 +20,9 @@
 <script>
 // Proof for stack.js: two Shoestring props carved from four flat drawings each (examples/stack/draw_props.py),
 // growing in, turning, a change of camera pitch, and an exploded view. Every frame is a function of t.
-// To render it: copy this file into a folder with kit.js; run draw_props.py <folder>, then
-// stack.py carve <folder>/bin-views.png <folder>/props/bin.png --film <folder> (and the same for stand); then studio.py final <folder>.
+// To render it: studio.py new stack-demo --format 16x9, replace that folder's film.html with this file, run
+// draw_props.py <folder>, then stack.py carve <folder>/bin-views.png <folder>/props/bin.png --film <folder> and
+// stack.py carve <folder>/stand-views.png <folder>/props/stand.png; then studio.py final <folder> --sub 1.
 const PAL = { BG: "#efe7d6", INK: "#1f1f2a", GREY: "#8a8272", ACCENT: "#c7372f", PANEL: "#e4dac4" };
 const { b, C } = K.setup({ format: "16x9", bpm: 120, bars: 5, palette: PAL, title: "Sprite stack proof" });
 K.scene("grow", 0, 1);

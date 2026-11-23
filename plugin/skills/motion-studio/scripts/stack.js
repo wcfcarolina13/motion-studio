@@ -16,11 +16,12 @@
 //   scale    whole screen px per art px (4); never fractional, or pixels smear
 //   outline  "#1f1f2a" (default) or null: one ring around the whole stack, never per layer (per-layer rings show seams)
 //   shadow   null (default) or { color: "#..", dx: 2, dy: 2 }: the stack's footprint on the ground, in art px
-//   grow     0..1 (default 1): builds the stack from the ground up, each layer rising into place over the 4 before it
+//   grow     0..1 (default 1): builds the stack from the ground up, each layer rising into place over the 4 before it;
+//            the ground layer fades in over the first two layers' worth, so nothing appears in a single frame
 //   alpha    0..1 (default 1)
 // Motion is kept in screen pixels and rounded once, at the final blit, so a slow drift doesn't jump in art-pixel steps.
 // Frames are cached per option set, so a stack that doesn't change costs one blit a frame.
-// The method comes from danielwh2/sprite-stacking (MIT); this file is written fresh.
+// Adapted from danielwh2/sprite-stacking (MIT); see LICENSE-sprite-stacking.txt.
 (function () {
   const S = {};
   window.Stack = S;
@@ -142,6 +143,10 @@
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     if (opts.alpha != null) ctx.globalAlpha *= opts.alpha;
+    // the ground layer can't rise from anywhere, so the first two layers' worth of grow fades the stack in: without
+    // it the whole footprint appears in one frame and final's pop check fails it (unblurred, --sub 1)
+    const lead = o.grow * (st.count + 4) / 2;
+    if (lead < 1) ctx.globalAlpha *= lead * lead * (3 - 2 * lead);
     ctx.drawImage(f.c, Math.round(x - f.gx * scale), Math.round(y - f.gy * scale), f.c.width * scale, f.c.height * scale);
     ctx.restore();
   };

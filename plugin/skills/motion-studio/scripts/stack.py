@@ -24,7 +24,7 @@ at that height, so stripes, windows and labels land on the walls they were drawn
 Trade-offs, all from the method: a hollow that no drawing can see (a truck bed, an arch seen end-on only) carves solid;
 the left wall copies the SIDE drawing (there is no fifth view), so a lopsided object needs its asymmetry in TOP, FRONT and
 BACK; a part one art pixel thin flickers as the stack turns (it falls between samples at some angles), so it is
-reported. The idea and the four-view workflow come from danielwh2/sprite-stacking (MIT); this file is written fresh.
+reported. Adapted from danielwh2/sprite-stacking (MIT); portions derived from it, see LICENSE-sprite-stacking.txt.
 Standard library, numpy and scipy (for labelling); PNGs are read and written through ffmpeg, as the rest of the engine
 does.
 """
@@ -230,8 +230,8 @@ def draw(vol, turn_deg, pitch=0.75, spacing=1.0, outline=(31, 31, 42, 255)):
     for z in range(n):
         dx = u - gx
         dy = (v - (gy - round(z * spacing))) / pitch
-        sx = np.rint(cx + dx * ca + dy * sa).astype(int)
-        sy = np.rint(cy - dx * sa + dy * ca).astype(int)
+        sx = np.floor(cx + dx * ca + dy * sa + 0.5).astype(int)     # half up, as Math.round in stack.js
+        sy = np.floor(cy - dx * sa + dy * ca + 0.5).astype(int)
         ok = (sx >= 0) & (sx < w) & (sy >= 0) & (sy < h)
         px = np.zeros((bh, bw, 4), np.uint8)
         px[ok] = vol[z, sy[ok], sx[ok]]

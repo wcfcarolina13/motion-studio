@@ -4,7 +4,7 @@ A sprite stack is a strip of flat top-down layers, drawn bottom to top, each rot
 
 ![A wheelie bin and a smoothie stand carved from four drawings each, growing in, turning, a change of pitch and an exploded view](../../../../docs/sprite-stack-proof.gif)
 
-*`examples/stack/`: two props drawn in code (`draw_props.py`), carved with `stack.py`, animated with `stack.js`. The 10 s 1080p render passed `final` (no single-frame pops) and gave identical pixels when 8 moments were rendered again in the same page and in a fresh browser.*
+*`examples/stack/`: two props drawn in code (`draw_props.py`), carved with `stack.py`, animated with `stack.js`. The 10 s 1080p render (`final --sub 1`) passed every check and gave identical pixels when 9 moments were rendered again in the same page and in a fresh browser.*
 
 ## Make one
 
@@ -38,6 +38,7 @@ K.run(t => {
 - **One outline around the whole stack**, never one per layer: per-layer rings show as seams on the walls.
 - **Grow in, don't fade in.** A stack fading in mid-air looks flat. `grow` raises each layer into place over the four below it, so the top settles without a one-frame jump.
 - **Scale for 1080p**: about 6 to 8 screen pixels per art pixel for props 14 to 30 art pixels wide. Small sprites blown up further step visibly as they turn; draw more detail instead.
+- **Render with `final --sub 1`.** The default `--sub 4` blends four moments per frame for motion blur, which smears a turning stack's pixel edges into soft halves. Without the blur, nothing may appear in one frame, which is why `grow` fades the ground layer in.
 - **One stack, one draw.** Never interleave the layers of two stacks; sort whole stacks by their ground point, back to front.
 
 ## What the carve can't do
@@ -47,9 +48,10 @@ K.run(t => {
 - There is no fifth view: the left wall copies SIDE. Put asymmetry in TOP, FRONT and BACK.
 - A part one art pixel thin (a pole, a wire, a handle) falls between samples at some angles and flickers. `carve` warns with the layers; draw it 2 pixels wide.
 - Corner voxels sit on two walls and take the side wall's colour.
+- Not yet tried beside the flat pixel cast (12 px cells against 8 px here): match the scale to the cast in a film that has both.
 
 ## Cost
 
 Every frame of a stack is drawn in software. On the M2 Pro the 26 x 16 x 28 stand took 0.28 ms a frame while turning; frames are cached per option set, so a stack that holds still costs one blit (0.003 ms). Dozens of turning stacks a frame add up: bake background props that don't turn into one canvas once.
 
-Credit: the method and the four-view workflow come from Daniel White's [danielwh2/sprite-stacking](https://github.com/danielwh2/sprite-stacking) (MIT), shared on X on 2026-11-22. `stack.py` and `stack.js` are written fresh for this engine; no code is copied.
+Credit: the method and the four-view workflow come from Daniel White's [danielwh2/sprite-stacking](https://github.com/danielwh2/sprite-stacking) (MIT), shared on X on 2026-11-22. `stack.py` and `stack.js` were rewritten for this engine; a few parts of `stack.py` follow the original closely and are used under its MIT license (`scripts/LICENSE-sprite-stacking.txt`).
