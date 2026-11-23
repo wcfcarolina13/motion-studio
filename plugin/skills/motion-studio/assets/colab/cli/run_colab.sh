@@ -2,7 +2,8 @@
 # Full-quality Wan 2.2 14B clips on Colab via the official CLI. Always stops the session at the end.
 #   run_colab.sh <in_dir> [out_dir]    in_dir holds the images and jobs.json; out_dir defaults to <in_dir>/../out
 #   SETUP=x.py RENDER=y.py swap in other remote scripts; each must print "OUTFILE <name>" for every file it writes to /content/out.
-#   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min.
+#   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 2 means the render started
+#   but didn't finish (what it made is downloaded); that is not retried, since a retry could burn units on the same fault.
 set -uo pipefail
 export PATH=$HOME/.local/bin:$PATH
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -27,7 +28,8 @@ echo "GPU $GPU" | tee -a usage.log
 timeout 300 colab exec -s $S --timeout 120 <<< "import os; os.makedirs('/content/in', exist_ok=True)" || { echo "FAILED: runtime not responding"; exit 1; }
 # The CLI can print "Upload failed" (HTTP 500 from a broken runtime) and still exit 0.
 for f in "$IN"/*; do
-  timeout 600 colab upload -s $S "$f" "/content/in/$(basename "$f")" 2>&1 | tee /dev/stderr | grep -q "Upload failed" && { echo "FAILED: upload $f"; exit 1; }
+  up=$(timeout 600 colab upload -s $S "$f" "/content/in/$(basename "$f")" 2>&1); rc=$?; echo "$up"
+  { [ $rc -ne 0 ] || grep -q "Upload failed" <<< "$up"; } && { echo "FAILED: upload $f"; exit 1; }
 done
 echo "PHASE setup"; T0=$(date +%s)
 # "Connection was lost" here does not stop the remote setup; the render script waits for it, so carry on.
@@ -35,9 +37,11 @@ colab exec -s $S -f "$SETUP" --timeout 0 || echo "setup exec returned an error; 
 echo "setup $(( $(date +%s)-T0 ))s" | tee -a usage.log
 echo "PHASE render"; T0=$(date +%s)
 colab exec -s $S -f "$RENDER" --timeout 0 2>&1 | tee render.out
-grep -q "RENDER DONE" render.out || echo "FAILED: render did not finish; downloading whatever exists"
+DONE=1; grep -q "RENDER DONE" render.out || { DONE=0; echo "FAILED: render did not finish; downloading whatever exists"; }
 echo "render $(( $(date +%s)-T0 ))s" | tee -a usage.log
 for f in $(grep -o 'OUTFILE [^ ]*' render.out | cut -d' ' -f2 | sort -u); do
   colab download -s $S "/content/out/$f" "$OUT/$f" && echo "got $f"
 done
 date '+end %F %T' | tee -a usage.log
+# 2: the render ran but didn't finish. retry_colab.sh retries only 1 (no GPU, dead runtime), not this: look first.
+[ $DONE = 1 ] || exit 2

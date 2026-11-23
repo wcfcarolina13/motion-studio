@@ -3,9 +3,13 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 import json, time, torch
 from diffusers import WanImageToVideoPipeline, WanTransformer3DModel, GGUFQuantizationConfig
 from diffusers.utils import export_to_video, load_image
-# A dropped `colab exec` connection does not stop the remote setup: wait for its paths file instead of failing.
+# A dropped `colab exec` connection does not stop the remote setup: wait for its paths file instead of failing,
+# but not forever: a setup that crashed never writes it, and an endless wait burns units until someone notices.
+waited = 0
 while not (os.path.exists('/content/paths.txt') and len(open('/content/paths.txt').read().split()) == 4):
-    print('waiting for setup', flush=True); time.sleep(30)
+    if waited >= int(os.environ.get('SETUP_WAIT', 2700)):
+        raise SystemExit('FAILED: setup did not finish (no /content/paths.txt after %d s)' % waited)
+    print('waiting for setup', flush=True); time.sleep(30); waited += 30
 D14, HI, LO, LI = open('/content/paths.txt').read().split()
 q = GGUFQuantizationConfig(compute_dtype=torch.bfloat16)
 hi = WanTransformer3DModel.from_single_file(HI, quantization_config=q, config=D14, subfolder='transformer', torch_dtype=torch.bfloat16)
@@ -27,7 +31,11 @@ os.makedirs('/content/out', exist_ok=True)
 for j in jobs:
     out = f"/content/out/{j['id']}.mp4"
     if os.path.exists(out): print(f"OUTFILE {j['id']}.mp4", flush=True); continue
-    fast = j.get('lightning', False); steps = j.get('steps', 4 if fast else 30); g = j.get('guidance', 1.0 if fast else 3.5)
+    fast = j.get('lightning', False)
+    if any(x.get('lightning') for x in jobs):     # the LoRAs stay loaded: switch them per job, or a 30-step job runs with them
+        for m in (pipe.transformer, pipe.transformer_2):   # per model: the pipeline-level call may not reach transformer_2
+            m.enable_lora() if fast else m.disable_lora()
+    steps = j.get('steps', 4 if fast else 30); g = j.get('guidance', 1.0 if fast else 3.5)
     t0 = time.time()
     def cb(p, i, t, kw): print(f"{j['id']} step {i+1}/{steps} {int(time.time()-t0)}s", flush=True); return kw
     w, h = j.get('w', 1280), j.get('h', 720)
