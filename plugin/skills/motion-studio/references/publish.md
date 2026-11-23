@@ -31,7 +31,7 @@ The Short is cut from the finished episode with `short` and goes through the sam
 
 ## Policy checks before upload
 
-YouTube can demonetise a channel of AI-assisted videos for "inauthentic" (mass-produced or repetitive) content, and remove videos or channels under its spam policy. These checks come from the project's audit of YouTube's own pages (2026-11-23). The page ids below are YouTube Help answers (`support.google.com/youtube/answer/<id>`): 1311392 is the channel monetization policies, 2801973 the spam, deceptive practices and scams policies, 2802168 channel terminations. Re-read them before relying on a check: YouTube rewrites them.
+YouTube can demonetise a channel of AI-assisted videos for "inauthentic" (mass-produced or repetitive) content, and remove videos or channels under its spam policy. These checks come from the project's audit of YouTube's own pages (2026-11-23). The page ids below are YouTube Help answers (`support.google.com/youtube/answer/<id>`), with the section each check rests on: 1311392 is the channel monetization policies, 2801973 the Spam Policy, 14328491 disclosing altered or synthetic content, 2802168 channel terminations. Re-read them before relying on a check: YouTube rewrites them.
 
 **Per episode.** After watching the cut, write `policy.json` in the upload package (`python3 scripts/policycheck.py --template` prints an empty one) and answer:
 
@@ -39,12 +39,12 @@ YouTube can demonetise a channel of AI-assisted videos for "inauthentic" (mass-p
 |---|---|---|---|
 | M1 `M1_new` | One sentence: what does this episode add that the channel's last three didn't? | a sentence of 8 words or more, not copied from another package | 1311392: "materially varied", a "distinct storyline, focus, or concept" |
 | M2 `M2_same_outcome` | The same situation with the same outcome as an earlier episode, only names or numbers swapped? A recurring frame is fine. | false | 1311392 |
-| M3 `M3_unnarrated_slideshow` | Any slideshow or scrolling text with no narration? `longform.py check` already flags text-only stretches. | false | the audit (no page id given) |
-| M4 `M4_ai_expert_advice` | An AI voice or character posing as a human expert giving finance, health, legal or political advice, instead of attributing it to named sources? | false | the audit (no page id given) |
-| M5 `M5_realistic_fake_events` | Realistic shocking imagery, or events that didn't happen? | false | the audit (no page id given) |
-| S1 `S1_title_thumbnail_deliver`, `S1_payoff_at` | Do the title and thumbnail promise only what the video shows, and where (m:ss) is that paid off? | true, and a time | the audit (no page id given) |
+| M3 `M3_unnarrated_slideshow` | Any slideshow or scrolling text with no narration? `longform.py check` already flags text-only stretches. | false | 1311392, Generic or repetitive content |
+| M4 `M4_ai_expert_advice` | An AI voice or character posing as a human expert giving finance, health, legal or political advice, instead of attributing it to named sources? | false | 1311392, AI personas related to sensitive topics |
+| M5 `M5_realistic_fake_events` | Realistic shocking imagery, or events that didn't happen? | false | 1311392, Unsatisfying or off-putting content |
+| S1 `S1_title_thumbnail_deliver`, `S1_payoff_at` | Do the title and thumbnail promise only what the video shows, and where (m:ss) is that paid off? | true, and a time | 2801973, Malicious clickbait |
 | S2 `S2_schemes_or_payouts` | Does it promote a scheme, a job offer or a payout? | false | 2801973 |
-| D1 `D1_ai_disclosure`, `D1_provenance_kept` | Is the altered or synthetic content disclosure set (`--synthetic`), and are C2PA data and model watermarks left in place? | true, true | 2801973: stripping them to evade detection is spam |
+| D1 `D1_ai_disclosure`, `D1_provenance_kept` | Is the altered or synthetic content disclosure set (`--synthetic`), and are C2PA data and model watermarks left in place? | disclosure true, or `"not needed: <why>"` for clearly animated work in which nothing looks real; provenance true | 14328491 (disclosure); 2801973 (stripping them to evade detection is spam) |
 
 `policycheck.py <package>` refuses a missing file, an unanswered question, a failing answer, a misspelt key, or an M1 sentence identical to another package's beside it. Wire it as the channel's pre-upload check (above), so no upload skips it. Trade-offs: it checks that each question was asked and answered, not that the answer is true; a person watching the cut is the check. M1 is compared only with the packages in the same parent folder.
 

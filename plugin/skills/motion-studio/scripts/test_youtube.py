@@ -81,6 +81,13 @@ class PolicyCheck(unittest.TestCase):
         found = policycheck.problems(self.GOOD, siblings=[{"M1_new": self.GOOD["M1_new"].upper()}])
         self.assertTrue(found and found[0].startswith("M1_new"))
 
+    def test_disclosure_may_be_not_needed_with_a_reason(self):
+        import policycheck
+        ok = dict(self.GOOD, D1_ai_disclosure="not needed: flat cartoon animals, nothing looks real")
+        self.assertEqual(policycheck.problems(ok), [])
+        for bad in ("not needed", "not needed: cartoon", False, None):
+            self.assertTrue(policycheck.problems(dict(self.GOOD, D1_ai_disclosure=bad)), bad)
+
     def test_a_misspelt_key_is_reported(self):
         import policycheck
         self.assertTrue(any("unknown" in f for f in policycheck.problems(dict(self.GOOD, S2_scheme=False))))
