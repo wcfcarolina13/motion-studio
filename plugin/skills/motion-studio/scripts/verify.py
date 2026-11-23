@@ -27,12 +27,16 @@ def _patch_median(rgb):
     return tuple(int(round(float(np.median(c[:, i])))) for i in range(3))
 
 
-def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground=None, loop=False):
+def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground=None, loop=False, stills=None, motion=True,
+           motion_floor=None, motion_mask=()):
     """ground: the film's own frame 0 as the browser drew it (H x W x 3 uint8). When given, frame 0 of the video is
     judged against it, central-patch median to median, instead of against the flat colour bg: a textured ground has no
     single commonest colour, and its mean sits several levels off the palette's flat BG (paper 237,231,221 vs 246,242,233).
     loop: the film is cut to loop (a Short whose end jumps back to its opening). The jump in its last 0.5 s is then not a
-    pop, but only if the last frame really matches frame 0 (mean difference within 3 levels); otherwise that fails."""
+    pop, but only if the last frame really matches frame 0 (mean difference within 3 levels); otherwise that fails.
+    motion: the film moves from its first frame and never sits still for long (motioncheck.py; floor = max(0.02,
+    0.25 x the film's median) unless motion_floor is set). stills: the board's deliberate holds [(t0, t1), ...], excused.
+    motion_mask: [(y0, y1), ...] source rows to blank first, e.g. a caption band."""
     video = Path(video)
     fails = []
     def report(ok, what):
@@ -90,6 +94,11 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground
             end = (len(frames) - 1) / 30
             pops = [p for p in pops if p[1] < end - 0.5]
     report(not pops, "no single-frame pops" + (f": {pops}" if pops else ""))
+
+    if motion:                                              # a still opening or a long hold reads as a frozen video
+        import motioncheck
+        floor, mf = motioncheck.check(motioncheck.windows(video, mask=motion_mask), floor=motion_floor, stills=stills or ())
+        report(not mf, f"motion from frame 0, no 2 s hold (floor {floor:.3f})" + (": " + "; ".join(mf[:4]) if mf else ""))
 
     if bpm and sheet_dest:
         beat_sheet(video, bpm, sheet_dest)

@@ -14,10 +14,19 @@
 - The chain reads in order; each scene is made from the previous one.
 - Something moves on every beat; no hold over ~1 s except the final card.
 - Text is never covered, crossed or clipped (descenders included); no caption lint on the render.
+- Text reads against what is actually behind it: 3:1 per glyph at least (`check` text contrast), and no more than 3 flashes a second (`check` flash rate). Both are flags while they are tuned.
+- **Shown and pull**: when a line says something happens or works, it is on screen, doing it, at that moment; each scene ends on something unresolved that the next one answers.
 - No fades; no translucent layers that look like render glitches in a still.
+- **No garbled or stray text in generated images** (owner's rule, 2026-11-22). Image and video models draw fake words, signs, labels and logos (a checklist read "OBDUE" in the Shoestring scene test). Zoom every generated still and a mid frame of every generated clip, and look at signs, papers, screens, packaging, clothing and devices. Fix by redrawing, editing the region out, or covering it with an engine card. Avoid it upfront: prompt for blank or wordless surfaces, and put every word the viewer must read in the engine, never in the model's picture.
+- **Generated clips play forward once; never ping-pong or loop them in reverse** (owner's rule, 2026-11-22: "awkward, poor animation"). When a clip ends, cut away or hold its last frame while the camera keeps moving. A line that needs longer motion gets a longer clip, or a second clip chained from the first one's last frame.
 - Pictures agree with captions (a forest of branched trees under "fewer branches" contradicts it).
 - Screen/time budget matches the contract.
 - Sound: cues land on their events; the drop is on the turn.
+- **Motion from frame 0** (2026-11-17): a loop frame is still only AT the seam; motion ramps up from 0 there (a scene-clock strength that is 0 at the seam), never a hold of seconds. The picture changes every 2-3 s. Gate: `motioncheck` (no 0.5 s window in the first 3 s, and no 2 s stretch, under the floor).
+- **People and props read with no context**: a hand shows its owner (head, mask, suit) in the pack's own style; a vehicle has its defining parts. Blind-read questions: "whose hand is this?", "what is this object?".
+- **No idle placeholders**: a prop appears only on the beat that uses it; a blank card, an empty calendar or a sign with no text fails. Blind-read question: "is anything on screen not doing anything?"
+- **Nothing covers reading text**: check draw order, not just positions (`layoutcheck` OCCLUDED compares logged paints drawn after a text box).
+- **Review link before publishing**: the studio preview runs with the cut loaded, and its URL goes in the review message.
 
 ## Timings the tools assume
 
@@ -38,6 +47,8 @@ Even dimensions · yuv420p · fast start (moov before mdat) · clean decode · f
 | The Write tool stores typographic characters (an ellipsis, a curly apostrophe) literally, even when you typed a backslash-u escape | match the literal character when editing a file, not the escape sequence |
 | `window.seek` calling itself (recursion, nothing renders) | the kit's `K.run` wires it; don't redefine `seek` |
 | `const` used before its declaration in film.html | page error on render; declare shared constants first |
+| Whisper word times run early through a take (0.74 s by the loop seam on golf-ball v8), so a scene cut opens mid-word | map each line's words onto the take's measured pauses (silencedetect) before cutting; assert every mid-take clip opens in silence |
+| A loop bed jumps at the seam because the cut length lands on a downbeat | try whole-bar lengths either side (golf v6: 15 bars failed, 16 passed) before changing the bed |
 | A mask clipping descenders ("g", "p") | mask rect extends ~0.25 em below the baseline |
 | A strip turning into text reads as a strikethrough | the strip becomes the line the text rises from, then retracts below it |
 | Panels or items summing wider than their container | compute widths from the space; check the last frame before the transition |

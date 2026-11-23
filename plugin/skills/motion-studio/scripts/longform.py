@@ -2231,7 +2231,7 @@ def text_holds(samples, total, chapter_ends, step):
         else:
             r, settle, end = samples[-1][1], None, t_end
         lines.append({"seg": seg, "text": r[2], "t": settle, "end": end, "x": r[4], "w": r[6], "y": r[5], "h": r[7], "size": r[9],
-                      "payoff": bool(r[8]), "first": samples[0][0]})
+                      "payoff": bool(r[8]), "first": samples[0][0], "lines": [r[2]]})
     # wrapped lines of one block read together
     lines.sort(key=lambda x: (x["seg"], x["first"], x["y"]))
     blocks = []
@@ -2242,7 +2242,7 @@ def text_holds(samples, total, chapter_ends, step):
     for ln in lines:
         b = next((b for b in reversed(blocks) if fits(b, ln)), None)
         if b:
-            b["text"] += " " + ln["text"]; b["y"] = ln["y"]; b["x"], b["w"] = ln["x"], ln["w"]
+            b["text"] += " " + ln["text"]; b["lines"].append(ln["text"]); b["y"] = ln["y"]; b["x"], b["w"] = ln["x"], ln["w"]
             b["t"] = max(b["t"], ln["t"]); b["end"] = min(b["end"], ln["end"]); b["payoff"] |= ln["payoff"]
         else:
             blocks.append(dict(ln, t0=ln["t"]))
@@ -2255,7 +2255,74 @@ def text_holds(samples, total, chapter_ends, step):
             need, why = max(need, 3.0), "payoff"
         elif b["t"] is not None and any(b["t"] < c <= b["end"] + step + 1e-6 for c in chapter_ends):
             need, why = max(need, 3.0), "before a chapter cut"
-        sheet.append({"seg": b["seg"], "text": b["text"], "t": b["t"], "hold": hold, "need": need, "why": why, "words": words})
+        sheet.append({"seg": b["seg"], "text": b["text"], "t": b["t"], "hold": hold, "need": need, "why": why, "words": words,
+                      "lines": b["lines"], "end": b["end"], "readable": hold})
+    return sheet
+
+
+# Contrast probe: the client boxes of a block's lines on screen now, found by segment and string, and a switch to hide
+# or show them again. Used twice per moment: a picture with the text, then one with it hidden.
+TEXT_BOXES = """([seg, lines, hide]) => {
+  const st = document.getElementById('stage').getBoundingClientRect(), out = [];
+  window.__hid = window.__hid || [];
+  if (hide === 0) { window.__hid.forEach(e => e.style.visibility = ''); window.__hid = []; return out; }
+  document.querySelectorAll('#svg text').forEach(el => {
+    const s = el.textContent.trim(), g = el.closest('[data-seg]');
+    if (!lines.includes(s) || (g ? g.getAttribute('data-seg') : '') !== seg) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    if (hide === 1) { el.style.visibility = 'hidden'; window.__hid.push(el); }
+    out.push([Math.max(st.left, Math.floor(r.left)), Math.max(st.top, Math.floor(r.top)),
+              Math.min(st.right, Math.ceil(r.right)), Math.min(st.bottom, Math.ceil(r.bottom))]);
+  });
+  return out;
+}"""
+
+
+def _pngs(pngs, w, h):
+    """Decode same-sized PNGs (bytes) in one ffmpeg run: a list of H x W x 3 uint8 arrays."""
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-f", "image2pipe", "-c:v", "png", "-i", "-", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], input=b"".join(pngs), capture_output=True, check=True).stdout
+    return list(np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3))
+
+
+def text_contrast(film, sheet, floor, samples=3):
+    """Measure each block's contrast (readcheck.worst_contrast) at `samples` moments through its hold, and set its
+    "contrast" (worst ratio seen), "contrast_t" (when) and "readable" (the hold times the share of measured moments at
+    or above `floor`): text lost against its ground for part of its hold is readable only for the rest."""
+    import readcheck
+    import render
+    with render.Film(film) as f:
+        for b in sheet:
+            if b["t"] is None or b["hold"] <= 0:
+                b["contrast"] = None
+                continue
+            span = max(0.0, b["hold"] - 0.05)
+            ts = [b["t"] + span * k / max(1, samples - 1) for k in range(samples)] if samples > 1 else [b["t"]]
+            worst, when, ok, seen = None, None, 0, 0
+            for t in ts:
+                f.seek(t)
+                boxes = f.page.evaluate(TEXT_BOXES, [b["seg"], b["lines"], 2])
+                boxes = [x for x in boxes if x[2] - x[0] >= 2 and x[3] - x[1] >= 2]
+                if not boxes:
+                    continue
+                x0, y0 = min(x[0] for x in boxes), min(x[1] for x in boxes)
+                x1, y1 = max(x[2] for x in boxes), max(x[3] for x in boxes)
+                clip = {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
+                drawn = f.page.screenshot(type="png", clip=clip, animations="disabled")
+                f.page.evaluate(TEXT_BOXES, [b["seg"], b["lines"], 1])
+                behind = f.page.screenshot(type="png", clip=clip, animations="disabled")
+                f.page.evaluate(TEXT_BOXES, [b["seg"], b["lines"], 0])
+                A, B = _pngs([drawn, behind], x1 - x0, y1 - y0)
+                r = min(readcheck.worst_contrast(A[bx[1] - y0:bx[3] - y0, bx[0] - x0:bx[2] - x0],
+                                                 B[bx[1] - y0:bx[3] - y0, bx[0] - x0:bx[2] - x0])[0] for bx in boxes)
+                ok += r >= floor; seen += 1
+                if worst is None or r < worst:
+                    worst, when = r, t
+            b["contrast"], b["contrast_t"] = worst, when
+            if seen:                        # a moment where the text wasn't found isn't counted either way
+                b["readable"] = b["hold"] * ok / seen
     return sheet
 
 
@@ -2618,6 +2685,14 @@ def _check(a, film):
         report.append(f"one-frame flashes: {len(flashes)}")
         for t in flashes:
             flags.append(f"one-frame flash at {t:.2f} s ({seg_at(t)})")
+        # 4b. flash rate (WCAG 2.3.1): more than 3 flashes in any second over a quarter of a 10-degree field
+        if not a.no_flash_rate:
+            import readcheck
+            spans = readcheck.flash_spans(video)
+            report.append(f"flash rate: {len(spans)} stretch(es) over 3 flashes a second (WCAG 2.3.1)")
+            for t0, t1, nf, sh in spans:
+                flags.append(f"flash rate: {nf} flashes in a second from {t0:.2f} to {t1:.2f} s ({seg_at(t0)}) over {sh:.0%}"
+                             " of a 10-degree field; the limit is 3")
     # 5. text size: what a viewer must read has to survive a phone. A 16:9 video in a phone held upright is about 6.5 cm
     # wide, so 56 px of a 1920 frame is about 11 pt, the smallest comfortable reading size (scaled to the frame's width)
     if a.min_text:
@@ -2669,12 +2744,23 @@ def _check(a, film):
         ends = [ch["t1"] for ch in tl.get("chapters", [])[:-1] if ch.get("t1")]
         samples, keys = sample_film(film, total, a.text_step, pace)
         sheet = text_holds(samples, total, ends, a.text_step)
+        if a.contrast > 0:
+            text_contrast(film, sheet, a.contrast)
+            low = [x for x in sheet if x.get("contrast") is not None and x["contrast"] < a.contrast]
+            report.append(f"text contrast: {len(low)} block(s) under {a.contrast:g}:1 against the pixels behind them")
+            for x in low:
+                flags.append(f"{x['seg']}: \"{x['text'][:60]}\" contrast {x['contrast']:.1f}:1 at {x['contrast_t']:.1f} s"
+                             f" (worst glyph against what is behind it); needs {a.contrast:g}:1; readable for {x['readable']:.1f}"
+                             f" of its {x['hold']:.1f} s" + (f", under the {x['need']:.1f} s it needs" if x["readable"] < x["need"] - 1e-6 else ""))
+        # the hold test flags a short hold; text lost against its ground is the contrast flag's, so it isn't flagged twice
         short = [x for x in sheet if x["hold"] < x["need"] - 1e-6]
-        rows = ["seg\tfully shown (s)\thold (s)\tneeds (s)\twords\tok\ttext"]
+        unread = [x for x in sheet if x["readable"] < x["need"] - 1e-6]
+        rows = ["seg\tfully shown (s)\thold (s)\treadable (s)\tneeds (s)\twords\tcontrast\tok\ttext"]
         for x in sheet:
             shown = "never" if x["t"] is None else f"{x['t']:.1f}"
-            rows.append(f"{x['seg']}\t{shown}\t{x['hold']:.1f}\t{x['need']:.1f}"
-                        f"{' (' + x['why'] + ')' if x['why'] else ''}\t{x['words']}\t{'no' if x in short else 'yes'}\t{x['text']}")
+            c = "" if x.get("contrast") is None else f"{x['contrast']:.1f}"
+            rows.append(f"{x['seg']}\t{shown}\t{x['hold']:.1f}\t{x['readable']:.1f}\t{x['need']:.1f}"
+                        f"{' (' + x['why'] + ')' if x['why'] else ''}\t{x['words']}\t{c}\t{'no' if x in unread else 'yes'}\t{x['text']}")
         (film / "review" / "text-sheet.tsv").write_text("\n".join(rows) + "\n")
         report.append(f"on-screen text: {len(sheet)} block(s), {len(short)} held too briefly to read (review/text-sheet.tsv)")
         for x in short:
@@ -2879,6 +2965,8 @@ def main():
                    help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
     p.add_argument("--repeat", type=int, default=8, help="moments rendered twice to check frames are repeatable (0 skips)")
     p.add_argument("--text-step", type=float, default=0.1, help="seconds between on-screen samples for the text sheet, hold test and pacing tests (0 skips them all)")
+    p.add_argument("--contrast", type=float, default=3.0, help="lowest glyph contrast against the pixels behind it, WCAG ratio (0 skips)")
+    p.add_argument("--no-flash-rate", action="store_true", help="skip the WCAG 2.3.1 flash-rate test on the render")
     p.add_argument("--dead-air", type=float, default=1.5, help="flag a voice pause longer than this over 3 words or fewer and no motion (0 skips)")
     p.add_argument("--idle-figure", type=float, default=3.0, help="flag a figure that only idles while the voice speaks longer than this (0 skips)")
     p.add_argument("--beat", type=float, default=5.0, help="flag a beat with nothing new moving or entering while the voice speaks longer than this (0 skips)")
