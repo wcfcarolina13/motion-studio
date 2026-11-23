@@ -26,8 +26,9 @@ with --channel records which YouTube channel the token reaches in channels.json;
 checks the token still reaches it, so one show's video can't land on another show's channel. channels.json may also
 hold, per slug: "disclosure" (a line appended word for word to the description and to every localized description,
 so the AI disclosure reads the same in every language), "synthetic": true (declare altered or synthetic content)
-"language" (the default language of titles and audio) and "pre_upload_check" (a command every upload to that
-channel must pass first, given --package as its last argument; see upload --pre-upload-check).
+"language" (the default language of titles and audio) and "pre_upload_check" (a command, or a list of commands run
+in order, every upload to that channel must pass first, each given --package as its last argument; see upload
+--pre-upload-check).
 While the consent screen is in Testing, Google expires the refresh token after 7 days; run `auth` again, or move the
 app to In production for a lasting token.
 """
@@ -217,7 +218,14 @@ def pre_upload_check(cmd, package=None):
     """Run the owner's pre-upload check, if one is set: `cmd` is split like a shell line (no pipes or &&; wrap those in
     sh -c '...') and run without a shell, with `package` appended as its last argument. A non-zero exit, or a command
     that can't be started, refuses the upload with the command's own output as the reason. Returns quietly when
-    `cmd` is empty."""
+    `cmd` is empty. A list of commands (a channel's checks in channels.json) runs each in order; the first to fail refuses."""
+    if isinstance(cmd, (list, tuple)):
+        cmds = [c for c in cmd if c]
+        if not cmds:
+            return pre_upload_check("", package)
+        for c in cmds:
+            pre_upload_check(c, package)
+        return
     if not cmd:
         if package:
             raise SystemExit("--package is only passed to a pre-upload check: set --pre-upload-check or YT_PRE_UPLOAD_CHECK")
