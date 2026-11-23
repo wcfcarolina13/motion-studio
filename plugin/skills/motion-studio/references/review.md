@@ -17,6 +17,8 @@
 - Text reads against what is actually behind it: 3:1 per glyph at least (`check` text contrast), and no more than 3 flashes a second (`check` flash rate). Both are flags while they are tuned.
 - **Shown and pull**: when a line says something happens or works, it is on screen, doing it, at that moment; each scene ends on something unresolved that the next one answers.
 - No fades; no translucent layers that look like render glitches in a still.
+- **No garbled or stray text in generated images** (owner's rule, 2026-11-22). Image and video models draw fake words, signs, labels and logos (a checklist read "OBDUE" in the Shoestring scene test). Zoom every generated still and a mid frame of every generated clip, and look at signs, papers, screens, packaging, clothing and devices. Fix by redrawing, editing the region out, or covering it with an engine card. Avoid it upfront: prompt for blank or wordless surfaces, and put every word the viewer must read in the engine, never in the model's picture.
+- **Generated clips play forward once; never ping-pong or loop them in reverse** (owner's rule, 2026-11-22: "awkward, poor animation"). When a clip ends, cut away or hold its last frame while the camera keeps moving. A line that needs longer motion gets a longer clip, or a second clip chained from the first one's last frame.
 - Pictures agree with captions (a forest of branched trees under "fewer branches" contradicts it).
 - Screen/time budget matches the contract.
 - Sound: cues land on their events; the drop is on the turn.
