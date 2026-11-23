@@ -26,7 +26,7 @@ if any(j.get('lightning') for j in jobs):  # 4 steps, guidance 1.0
 vram = torch.cuda.get_device_properties(0).total_memory / 1e9
 pipe.to('cuda') if vram >= 70 else pipe.enable_model_cpu_offload()
 print('pipeline on', torch.cuda.get_device_name(0), round(vram), 'GB', flush=True)
-SCHED = dict(pipe.scheduler.config)   # the Diffusers repo ships flow_shift 3.0; official Wan 2.2 I2V samples at 5.0
+SCHED = dict(pipe.scheduler.config)   # ships flow_shift 3.0; official Wan uses 5.0, which invented more people in our test
 # Background strangers are fine; a second copy of the hero is not.
 NEG = ('text, letters, watermark, logo, subtitles, static, frozen frame, blurry, low quality, deformed hands, extra fingers, extra limbs, '
        'morphing face, flicker, 3d render, photorealistic, duplicate of the main character')
