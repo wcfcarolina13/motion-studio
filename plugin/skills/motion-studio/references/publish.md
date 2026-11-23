@@ -46,11 +46,25 @@ YouTube can demonetise a channel of AI-assisted videos for "inauthentic" (mass-p
 | S2 `S2_schemes_or_payouts` | Does it promote a scheme, a job offer or a payout? | false | 2801973 |
 | D1 `D1_ai_disclosure`, `D1_provenance_kept` | Is the altered or synthetic content disclosure set (`--synthetic`), and are C2PA data and model watermarks left in place? | disclosure true, or `"not needed: <why>"` for clearly animated work in which nothing looks real; provenance true | 14328491 (disclosure); 2801973 (stripping them to evade detection is spam) |
 
+The Spam Policy (2801973) "applies to all types of content on YouTube, including unlisted and private content" (as quoted in the audit), so a private review upload passes through the same checks as a public one.
+
 `policycheck.py <package>` refuses a missing file, an unanswered question, a failing answer, a misspelt key, or an M1 sentence identical to another package's beside it. Wire it as the channel's pre-upload check (above), so no upload skips it. Trade-offs: it checks that each question was asked and answered, not that the answer is true; a person watching the cut is the check. M1 is compared only with the packages in the same parent folder.
 
 **Monthly, per channel.** Put the newest five uploads side by side (titles, thumbnails, a contact sheet each, the M1 sentences). If two could swap substance, the next episode changes its angle. Vary the music bed and the picture set per episode: YouTube's own spam example is the same music, repetitive AI imagery and an AI-read script.
 
 **Never.** Re-rendering or editing to remove AI watermarks or C2PA data, and splitting a channel into several accounts to spread a strike (the audit cites 2802168, channel terminations, against it).
+
+## Account security (A1)
+
+Channels in a creator group the project reads were taken over through fake sponsor offers and "verify your analytics" sign-in pages. These rules come from those cases.
+
+- Never sign in with a channel's Google account on a third-party site. A sponsor or service that asks for analytics gets screenshots.
+- The only OAuth grant on a channel's account is `youtube.py`'s own client. Remove any other in the Google account's third-party access page.
+- Keep 2-step verification on and the backup codes stored offline.
+- Check a sender's domain character by character before acting on an email. Look-alike domains swap letters (`rn` for `m`, `I` for `l`) or add words to a real name.
+- Never download or upload footage, project files or "media kits" a stranger sends. They are a common way to deliver malware that steals session cookies, which bypass 2-step verification.
+
+Trade-off: screenshots give a sponsor less than live access would, and some will walk away. A lost channel costs more.
 
 ## Before public: Advanced features
 
