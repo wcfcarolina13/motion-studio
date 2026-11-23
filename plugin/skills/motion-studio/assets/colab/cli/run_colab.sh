@@ -1,6 +1,9 @@
 #!/bin/bash
 # Full-quality Wan 2.2 14B clips on Colab via the official CLI. Always stops the session at the end.
 #   run_colab.sh <in_dir> [out_dir]    in_dir holds the images and jobs.json; out_dir defaults to <in_dir>/../out
+#   SETUP=x.py RENDER=y.py swap in other remote scripts; each must print "OUTFILE <name>" for every file it writes to /content/out.
+#   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 2 means the render started
+#   but didn't finish (what it made is downloaded); that is not retried, since a retry could burn units on the same fault.
 set -uo pipefail
 export PATH=$HOME/.local/bin:$PATH
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -8,6 +11,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 IN=$(cd "$1" && pwd); OUT=${2:-$IN/../out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 cd "$OUT"
 S=motion-studio-wan
+SETUP=${SETUP:-$HERE/remote_setup.py}; RENDER=${RENDER:-$HERE/remote_render.py}
+[[ $SETUP = /* ]] || SETUP=$HERE/$SETUP; [[ $RENDER = /* ]] || RENDER=$HERE/$RENDER
 cleanup() { echo "PHASE stop"; colab stop -s $S || true; colab usage | tee -a usage.log; }
 trap cleanup EXIT
 date '+start %F %T' | tee -a usage.log; colab usage | tee -a usage.log
@@ -19,15 +24,24 @@ for g in G4 A100 L4; do
 done
 [ -z "$GPU" ] && { echo "FAILED: no GPU"; exit 1; }
 echo "GPU $GPU" | tee -a usage.log
-colab exec -s $S --timeout 0 <<< "import os; os.makedirs('/content/in', exist_ok=True)"
-for f in "$IN"/*; do colab upload -s $S "$f" "/content/in/$(basename "$f")" || { echo "FAILED: upload $f"; exit 1; }; done
+# A dropped connection right after allocation once left this exec hanging 15 min while units burned: cap it.
+timeout 300 colab exec -s $S --timeout 120 <<< "import os; os.makedirs('/content/in', exist_ok=True)" || { echo "FAILED: runtime not responding"; exit 1; }
+# The CLI can print "Upload failed" (HTTP 500 from a broken runtime) and still exit 0.
+for f in "$IN"/*; do
+  up=$(timeout 600 colab upload -s $S "$f" "/content/in/$(basename "$f")" 2>&1); rc=$?; echo "$up"
+  { [ $rc -ne 0 ] || grep -q "Upload failed" <<< "$up"; } && { echo "FAILED: upload $f"; exit 1; }
+done
 echo "PHASE setup"; T0=$(date +%s)
-colab exec -s $S -f "$HERE/remote_setup.py" --timeout 0 || { echo "FAILED: setup"; exit 1; }
+# "Connection was lost" here does not stop the remote setup; the render script waits for it, so carry on.
+colab exec -s $S -f "$SETUP" --timeout 0 || echo "setup exec returned an error; render will wait for setup to finish"
 echo "setup $(( $(date +%s)-T0 ))s" | tee -a usage.log
 echo "PHASE render"; T0=$(date +%s)
-colab exec -s $S -f "$HERE/remote_render.py" --timeout 0 || { echo "FAILED: render"; exit 1; }
+colab exec -s $S -f "$RENDER" --timeout 0 2>&1 | tee render.out
+DONE=1; grep -q "RENDER DONE" render.out || { DONE=0; echo "FAILED: render did not finish; downloading whatever exists"; }
 echo "render $(( $(date +%s)-T0 ))s" | tee -a usage.log
-for id in $(python3 -c "import json;print(' '.join(j['id'] for j in json.load(open('$IN/jobs.json'))))"); do
-  colab download -s $S /content/out/$id.mp4 "$OUT/$id.mp4" && echo "got $id"
+for f in $(grep -o 'OUTFILE [^ ]*' render.out | cut -d' ' -f2 | sort -u); do
+  colab download -s $S "/content/out/$f" "$OUT/$f" && echo "got $f"
 done
 date '+end %F %T' | tee -a usage.log
+# 2: the render ran but didn't finish. retry_colab.sh retries only 1 (no GPU, dead runtime), not this: look first.
+[ $DONE = 1 ] || exit 2
