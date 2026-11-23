@@ -26,6 +26,7 @@ if any(j.get('lightning') for j in jobs):  # 4 steps, guidance 1.0
 vram = torch.cuda.get_device_properties(0).total_memory / 1e9
 pipe.to('cuda') if vram >= 70 else pipe.enable_model_cpu_offload()
 print('pipeline on', torch.cuda.get_device_name(0), round(vram), 'GB', flush=True)
+SCHED = dict(pipe.scheduler.config)   # the Diffusers repo ships flow_shift 3.0; official Wan 2.2 I2V samples at 5.0
 # Background strangers are fine; a second copy of the hero is not.
 NEG = ('text, letters, watermark, logo, subtitles, static, frozen frame, blurry, low quality, deformed hands, extra fingers, extra limbs, '
        'morphing face, flicker, 3d render, photorealistic, duplicate of the main character')
@@ -43,9 +44,14 @@ for j in jobs:
     def cb(p, i, t, kw): print(f"{j['id']} step {i+1}/{steps} {int(time.time()-t0)}s", flush=True); return kw
     w, h = j.get('w', 1280), j.get('h', 720)
     img = load_image(f"/content/in/{j['image']}").resize((w, h))
-    fr = pipe(image=img, prompt=STYLE + j['motion'], negative_prompt=NEG, height=h, width=w, num_frames=j.get('frames', 81),
+    # flow_shift: per job, for testing; unset keeps the shipped scheduler. hold_end: the clip ends on its own still,
+    # which keeps the end clean but freezes subtle motion (A/B 2026-11-23), so only for empty shots with strong
+    # ambient motion such as rain.
+    pipe.scheduler = pipe.scheduler.__class__.from_config(SCHED, **({'flow_shift': j['flow_shift']} if 'flow_shift' in j else {}))
+    extra = {'last_image': img} if j.get('hold_end') else {}
+    fr = pipe(image=img, prompt=STYLE + j['motion'], negative_prompt=NEG, height=h, width=w, num_frames=j.get('frames', 49 if fast else 81),
               guidance_scale=g, guidance_scale_2=g, num_inference_steps=steps,
-              generator=torch.Generator('cpu').manual_seed(j.get('seed', 1)), callback_on_step_end=cb).frames[0]
+              generator=torch.Generator('cpu').manual_seed(j.get('seed', 1)), callback_on_step_end=cb, **extra).frames[0]
     export_to_video(fr, out, fps=16)
     print(f"CLIP DONE {j['id']} {int(time.time()-t0)}s\nOUTFILE {j['id']}.mp4", flush=True)
 print('RENDER DONE', flush=True)
