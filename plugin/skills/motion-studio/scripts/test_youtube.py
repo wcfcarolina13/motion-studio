@@ -58,6 +58,34 @@ class SetPrivacy(unittest.TestCase):
             run("public", {"synthetic": True}, answer_synthetic=False)
 
 
+class PolicyCheck(unittest.TestCase):
+    GOOD = {"M1_new": "It follows one roadside crew through a whole night shift for the first time.",
+            "M2_same_outcome": False, "M3_unnarrated_slideshow": False, "M4_ai_expert_advice": False,
+            "M5_realistic_fake_events": False, "S1_title_thumbnail_deliver": True, "S1_payoff_at": "0:04",
+            "S2_schemes_or_payouts": False, "D1_ai_disclosure": True, "D1_provenance_kept": True}
+
+    def test_all_good_passes(self):
+        import policycheck
+        self.assertEqual(policycheck.problems(self.GOOD), [])
+
+    def test_each_wrong_or_missing_answer_is_named(self):
+        import policycheck
+        bad = dict(self.GOOD, S2_schemes_or_payouts=True, D1_provenance_kept=None, S1_payoff_at="soon", M1_new="new stuff")
+        found = policycheck.problems(bad)
+        for k in ("S2_schemes_or_payouts", "D1_provenance_kept", "S1_payoff_at", "M1_new"):
+            self.assertTrue(any(f.startswith(k) for f in found), (k, found))
+        self.assertEqual(len(found), 4)
+
+    def test_a_copied_sentence_fails(self):
+        import policycheck
+        found = policycheck.problems(self.GOOD, siblings=[{"M1_new": self.GOOD["M1_new"].upper()}])
+        self.assertTrue(found and found[0].startswith("M1_new"))
+
+    def test_a_misspelt_key_is_reported(self):
+        import policycheck
+        self.assertTrue(any("unknown" in f for f in policycheck.problems(dict(self.GOOD, S2_scheme=False))))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -118,6 +146,29 @@ class PreUploadCheck(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             upload(self.tmp, check="no-such-command-here")
         self.assertIn("could not run", str(e.exception.code))
+
+    def test_a_channel_list_runs_every_check_in_order(self):
+        with self.assertRaises(Stop):
+            upload(self.tmp, package="pkg", cfg={"pre_upload_check": ["true", "true"]})
+        with self.assertRaises(SystemExit) as e:
+            upload(self.tmp, package="pkg", cfg={"pre_upload_check": ["true", "sh -c 'echo second; exit 1' x"]})
+        self.assertEqual(e.exception.code, "refusing upload: second")
+
+    def test_the_policy_check_as_a_channel_check(self):
+        import json, sys
+        from pathlib import Path
+        pkg = self.tmp / "ep1"; pkg.mkdir()
+        check = f"{sys.executable} {Path(__file__).resolve().parent / 'policycheck.py'}"
+        with self.assertRaises(SystemExit) as e:
+            upload(self.tmp, package=str(pkg), cfg={"pre_upload_check": [check]})
+        self.assertIn("no ", str(e.exception.code))
+        good = {"M1_new": "It follows one roadside crew through a whole night shift for the first time.",
+                "M2_same_outcome": False, "M3_unnarrated_slideshow": False, "M4_ai_expert_advice": False,
+                "M5_realistic_fake_events": False, "S1_title_thumbnail_deliver": True, "S1_payoff_at": "0:04",
+                "S2_schemes_or_payouts": False, "D1_ai_disclosure": True, "D1_provenance_kept": True}
+        (pkg / "policy.json").write_text(json.dumps(good))
+        with self.assertRaises(Stop):
+            upload(self.tmp, package=str(pkg), cfg={"pre_upload_check": [check]})
 
     def test_the_channels_own_check_is_used(self):
         with self.assertRaises(SystemExit):

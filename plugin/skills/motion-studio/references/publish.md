@@ -25,9 +25,32 @@ The Short is cut from the finished episode with `short` and goes through the sam
 
 1. `$Y --channel <show> whoami` must name the show's channel; the token check refuses any other.
 2. Chapters: copy the times from `out/chapters.txt` into the description and into every localized description. YouTube shows chapters only when the first is at 0:00, there are at least three, and each lasts 10 s or more.
-3. Episode: `$Y --channel <show> upload out/<film>.mp4 --title "..." --description-file desc.txt --privacy private --category 27 --thumbnail <thumb.png> --synthetic --language en --localizations localizations.json`. The localizations file holds a title and description per language (`{"es": {...}, "pt-BR": {...}}`); the channel's disclosure line is added to each. To gate the upload on your own check (a translation report, a claims sheet), add `--pre-upload-check "<command>" --package <dir>`, set `YT_PRE_UPLOAD_CHECK`, or (for a check every upload to a channel needs) put `"pre_upload_check": "<command>"` on the channel in `channels.json` and pass `--package`. The flag wins over the variable, which wins over the channel's: the command runs before anything is sent to YouTube, gets the folder as its last argument, and a non-zero exit refuses the upload with the command's output as the reason. It runs without a shell, so wrap pipes or `&&` in `sh -c '...'`.
+3. Episode: `$Y --channel <show> upload out/<film>.mp4 --title "..." --description-file desc.txt --privacy private --category 27 --thumbnail <thumb.png> --synthetic --language en --localizations localizations.json`. The localizations file holds a title and description per language (`{"es": {...}, "pt-BR": {...}}`); the channel's disclosure line is added to each. To gate the upload on your own check (a translation report, a claims sheet), add `--pre-upload-check "<command>" --package <dir>`, set `YT_PRE_UPLOAD_CHECK`, or (for a check every upload to a channel needs) put `"pre_upload_check": "<command>"` on the channel in `channels.json` and pass `--package`. The flag wins over the variable, which wins over the channel's: the command runs before anything is sent to YouTube, gets the folder as its last argument, and a non-zero exit refuses the upload with the command's output as the reason. It runs without a shell, so wrap pipes or `&&` in `sh -c '...'`. A channel can list several checks (`"pre_upload_check": ["<translation check>", "python3 <skill>/scripts/policycheck.py"]`); they run in order and the first to fail refuses.
 4. Captions: `$Y --channel <show> captions <id> out/captions.vtt --language en --name English`, then one call per language file (`out/captions.es.vtt` and so on).
 5. Short: its own title (the hook, short enough to show whole on a phone), a description that opens with the link to the full episode, and the same localizations.
+
+## Policy checks before upload
+
+YouTube can demonetise a channel of AI-assisted videos for "inauthentic" (mass-produced or repetitive) content, and remove videos or channels under its spam policy. These checks come from the project's audit of YouTube's own pages (2026-11-23). The page ids below are YouTube Help answers (`support.google.com/youtube/answer/<id>`): 1311392 is the channel monetization policies, 2801973 the spam, deceptive practices and scams policies, 2802168 channel terminations. Re-read them before relying on a check: YouTube rewrites them.
+
+**Per episode.** After watching the cut, write `policy.json` in the upload package (`python3 scripts/policycheck.py --template` prints an empty one) and answer:
+
+| Id | Question | Passes | Source |
+|---|---|---|---|
+| M1 `M1_new` | One sentence: what does this episode add that the channel's last three didn't? | a sentence of 8 words or more, not copied from another package | 1311392: "materially varied", a "distinct storyline, focus, or concept" |
+| M2 `M2_same_outcome` | The same situation with the same outcome as an earlier episode, only names or numbers swapped? A recurring frame is fine. | false | 1311392 |
+| M3 `M3_unnarrated_slideshow` | Any slideshow or scrolling text with no narration? `longform.py check` already flags text-only stretches. | false | the audit (no page id given) |
+| M4 `M4_ai_expert_advice` | An AI voice or character posing as a human expert giving finance, health, legal or political advice, instead of attributing it to named sources? | false | the audit (no page id given) |
+| M5 `M5_realistic_fake_events` | Realistic shocking imagery, or events that didn't happen? | false | the audit (no page id given) |
+| S1 `S1_title_thumbnail_deliver`, `S1_payoff_at` | Do the title and thumbnail promise only what the video shows, and where (m:ss) is that paid off? | true, and a time | the audit (no page id given) |
+| S2 `S2_schemes_or_payouts` | Does it promote a scheme, a job offer or a payout? | false | 2801973 |
+| D1 `D1_ai_disclosure`, `D1_provenance_kept` | Is the altered or synthetic content disclosure set (`--synthetic`), and are C2PA data and model watermarks left in place? | true, true | 2801973: stripping them to evade detection is spam |
+
+`policycheck.py <package>` refuses a missing file, an unanswered question, a failing answer, a misspelt key, or an M1 sentence identical to another package's beside it. Wire it as the channel's pre-upload check (above), so no upload skips it. Trade-offs: it checks that each question was asked and answered, not that the answer is true; a person watching the cut is the check. M1 is compared only with the packages in the same parent folder.
+
+**Monthly, per channel.** Put the newest five uploads side by side (titles, thumbnails, a contact sheet each, the M1 sentences). If two could swap substance, the next episode changes its angle. Vary the music bed and the picture set per episode: YouTube's own spam example is the same music, repetitive AI imagery and an AI-read script.
+
+**Never.** Re-rendering or editing to remove AI watermarks or C2PA data, and splitting a channel into several accounts to spread a strike (the audit cites 2802168, channel terminations, against it).
 
 ## Before public: Advanced features
 
