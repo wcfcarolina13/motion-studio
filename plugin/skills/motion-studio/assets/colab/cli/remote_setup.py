@@ -2,7 +2,24 @@
 # a 24 GB L4 gets 4-bit (Q4_K_M) plus the Lightning 4-step LoRAs, since 8-bit at 720p ran out of memory there (2026-11-23).
 import subprocess, os, sys
 subprocess.run([sys.executable,'-m','pip','-q','install','-U','diffusers','transformers','accelerate','ftfy','sentencepiece','imageio','imageio-ffmpeg','gguf','peft'],check=True)
-from huggingface_hub import snapshot_download, hf_hub_download
+# The Xet CDN answered 429 (rate limit) on Colab and killed an A100 run (2026-11-23): use plain HTTP downloads,
+# and retry with backoff. The flag must be set before huggingface_hub is imported. Finished files stay in the cache,
+# so a retry fetches only what is missing.
+os.environ['HF_HUB_DISABLE_XET'] = '1'
+import time
+import huggingface_hub as hub
+
+def fetch(fn, *a, tries=6, **kw):
+    for n in range(tries):
+        try:
+            return fn(*a, **kw)
+        except Exception as e:      # 429s and dropped connections surface as several exception types
+            if n == tries - 1: raise
+            wait = min(300, 30 * 2 ** n)
+            print(f'download failed ({type(e).__name__}: {str(e)[:120]}); retry {n + 1}/{tries - 1} in {wait} s', flush=True)
+            time.sleep(wait)
+snapshot_download = lambda *a, **kw: fetch(hub.snapshot_download, *a, **kw)
+hf_hub_download = lambda *a, **kw: fetch(hub.hf_hub_download, *a, **kw)
 import torch
 vram = torch.cuda.get_device_properties(0).total_memory / 1e9
 Q = 'Q8_0' if vram >= 40 else 'Q4_K_M'
