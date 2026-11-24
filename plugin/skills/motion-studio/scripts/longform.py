@@ -7,7 +7,7 @@ script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
 
-  longform.py init <film>                       copy the engine (film.html, kit.js, figure.js, closeup.js) into the folder
+  longform.py init <film>                       copy the engine (film.html, kit.js, figure.js, closeup.js, mapscene.js) into the folder
   longform.py lines <film> [--json]             what the voice says per segment, "say" map applied (feed to TTS, one file per id;
                                                 --json adds speaker, mono); likely misreads go to stderr as SAY: lines
   longform.py voiced <film> [ids] [--speed 1.0]  after voicing: record each clip's voice, pack, speed, words and hash
@@ -156,7 +156,7 @@ def cmd_init(a):
     for d in ("narration", "out", "review", "sources"):
         (film / d).mkdir(parents=True, exist_ok=True)
     shutil.copy(TEMPLATE, film / "film.html")
-    for f in ("kit.js", "figure.js", "closeup.js"):
+    for f in ("kit.js", "figure.js", "closeup.js", "mapscene.js"):
         shutil.copy(HERE / f, film / f)
     # defaults a film made from today on gets, where an older film keeps the old behaviour so its re-renders don't change.
     # script.json overrides each ("anticipate": false)
@@ -766,6 +766,12 @@ def cmd_timeline(a):
           "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1),
           "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False)))}
+    if any(sg.get("type") == "map" for sg in segs):     # the map scene's projection and regions (mapart.py build)
+        mj = film / "maps" / "map.json"
+        if mj.exists():
+            tl["map"] = json.loads(mj.read_text())
+        else:
+            problems.append("map segments but no maps/map.json: run mapart.py build first")
     if short:
         problems += short_audio(film, short, segs, a.lead)
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
@@ -818,7 +824,7 @@ def cmd_short(a):
     for d in ("narration", "out", "review", "sources"):
         (dest / d).mkdir(parents=True, exist_ok=True)
     shutil.copy(TEMPLATE, dest / "film.html")
-    for f in ("kit.js", "figure.js", "closeup.js"):
+    for f in ("kit.js", "figure.js", "closeup.js", "mapscene.js"):
         shutil.copy(HERE / f, dest / f)
     if (film / "engine.json").exists():     # the Short moves like its long-form film
         shutil.copy2(film / "engine.json", dest / "engine.json")
@@ -1477,6 +1483,10 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
         kinds[k] = []
     missing = [k for k, c in kinds.items() if not c and k not in off]
     events = []
+    if any(sg["type"] == "map" for sg in tl["segments"]):    # the map scene's sounds: recordings only, like named foley
+        for k in ("marker", "typewriter", "whoosh"):
+            kinds.setdefault(k, recorded_sfx(k))
+    map_seen = False
     for sg in tl["segments"]:
         d = sg.get("data") or {}
         if sg["type"] == "stage":
@@ -1493,6 +1503,25 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
                 events.append((d["stamp"]["t"] - 0.05 + 0.12, "thud"))
         elif sg["type"] == "sms":
             events.append(((d.get("t") or sg["t0"] + 0.55) - 0.2, "ping"))
+        elif sg["type"] == "map":       # references/maps.md: a paper tick per piece (and per cut-out letter), marker per ink mark,
+            for x in d.get("pieces", []):       # typewriter under a typed title, a whoosh on each camera move
+                t = x.get("t", sg["t0"] + 0.25) - 0.05
+                if x.get("kind") in ("ransom", "sheet"):
+                    n = len(re.sub(r"\s", "", x.get("word" if x.get("kind") == "sheet" else "text", "")))
+                    start = t + (10 / 30 if x.get("kind") == "sheet" else 0)
+                    events += [(start + i * 3.5 / 30, "pin") for i in range(n)]
+                if x.get("kind") != "ransom":
+                    events.append((t, "pin"))
+                if x.get("kind") == "title":
+                    events.append((t + 4 / 30, "typewriter"))
+            events += [(x.get("t", sg["t0"] + 0.3) - 0.05, "marker") for x in d.get("ink", [])]
+            cams = d.get("camera") or []
+            for k, c in enumerate(cams if isinstance(cams, list) else [cams]):
+                if map_seen or k:
+                    events.append((c.get("t", sg["t0"]) - 0.05, "whoosh"))
+            map_seen = True
+        if sg["type"] != "map":
+            map_seen = False
         events += [(x.get("t", sg["t0"] + 0.1), kind_key(x["kind"])) for x in sg.get("sfx", [])]
     skipped = sum(1 for _, k in events if k in missing)
     muted = sum(1 for _, k in events if k in off)
@@ -1821,7 +1850,10 @@ def _final(a):
     tl = load_timeline(film)
     allow = [(sg["t0"], sg["t0"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
     allow += [(sg["t1"], sg["t1"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
-    allow += [(t, t + 0.1) for sg in tl["segments"] if sg["type"] == "panel" for t in (sg["t0"], sg["t1"])]
+    allow += [(t, t + 0.1) for sg in tl["segments"] if sg["type"] in ("panel", "map") for t in (sg["t0"], sg["t1"])]
+    # map pieces slap in (scale 1.1, 0.98, 1.0 on twos) and ransom letters land one by one: hits on purpose
+    allow += [(x["t"] - 0.1, x["t"] + 0.6) for sg in tl["segments"] if sg["type"] == "map"
+              for x in (sg.get("data") or {}).get("pieces", []) if x.get("t") is not None]
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
@@ -2074,7 +2106,12 @@ TEXT_STATE = """() => {
     let shown = inside(b, clipRect(el.parentNode));
     // the scene's own space: the segment group under the camera; its wipe clip is in that space too
     const sg = seg && seg.parentNode && seg.parentNode.id === 'scenes' ? seg : null;
-    const m = sg ? sg.getCTM().inverse().multiply(el.getCTM()) : el.getCTM(), box = corners(b, m);
+    // a paper piece's boil (data-boil: a jitter of a pixel or two every few frames, mapscene.js) is left out, so it doesn't
+    // read as the text moving: the boil group's own transform is taken back out of the element's
+    let em = el.getCTM();
+    const bg = el.closest('[data-boil]');
+    if (bg) { const P = bg.parentNode.getCTM(), B = P.inverse().multiply(bg.getCTM()); em = P.multiply(B.inverse()).multiply(P.inverse()).multiply(em); }
+    const m = sg ? sg.getCTM().inverse().multiply(em) : em, box = corners(b, m);
     if (sg) shown = Math.min(shown, inside(box, clipRect(sg)));
     if (shown < 0.6) return;      // still under its mask line or the wipe, as MEASURE_TEXT
     el.__tid = el.__tid || ++window.__tidN;
@@ -2629,7 +2666,8 @@ def _check(a, film):
     if worst[0] > a.max_text_run:
         flags.append(f"text-only run of {worst[0]:.0f} s from {worst[1]} to {worst[2]} (limit {a.max_text_run:.0f} s)")
     types = [s["type"] for s in segs]
-    repeats = [(types[i], segs[i]["id"]) for i in range(2, len(types)) if types[i] == types[i - 1] == types[i - 2]]
+    # a run of map segments is one scene by design (one map, one camera flying across it): it is not a repeat
+    repeats = [(types[i], segs[i]["id"]) for i in range(2, len(types)) if types[i] == types[i - 1] == types[i - 2] and types[i] != "map"]
     for ty, sid in repeats:
         flags.append(f"three {ty} scenes in a row ending at {sid}")
     video = film / "out" / "silent.mp4"
