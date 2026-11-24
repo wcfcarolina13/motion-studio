@@ -27,7 +27,7 @@ Colab runtimes drop without warning, GPUs are refused for hours, and units burn 
 
 ## Models
 
-- Models download on the runtime, never through the Mac. Setup retries each download with backoff and keeps finished files in the runtime's cache; a new runtime downloads again. Hugging Face's Xet CDN is off (`HF_HUB_DISABLE_XET=1`) after a 429 killed a run. An authenticated, read-only Hugging Face token would allow Xet back with `HF_XET_HIGH_PERFORMANCE=1`; that needs the owner's OK and goes in as a secret file, never in chat or the repo.
+- Models download on the runtime, never through the Mac. Setup retries each download with backoff and keeps finished files in the runtime's cache; a new runtime downloads again. Hugging Face's Xet CDN is off (`HF_HUB_DISABLE_XET=1`) after a 429 killed a run. With a read-only Hugging Face token (owner OK'd 2026-11-24), run_colab.sh uploads it from `HF_TOKEN_FILE` (default `~/.config/motion-studio/hf_read_token`, mode 600 on the Mac) to `/content/.hf_token`, and setup turns Xet back on with `HF_XET_HIGH_PERFORMANCE=1`; after two failed tries it falls back to plain HTTP. No token file means anonymous downloads with Xet off. The token must be read-only (fine-grained, no write scope), is never printed, and never goes in chat, memory, logs or the repo. Trade-off: it sits on the runtime's disk until the runtime stops, so a shared or leaked notebook could expose it; read-only scope limits that to downloading public and gated models as the owner.
 
 ## Drive (opt-in, attended runs only)
 

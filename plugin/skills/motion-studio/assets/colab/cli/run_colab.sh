@@ -5,7 +5,7 @@
 #   whole (write elsewhere, then os.replace), print "OUTFILE <name>" for it, and write /content/out/RENDER_DONE last.
 #   pull_live.sh downloads each file as it appears, so a session that drops mid-render keeps everything finished.
 #   Settings (env): COLAB_SESSION name, COLAB_GPUS order, STALL_ALERT / STALL_STOP seconds, COLAB_ALERT notifier
-#   command, UNIT_BUDGET units per run, COLAB_DRIVE_DIR for an attended run's second copy on Drive. The rules behind
+#   command, UNIT_BUDGET units per run, COLAB_DRIVE_DIR for an attended run's second copy on Drive, HF_TOKEN_FILE for a read-only Hugging Face token. The rules behind
 #   them are in references/colab.md.
 #   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 2 means the render started
 #   but didn't finish, or an output didn't come down whole (what came down is kept); that is not retried, since a retry
@@ -62,6 +62,14 @@ for f in "$IN"/*; do
   up=$(timeout 600 colab upload -s $S "$f" "/content/in/$(basename "$f")" 2>&1); rc=$?; echo "$up"
   { [ $rc -ne 0 ] || grep -q "Upload failed" <<< "$up"; } && { echo "FAILED: upload $f"; exit 1; }
 done
+# Optional read-only Hugging Face token (owner-approved 2026-11-24): authenticated downloads with Xet on. The file
+# never enters the repo, logs or OUT; on the runtime it lives in /content/.hf_token (mode 600) until the runtime stops.
+HF_TOKEN_FILE=${HF_TOKEN_FILE:-$HOME/.config/motion-studio/hf_read_token}
+if [ -s "$HF_TOKEN_FILE" ]; then
+  up=$(timeout 300 colab upload -s $S "$HF_TOKEN_FILE" /content/.hf_token 2>&1); rc=$?
+  if [ $rc -ne 0 ] || grep -q "Upload failed" <<< "$up"; then echo "token upload failed; downloads stay anonymous"
+  else timeout 120 colab exec -s $S --timeout 60 <<< "import os; os.chmod('/content/.hf_token', 0o600)" > /dev/null; echo "HF token uploaded (read-only)"; fi
+fi
 rm -f "$OUT/.pull_stop" "$OUT/.manifest.tsv"
 # Opt-in Drive copy (COLAB_DRIVE_DIR=folder under MyDrive), for attended runs: it may wait on a browser consent click.
 if [ -n "${COLAB_DRIVE_DIR:-}" ]; then
