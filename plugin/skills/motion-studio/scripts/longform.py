@@ -721,7 +721,7 @@ def cmd_timeline(a):
         else:
             dur = s.get("hold", 3.0)
         dur += holds[s["id"]][1]
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -744,6 +744,12 @@ def cmd_timeline(a):
         if seg.get("sfx"):      # drama foley: "sfx": ["paper slap", {"kind": "low hit", "at": "envelope"}]
             seg["sfx"] = [dict(x, kind=kind_key(x["kind"])) if isinstance(x, dict) else {"kind": kind_key(x)} for x in seg["sfx"]]
             resolve_cues(seg["sfx"], seg.get("words"), seg, problems, cues)
+        for k in ("counter", "tag"):    # the persistent HUD cards (longform.md): a string is shorthand for {"value"/"text"}
+            v = seg.get(k)
+            if isinstance(v, (str, int, float)) and v is not None:
+                seg[k] = {"value" if k == "counter" else "text": str(v)}
+            if isinstance(seg.get(k), dict):
+                resolve_cues(seg[k], seg.get("words"), seg, problems, cues)
         if seg.get("bed"):      # ambience under the whole segment: "bed": "rain glass" (or a list)
             seg["bed"] = [kind_key(b) for b in ([seg["bed"]] if isinstance(seg["bed"], str) else seg["bed"])]
         segs.append(seg)
@@ -1342,7 +1348,7 @@ def build_bed(film, plan, total, sr=48000, xfade=3.0):
     return dest
 
 
-SFX_GAP = {"buzz": 0.6, "ping": 0.35, "pin": 0.12, "thud": 0.5}    # same-kind sounds closer than this are dropped
+SFX_GAP = {"buzz": 0.6, "ping": 0.35, "pin": 0.12, "thud": 0.5, "tick": 0.08}    # same-kind sounds closer than this are dropped
 SFX_MAX = {"buzz": 0.9, "ping": 1.2, "pin": 0.4, "thud": 0.8, "whoosh": 1.0,    # seconds a cue may ring; longer clips are cut
            "gavel": 3.0, "footsteps-marble": 3.0, "monitor-beep": 3.0, "low-hit": 2.5, "glass-break": 2.0, "door": 2.0,
            "pen-roll": 1.5, "paper-slide": 1.5, "pen-scratch": 1.5, "keys-lock": 1.5, "cutlery": 1.5, "dripping-water": 1.5,
@@ -1472,6 +1478,8 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
     if any(sg["type"] == "map" for sg in tl["segments"]):    # the map scene's sounds: recordings only, like named foley
         for k in ("marker", "typewriter", "whoosh"):
             kinds.setdefault(k, recorded_sfx(k))
+    if any(isinstance(sg.get("counter"), dict) for sg in tl["segments"]):
+        kinds.setdefault("tick", recorded_sfx("tick"))
     # script.json "ui_sounds": {"ping": false, "buzz": {"gain": 0.2, "lowpass": 2500}} sets a film's default per kind
     tuned = load_script(film).get("ui_sounds") or {}
     unknown = [k for k in tuned if kind_key(k) not in kinds]
@@ -1523,6 +1531,9 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
         if sg["type"] != "map":
             map_seen = False
         events += [(x.get("t", sg["t0"] + 0.1), kind_key(x["kind"])) for x in sg.get("sfx", [])]
+        if isinstance(sg.get("counter"), dict):      # the HUD counter ticks as it counts to a new value (recordings only)
+            t = sg["counter"].get("t", sg["t0"]) - 0.05
+            events += [(t + k * 0.1, "tick") for k in range(6)]
     skipped = sum(1 for _, k in events if k in missing)
     muted = sum(1 for _, k in events if k in off)
     events = sorted(e for e in events if e[1] not in missing and e[1] not in off)
