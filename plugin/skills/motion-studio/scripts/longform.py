@@ -1469,6 +1469,9 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
     for sg in tl["segments"]:           # foley a segment asks for by name: recorded clips only, never drawn
         for x in sg.get("sfx", []):
             kinds.setdefault(kind_key(x["kind"]), recorded_sfx(x["kind"]))
+    if any(sg["type"] == "map" for sg in tl["segments"]):    # the map scene's sounds: recordings only, like named foley
+        for k in ("marker", "typewriter", "whoosh"):
+            kinds.setdefault(k, recorded_sfx(k))
     # script.json "ui_sounds": {"ping": false, "buzz": {"gain": 0.2, "lowpass": 2500}} sets a film's default per kind
     tuned = load_script(film).get("ui_sounds") or {}
     unknown = [k for k in tuned if kind_key(k) not in kinds]
@@ -1483,9 +1486,6 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
         kinds[k] = []
     missing = [k for k, c in kinds.items() if not c and k not in off]
     events = []
-    if any(sg["type"] == "map" for sg in tl["segments"]):    # the map scene's sounds: recordings only, like named foley
-        for k in ("marker", "typewriter", "whoosh"):
-            kinds.setdefault(k, recorded_sfx(k))
     map_seen = False
     for sg in tl["segments"]:
         d = sg.get("data") or {}
@@ -1854,6 +1854,13 @@ def _final(a):
     # map pieces slap in (scale 1.1, 0.98, 1.0 on twos) and ransom letters land one by one: hits on purpose
     allow += [(x["t"] - 0.1, x["t"] + 0.6) for sg in tl["segments"] if sg["type"] == "map"
               for x in (sg.get("data") or {}).get("pieces", []) if x.get("t") is not None]
+    # the map camera moves on twos, so each step of a move is a held pair of frames: allow the move (at most 26 frames)
+    for sg in tl["segments"]:
+        if sg["type"] == "map":
+            cams = (sg.get("data") or {}).get("camera") or []
+            for c in cams if isinstance(cams, list) else [cams]:
+                t = c.get("t", sg["t0"])
+                allow.append((t - 0.1, t + c.get("frames", 26) / 30 + 0.15))
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
