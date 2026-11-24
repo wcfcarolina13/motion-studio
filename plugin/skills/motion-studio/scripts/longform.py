@@ -50,6 +50,7 @@ HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE.parent / "assets" / "templates" / "longform.html"
 sys.path.insert(0, str(HERE))
 import panelqa  # noqa: E402
+import scalecheck  # noqa: E402
 FPS = 30
 TEXT_ONLY = {"statement", "quote", "list", "chapter", "title"}      # scene types that are words on a background, unless a kit draws a picture into one (see picture_share)
 
@@ -378,9 +379,10 @@ def panel_list(film, sc, problems=None):
             continue
         p = panels.setdefault(img, {"image": img, "beats": [], "shot": d.get("shot"), "char_in_frame": d.get("char_in_frame", []),
                                     "flashback": bool(d.get("flashback")), "prompt": d.get("prompt", ""), "seed": d.get("seed"),
-                                    "refs": d.get("refs", []), "plate": d.get("plate"), "size": d.get("size")})
+                                    "refs": d.get("refs", []), "plate": d.get("plate"), "size": d.get("size"),
+                                    "props": d.get("props", [])})
         p["beats"].append(s["id"])
-        for k in ("prompt", "refs", "plate", "size"):
+        for k in ("prompt", "refs", "plate", "size", "props"):
             if d.get(k) and not p[k]:
                 p[k] = d[k]
     return list(panels.values())
@@ -393,11 +395,23 @@ def cmd_panels(a):
     sc = load_script(film)
     problems = []
     panels = panel_list(film, sc, problems)
+    sizes = sc.get("sizes") or {}
+    problems += scalecheck.sheet_problems(sizes)
     for p in panels:
         p["exists"] = (film / p["image"]).exists()
         p["upscaled"] = bool(hd_path(film, p["image"]))
         if not p["prompt"]:
             problems.append(f"{p['image']} (beats {', '.join(p['beats'])}): no prompt")
+        unknown = [k for k in p.get("props") or [] if k not in sizes]
+        if unknown:
+            problems.append(f"{p['image']}: props with no entry in \"sizes\": {', '.join(unknown)}")
+        p["scale"] = scalecheck.scale_sentence(p, sizes)
+        p["prompt"] = scalecheck.with_scale(p["prompt"], p["scale"])
+        if p["exists"]:
+            white = panelqa.white_share(film / p["image"])
+            if white > panelqa.WHITE_MAX:
+                problems.append(f"{p['image']}: {white:.0%} of the picture is near-white; ground and paper should be warm "
+                                f"cream (no channel over {panelqa.WHITE_LEVEL}); redraw or grade it down")
     for x in problems:
         print("PROBLEM:", x)
     out = film / "out" / "panels.json"
@@ -408,6 +422,46 @@ def cmd_panels(a):
     warned = panelqa.lint([dict(p, id=p["image"]) for p in panels])
     if warned:
         print(f"{len(warned)} panel prompts have lint warnings; run `longform.py lint {a.film}`")
+
+
+def scale_verdicts(film):
+    f = film / "out" / "scale.json"
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+def gate_scale(film, sc, step):
+    """A film with a "sizes" sheet renders only once every panel with two or more sized things has passed the
+    proportion check on its current image (scalecheck.py)."""
+    sizes = sc.get("sizes") or {}
+    if not sizes:
+        return
+    probs = scalecheck.sheet_problems(sizes) + scalecheck.gate_problems(film, panel_list(film, sc), sizes, scale_verdicts(film))
+    if probs:
+        raise SystemExit(f"{step} stopped: {len(probs)} proportion problem(s); run `longform.py scale {film.name}`, mark "
+                         "the stills, then `--marks marks.json`\n  " + "\n  ".join(probs))
+
+
+def cmd_scale(a):
+    """Proportions: without --marks, writes out/scale/index.html to mark each panel with two or more sized things; with
+    --marks, judges them into out/scale.json and exits 1 on any failure."""
+    film = Path(a.film).resolve()
+    sc = load_script(film)
+    sizes = sc.get("sizes") or {}
+    if not sizes:
+        raise SystemExit('no "sizes" in script.json: add each person and prop with its real height in metres and a source')
+    for x in scalecheck.sheet_problems(sizes):
+        print("PROBLEM:", x)
+    panels = panel_list(film, sc)
+    if not a.marks:
+        f, n = scalecheck.page(film / "out" / "scale", film, panels, sizes, sc.get("title", film.name), a.tol)
+        print(f"{n} panels to mark -> {f}")
+        return
+    old = scale_verdicts(film)
+    new = scalecheck.check_all(film, panels, sizes, json.loads(Path(a.marks).read_text()), a.tol)
+    (film / "out").mkdir(exist_ok=True)
+    (film / "out" / "scale.json").write_text(json.dumps({**old, **new}, indent=1) + "\n")
+    if scalecheck.report(new):
+        sys.exit(1)
 
 
 def cmd_lint(a):
@@ -1181,6 +1235,7 @@ def cmd_render(a):
 def _render(a, film, st):
     tl = load_timeline(film)
     gate_real_assets(film, tl["segments"], "render")
+    gate_scale(film, load_script(film), "render")
     # a render is only started on a version of the film that a check passed (its page ran clean), and on a page that
     # is clean now: a JavaScript error never heals on a retry, and a render is the most expensive place to find one
     passed = film / "review" / "check-gate.json"
@@ -2953,6 +3008,9 @@ def main():
     p.add_argument("--allow-homographs", action="store_true", help="record clips a listen-through has confirmed read right")
     p.set_defaults(fn=cmd_voiced)
     p = sp.add_parser("panels"); p.add_argument("film"); p.set_defaults(fn=cmd_panels)
+    p = sp.add_parser("scale"); p.add_argument("film"); p.add_argument("--marks", help="marks.json from the scale page")
+    p.add_argument("--tol", type=float, default=scalecheck.TOL, help="allowed size error against the people in frame (0.2)")
+    p.set_defaults(fn=cmd_scale)
     p = sp.add_parser("lint"); p.add_argument("source", help="a film folder, or a JSON list of panel prompts")
     p.add_argument("--boiler", help="regex: sentences to leave out of the word count (reference lines and a shared last sentence already are)")
     p.set_defaults(fn=cmd_lint)
