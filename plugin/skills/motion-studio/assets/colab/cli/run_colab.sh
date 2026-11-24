@@ -43,9 +43,12 @@ date '+start %F %T' | tee -a usage.log; timeout 60 colab version | tee -a usage.
 B0=$(balance)
 echo "PHASE new"
 GPU=""
-# COLAB_GPUS sets the order. G4 is not offered to the CLI; T4 (16 GB, no bf16) can't hold Wan 14B, so it is only for
-# jobs that fit it (COLAB_GPUS="L4 T4"). Since about 2026-11-23 the CLI often answers 503 for L4 and A100.
-for g in ${COLAB_GPUS:-A100 L4}; do
+# COLAB_GPUS sets the order. The default is the cheapest GPU that fits: an A100 burns about 11 units an hour against
+# about 2.3 for an L4 (2026-11-24), so it is only used when asked for (COLAB_GPUS="A100 L4"). T4 (16 GB, no bf16) can't
+# hold Wan 14B, so the default Wan scripts get "L4" and swapped-in jobs (stills, voice) get "L4 T4". G4 is not offered
+# to the CLI. Since about 2026-11-23 the CLI often answers 503 for L4 and A100.
+if [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; then DEF_GPUS="L4"; else DEF_GPUS="L4 T4"; fi
+for g in ${COLAB_GPUS:-$DEF_GPUS}; do
   if timeout 1800 colab new -s $S --gpu $g --high-mem; then GPU=$g; break; fi
   echo "no $g, trying next"; timeout 300 colab stop -s $S 2>/dev/null || true
   # A failed `new` can still leave a runtime assigned and billing, listed as [?] (no local name, so not stoppable here)
