@@ -29,14 +29,21 @@ EOF
   rm -rf "$d"; [ $rc -eq 3 ]      # 3: nothing left to do (prints nothing); anything else is an error
 }
 
-for i in 1 2 3 4 5 6 7 8 9; do
+# Exit 3 (the cards are busy on this account) waits 5 min and does not count as a try, up to BUSY_MAX seconds (6 h).
+BUSY_MAX=${BUSY_MAX:-21600}; BUSY_WAIT=${BUSY_WAIT:-300}; busy=0; i=1
+while [ $i -le 9 ]; do
   echo "PHASE try $i"
   d=$(todo_dir); rc=$?
   [ $rc -ne 0 ] && { echo "FAILED: could not read $IN/jobs.json"; exit 2; }
   [ -z "$d" ] && { echo "every job has output"; exit 0; }
   /bin/bash "$R" "$d" "$OUT"; rc=$?
   [ "$d" != "$IN" ] && rm -rf "$d"
+  if [ $rc -eq 3 ]; then
+    [ $busy -ge "$BUSY_MAX" ] && { echo "FAILED: cards still busy after $busy s"; exit 1; }
+    echo "cards busy; waiting $BUSY_WAIT s (not a try)"; sleep "$BUSY_WAIT"; busy=$((busy + BUSY_WAIT)); continue
+  fi
   [ $rc -ne 1 ] && exit $rc        # 0 done, 2 render didn't finish: only 1 (no GPU, dead runtime) is worth retrying
   [ $i -lt 9 ] && sleep 1200
+  i=$((i + 1))
 done
 exit 1
