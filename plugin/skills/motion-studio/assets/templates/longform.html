@@ -1217,6 +1217,102 @@ const showLabel = (el, runs, t) => {
   el.setAttribute("opacity", r ? (Math.min(K.smooth(K.prog(t, r.t0, r.t0 + 0.35)), 1 - K.smooth(out))).toFixed(3) : 0);
 };
 
+// ── HUD: a counter card (top right) and a tag card (top left) that stay up across segments until changed ──
+// A segment's "counter": {"value": "−$25,375", "label": "CASH", "note": "our math", "at": "word"} sets the counter on its
+// word (or the segment's start); a new value counts to it over 0.6 s; "counter": null takes the card away. label and
+// note carry over until changed. A value below zero is red, above zero green. "tag": "MONTHS 4–6" (or {"text", "at"})
+// does the same for the tag card; "tag": null removes it. Both are read like any other text (size, overlap, contrast,
+// reading time). While the counter is up, the chapter label (top right) is hidden.
+const HUD = (() => {
+  const ev = { counter: [], tag: [] };
+  SEGS.forEach(s => ["counter", "tag"].forEach(k => { if (k in s) ev[k].push({ t: s[k] && s[k].t != null ? s[k].t - 0.05 : s.t0, v: s[k], s }); }));
+  if (!ev.counter.length && !ev.tag.length) return null;
+  const hudG = K.group("hud");
+  const PAPER = "#F1EDE4", NEG = C.NEG || "#B3261E", POS = C.POS || "#2E7D32";
+  const num = str => {          // "−$25,375.50k" -> {sign, pre, n, dec, post}
+    const m = String(str).match(/^(.*?)(\d[\d,]*(?:\.\d+)?)(.*)$/);
+    if (!m) return null;
+    const neg = /[−-]/.test(m[1]);
+    return { pre: m[1].replace(/[−-]/g, ""), n: (neg ? -1 : 1) * parseFloat(m[2].replace(/,/g, "")), dec: (m[2].split(".")[1] || "").length, post: m[3] };
+  };
+  const fmt = (p, n) => (n < 0 ? "−" : "") + p.pre + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: p.dec, maximumFractionDigits: p.dec }) + p.post;
+  const right = V(W - 56, SAFE.x1 - 20), top = V(40, SAFE.y0 + 10);
+
+  // counter: states between events
+  const cs = [];
+  let label = "", note = "";
+  ev.counter.forEach(e => {
+    if (e.v == null) { cs.push({ t: e.t, off: true }); return; }
+    label = e.v.label != null ? e.v.label : label; note = e.v.note != null ? e.v.note : note;
+    cs.push({ t: e.t, value: String(e.v.value), label, note, p: num(e.v.value) });
+  });
+  cs.forEach((c, i) => { c.t1 = i + 1 < cs.length ? cs[i + 1].t : TL.duration; c.prev = i && !cs[i - 1].off ? cs[i - 1] : null; });
+  const cG = K.el("g", {}, hudG), cShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, cG), cCard = K.el("rect", { fill: PAPER, stroke: C.INK, "stroke-width": 2 }, cG);
+  const cLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4, fill: C.INK, "text-anchor": "end" }, cG);
+  const cVal = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, "text-anchor": "end" }, cG);
+  const cNote = K.text("", { ...AUX, "font-family": SANS, "font-size": 20, "font-style": "italic", fill: C.GREY, "text-anchor": "end" }, cG);
+  // the card is as wide as the widest value it will count through, measured once
+  const meas = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700 }, hudG);
+  cs.forEach(c => { if (c.off) return;
+    const vals = [c.value].concat(c.prev && c.p && c.prev.p ? [fmt(c.p, c.prev.p.n)] : []);
+    c.w = Math.max(...vals.map(v => { meas.textContent = v + "0"; return meas.getComputedTextLength(); }), c.label.length * 17, c.note.length * 10) + 56;
+    K.label(c.value, c.t, c.t1, "counter"); });
+  meas.remove();
+  const COUNT = 0.6;
+
+  // tag
+  const ts = ev.tag.map((e, i) => ({ t: e.t, text: e.v == null ? null : String(e.v.text != null ? e.v.text : e.v) }));
+  ts.forEach((x, i) => { x.t1 = i + 1 < ts.length ? ts[i + 1].t : TL.duration; if (x.text) K.label(x.text, x.t, x.t1, "tag"); });
+  const tG = K.el("g", {}, hudG), tCard = K.el("rect", { fill: PAPER, stroke: C.INK, "stroke-width": 2 }, tG);
+  const tTxt = K.text("", { "font-family": SANS, "font-size": READ, "font-weight": 700, "letter-spacing": 3, fill: C.INK }, tG);
+  const left = V(56, SAFE.x0 + 20);
+
+  const at = (list, t) => { let cur = null; for (const x of list) if (t >= x.t) cur = x; return cur; };
+  return {
+    counterOn: t => { const c = at(cs, t); return !!(c && !c.off); },
+    frame(t) {
+      const c = at(cs, t);
+      const on = c && !c.off, last = on ? c : (c && c.off ? cs[cs.indexOf(c) - 1] : null);
+      // in over 0.25 s from nothing, out over 0.25 s to nothing; between values the card stays and the number counts
+      const fresh = on && !c.prev, aIn = on ? (fresh ? K.eout(K.prog(t, c.t, c.t + 0.25)) : 1) : 0;
+      const aOut = c && c.off && last ? 1 - K.ein(K.prog(t, c.t, c.t + 0.25)) : 0;
+      const a = on ? aIn : aOut, show = on ? c : last;
+      K.show(cG, a > 0.01 && !!show);
+      if (show && a > 0.01) {
+        let n = show.p ? show.p.n : 0, txt = show.value;
+        if (on && show.prev && show.p && show.prev.p) {
+          const q = K.prog(t, show.t, show.t + COUNT);
+          if (q < 1) { const step = Math.floor(q * 18) / 18; n = show.prev.p.n + (show.p.n - show.prev.p.n) * K.eout(step); txt = fmt(show.p, n); }
+        }
+        const w = show.w, h = (show.label ? 30 : 0) + READ * 1.15 + (show.note ? 30 : 0) + 28;
+        const x0 = right - w, y = top + (1 - a) * -24;
+        K.set(cShadow, { x: x0 + 5, y: y + 7, width: w, height: h });
+        K.set(cCard, { x: x0, y, width: w, height: h });
+        let yy = y + 14;
+        cLab.textContent = show.label.toUpperCase(); if (show.label) { yy += 24; K.set(cLab, { x: right - 24, y: yy }); }
+        yy += READ * 1.0 + (show.label ? 8 : 4);
+        cVal.textContent = txt; K.set(cVal, { x: right - 24, y: yy, fill: n < 0 ? NEG : n > 0 ? POS : C.INK });
+        cNote.textContent = show.note; if (show.note) K.set(cNote, { x: right - 24, y: yy + 30 });
+        cG.setAttribute("opacity", a.toFixed(3));
+        cG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
+      }
+      const g = at(ts, t), gl = g && !g.text ? ts[ts.indexOf(g) - 1] : null;
+      const ta = g && g.text ? (g.t === ts[0].t || !ts[ts.indexOf(g) - 1] || !ts[ts.indexOf(g) - 1].text ? K.eout(K.prog(t, g.t, g.t + 0.25)) : 1)
+                             : gl && gl.text ? 1 - K.ein(K.prog(t, g.t, g.t + 0.25)) : 0;
+      const tx = g && g.text ? g.text : gl && gl.text;
+      K.show(tG, ta > 0.01 && !!tx);
+      if (tx && ta > 0.01) {
+        tTxt.textContent = tx.toUpperCase();
+        const tw = tTxt.getComputedTextLength() + 48, th = READ * 1.45;
+        K.set(tCard, { x: left, y: top + (1 - ta) * -24, width: tw, height: th });
+        K.set(tTxt, { x: left + 24, y: top + (1 - ta) * -24 + READ * 1.12 });
+        tG.setAttribute("opacity", ta.toFixed(3));
+        tG.setAttribute("transform", `rotate(-0.8 ${left} ${top})`);
+      }
+    },
+  };
+})();
+
 // ── render(t) ────────────────────────────────────────────
 K.run(t => {
   if (MAP) MAP.frame(t);
@@ -1245,6 +1341,7 @@ K.run(t => {
   });
   showLabel(sourceT, srcRuns, t);
   showLabel(chapterT, chapRuns, t);
+  if (HUD) { HUD.frame(t); if (HUD.counterOn(t)) chapterT.setAttribute("opacity", 0); }
   capPages.forEach(pg => {
     // a page leaves in the 0.18 s before the next one rises, so two pages never share the band
     const vis = t >= pg.t0 && t < pg.t1;
