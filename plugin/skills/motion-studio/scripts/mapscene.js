@@ -4,6 +4,7 @@
 // Every value is a pure function of t, like the rest of the engine. Motion is on twos (15 steps a second at 30 fps),
 // and every paper piece "boils" (a small jitter, a new one every 8 frames), so no frame is ever still.
 (function () {
+  // "yellow" is the film's accent: palette ACCENT (mapart.py paints regions with the same colour), Vox yellow by default
   const PAL = { board: "#EFEBE3", ink: "#1D1C20", yellow: "#EDBD2E", beige: "#F1EDE4" };
   const FONTS = { caslon: "MS Caslon", caslonI: "MS Caslon Italic", marker: "MS Marker", elite: "MS Elite", anton: "MS Anton" };
   const FILES = { caslon: "LibreCaslonText.ttf", caslonI: "LibreCaslonText-Italic.ttf", marker: "PermanentMarker-Regular.ttf",
@@ -12,6 +13,7 @@
   window.MapScene = function (E) {
     const { K, W, H, READ, VERT, SAFE, SEGS, TL, sceneG, cueT } = E;
     const FPS = TL.fps || 30, M = TL.map;
+    PAL.yellow = (TL.palette || {}).ACCENT || "#EDBD2E";
     const segs = SEGS.filter(s => s.type === "map");
     const warn = m => window.STUDIO.warnings.push("map: " + m);
     if (!segs.length) return null;

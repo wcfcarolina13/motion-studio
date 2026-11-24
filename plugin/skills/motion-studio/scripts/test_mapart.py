@@ -38,6 +38,24 @@ class ChaikinTest(unittest.TestCase):
         self.assertEqual(out[-1].tolist(), [10, 0])
 
 
+class PickStateTest(unittest.TestCase):
+    F = [{"properties": {"name": "Washington", "name_en": "Washington", "iso_3166_2": "US-WA", "postal": "WA", "adm0_a3": "USA"}},
+         {"properties": {"name": "District of Columbia", "name_en": "Washington", "iso_3166_2": "US-DC", "postal": "DC", "adm0_a3": "USA"}},
+         {"properties": {"name": "Western Australia", "iso_3166_2": "AU-WA", "postal": "WA", "adm0_a3": "AUS"}}]
+
+    def names(self, *a):
+        return [f["properties"]["name"] for f in mapart.pick_state(self.F, *a)]
+
+    def test_exact_name_beats_english_alias(self):
+        self.assertEqual(self.names("Washington"), ["Washington"])
+        self.assertEqual(self.names("us-wa"), ["Washington"])
+
+    def test_postal_code_needs_a_country_when_ambiguous(self):
+        with self.assertRaises(SystemExit):
+            mapart.pick_state(self.F, "WA")
+        self.assertEqual(self.names("WA", "USA"), ["Washington"])
+
+
 class CutoutTest(unittest.TestCase):
     def picture(self, d, white_bg):
         a = np.full((120, 160, 4), 255, np.uint8)
