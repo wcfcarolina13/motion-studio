@@ -5,9 +5,23 @@ subprocess.run([sys.executable,'-m','pip','-q','install','-U','diffusers','trans
 # The Xet CDN answered 429 (rate limit) on Colab and killed an A100 run (2026-11-23): use plain HTTP downloads,
 # and retry with backoff. The flag must be set before huggingface_hub is imported. Finished files stay in the cache,
 # so a retry fetches only what is missing.
-os.environ['HF_HUB_DISABLE_XET'] = '1'
+# With the owner's read-only token (run_colab.sh uploads HF_TOKEN_FILE to /content/.hf_token), downloads are
+# authenticated, which lifts the anonymous rate limit, so Xet goes back on. Without it, plain HTTP as above.
+TOKEN = '/content/.hf_token'
+if os.path.exists(TOKEN) and open(TOKEN).read().strip():
+    os.environ['HF_TOKEN'] = open(TOKEN).read().strip()
+    os.environ['HF_XET_HIGH_PERFORMANCE'] = '1'
+    print('downloads: authenticated, Xet on', flush=True)
+else:
+    os.environ['HF_HUB_DISABLE_XET'] = '1'
+    print('downloads: anonymous, Xet off', flush=True)
 import time
 import huggingface_hub as hub
+
+def xet_off():                      # if Xet still fails with a token, fall back to plain HTTP for the remaining tries
+    if os.environ.get('HF_HUB_DISABLE_XET') != '1' and hasattr(hub, 'constants'):
+        os.environ['HF_HUB_DISABLE_XET'] = '1'; hub.constants.HF_HUB_DISABLE_XET = True
+        print('Xet failed twice; switching to plain HTTP downloads', flush=True)
 
 def alive():                        # the render waits for setup while this file keeps getting touched
     open('/content/setup_alive', 'w').write(str(time.time()))
@@ -19,6 +33,7 @@ def fetch(fn, *a, tries=6, **kw):
             return fn(*a, **kw)
         except Exception as e:      # 429s and dropped connections surface as several exception types
             if n == tries - 1: raise
+            if n >= 1: xet_off()
             wait = min(300, 30 * 2 ** n)
             print(f'download failed ({type(e).__name__}: {str(e)[:120]}); retry {n + 1}/{tries - 1} in {wait} s', flush=True)
             for _ in range(wait // 30): time.sleep(30); alive()
