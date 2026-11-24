@@ -31,7 +31,19 @@ SCHED = dict(pipe.scheduler.config)   # ships flow_shift 3.0; official Wan uses 
 NEG = ('text, letters, watermark, logo, subtitles, static, frozen frame, blurry, low quality, deformed hands, extra fingers, extra limbs, '
        'morphing face, flicker, 3d render, photorealistic, duplicate of the main character')
 STYLE = '2D anime, cel-shaded, clean ink linework, consistent character, cinematic. '
-os.makedirs('/content/out', exist_ok=True)
+os.makedirs('/content/out', exist_ok=True); os.makedirs('/content/tmp', exist_ok=True)
+import hashlib
+def publish(tmp, name):
+    """Move a finished file into /content/out whole, then list it with its size and sha256 in MANIFEST.tsv, which
+    pull_live.sh checks every download against. Only listed files are taken, so a file is never pulled half-written."""
+    h = hashlib.sha256()
+    with open(tmp, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''): h.update(b)
+    os.replace(tmp, f'/content/out/{name}')
+    m = '/content/out/MANIFEST.tsv'
+    old = open(m).read() if os.path.exists(m) else ''
+    open('/content/tmp/MANIFEST.tsv', 'w').write(old + f"{name}\t{os.path.getsize(f'/content/out/{name}')}\t{h.hexdigest()}\n")
+    os.replace('/content/tmp/MANIFEST.tsv', m)
 for j in jobs:
     out = f"/content/out/{j['id']}.mp4"
     if os.path.exists(out): print(f"OUTFILE {j['id']}.mp4", flush=True); continue
@@ -52,6 +64,8 @@ for j in jobs:
     fr = pipe(image=img, prompt=STYLE + j['motion'], negative_prompt=NEG, height=h, width=w, num_frames=j.get('frames', 49 if fast else 81),
               guidance_scale=g, guidance_scale_2=g, num_inference_steps=steps,
               generator=torch.Generator('cpu').manual_seed(j.get('seed', 1)), callback_on_step_end=cb, **extra).frames[0]
-    export_to_video(fr, out, fps=16)
+    # whole files only in /content/out, listed in its manifest: pull_live.sh downloads them mid-render
+    export_to_video(fr, f"/content/tmp/{j['id']}.mp4", fps=16); publish(f"/content/tmp/{j['id']}.mp4", f"{j['id']}.mp4")
     print(f"CLIP DONE {j['id']} {int(time.time()-t0)}s\nOUTFILE {j['id']}.mp4", flush=True)
+open('/content/tmp/RENDER_DONE', 'w').write('done\n'); os.replace('/content/tmp/RENDER_DONE', '/content/out/RENDER_DONE')
 print('RENDER DONE', flush=True)
