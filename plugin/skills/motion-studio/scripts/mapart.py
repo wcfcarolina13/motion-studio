@@ -256,6 +256,24 @@ def pick(features, want):
     return [f for f in features if any(str(f["properties"].get(k, "")).lower() == w for k in keys)]
 
 
+def pick_state(features, want, country=None):
+    """States or provinces matching a name, ISO 3166-2 code (US-WA) or postal code (WA), case-insensitive. A postal
+    code is ambiguous across countries ("WA" is also Western Australia), so give "country" with one."""
+    w = str(want).lower()
+    # the English name comes last: Natural Earth gives the District of Columbia the English name "Washington"
+    for keys in (("name", "iso_3166_2", "postal", "adm1_code", "code_hasc"), ("name_en", "name_alt")):
+        out = [f for f in features if any(str(f["properties"].get(k, "")).lower() == w for k in keys)]
+        if out:
+            break
+    if country:
+        c = str(country).lower()
+        out = [f for f in out if c in (str(f["properties"].get(k, "")).lower() for k in ("adm0_a3", "iso_a2", "admin"))]
+    if len({f["properties"].get("adm0_a3") for f in out}) > 1:
+        raise SystemExit(f"state {want!r} matches in more than one country "
+                         f"({', '.join(sorted({f['properties']['adm0_a3'] for f in out}))}); add \"country\"")
+    return out
+
+
 def save_tiles(im, out, name, keep=None):
     """Cut an image into TILE px tiles, <name>/<row>_<col>.png; returns [[col, row, w, h], ...]. keep(box) can skip tiles."""
     (out / name).mkdir(parents=True, exist_ok=True)
@@ -287,13 +305,39 @@ def cmd_build(film):
     cmd_fonts(film)
 
     land = poly_mask(P, [r for f in layer(res, "land")["features"] for r in rings(f["geometry"])])
+    if spec.get("lakes", True):     # Natural Earth's land includes the lakes: cut them out, so they read as water
+        # only lakes big enough to read at this scale: by default at least 1% of the map's width across (as an area),
+        # which keeps the Great Lakes and drops the hundreds of small Canadian lakes that would read as specks
+        lmin = spec.get("lake_min_px", (P.w / 100) ** 2)
+        def big(poly):
+            x, y = P(np.asarray(poly[0])[:, 0], np.asarray(poly[0])[:, 1])
+            return 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))) >= lmin
+        lk = [r for f in layer(res, "lakes")["features"] for r in rings(f["geometry"]) if big(r)]
+        if lk:
+            land = land & ~poly_mask(P, lk)
     countries = layer(res, "admin_0_countries")["features"]
-    feat = {}
+    states = None
+    feat, auto_labels, state_countries = {}, [], set()
     for fe in spec.get("featured", []):
-        hits = pick(countries, fe.get("country", fe["id"]))
-        if not hits:
-            raise SystemExit(f"featured {fe}: no Natural Earth country by that name or code")
+        want = fe.get("state") or fe.get("admin1")
+        if want:            # a state or province: Natural Earth admin-1 (at 50m only for a few large countries; 10m has all)
+            states = states or layer(res, "admin_1_states_provinces")["features"]
+            hits = pick_state(states, want, fe.get("country"))
+            if not hits:
+                raise SystemExit(f"featured {fe}: no Natural Earth state or province by that name or code at {res}"
+                                 + (" (try \"detail\": \"10m\")" if res != "10m" else ""))
+            state_countries |= {h["properties"]["adm0_a3"] for h in hits}
+        else:
+            hits = pick(countries, fe.get("country", fe["id"]))
+            if not hits:
+                raise SystemExit(f"featured {fe}: no Natural Earth country by that name or code")
         feat[fe["id"]] = poly_mask(P, [r for h in hits for r in rings(h["geometry"])]) & land
+        if fe.get("label"):  # engraved name at Natural Earth's label point, or the text given
+            pr = hits[0]["properties"]
+            lon = pr.get("longitude", pr.get("LABEL_X")); lat = pr.get("latitude", pr.get("LABEL_Y"))
+            if lon is not None and lat is not None:
+                auto_labels.append({"text": fe["label"] if isinstance(fe["label"], str) else (pr.get("name") or pr.get("NAME")),
+                                    "lon": lon, "lat": lat, **({"size": fe["label_size"]} if "label_size" in fe else {})})
     anyfeat = np.zeros_like(land)
     for m in feat.values():
         anyfeat |= m
@@ -333,9 +377,16 @@ def cmd_build(film):
     del coast
     borders = [chaikin(np.asarray(ln, np.float64), closed=False) for f in layer(res, "admin_0_boundary_lines_land")["features"] for ln in lines(f["geometry"])]
     ink = np.maximum(ink, stroke_layer(P, borders, 4, dash=(22, 18)))
+    # state and province borders: thinner and with shorter dashes than national ones, for the countries listed in
+    # "admin1_borders" (ISO A3 codes), or by default for the countries whose states are featured
+    a1 = {c.upper() for c in spec.get("admin1_borders", sorted(state_countries))}
+    if a1:
+        a1l = [chaikin(np.asarray(ln, np.float64), closed=False) for f in layer(res, "admin_1_states_provinces_lines")["features"]
+               if str(f["properties"].get("ADM0_A3", "")).upper() in a1 for ln in lines(f["geometry"])]
+        ink = np.maximum(ink, stroke_layer(P, a1l, 2.6, dash=(14, 12)))
     if spec.get("compass"):
         ink = np.maximum(ink, compass(P, *spec["compass"]))
-    lab, knock = label_layer(P, spec.get("labels", []), spec.get("label_size", 60))
+    lab, knock = label_layer(P, auto_labels + spec.get("labels", []), spec.get("label_size", 60))
     fine *= 1 - knock
     ink = ink * (1 - knock)
     del knock
@@ -359,11 +410,14 @@ def cmd_build(film):
         print(f"  maps/map-{L}/ {im.size[0]}x{im.size[1]}, {len(tiles[f'map-{L}'])} tiles")
         im = im.reduce(2)
     regions = {}
+    # the paint takes the film's accent colour (palette ACCENT; "accent" in "map" overrides it), as do the page's tags,
+    # highlighter and yellow letters; a change needs `build` again, since the paint is baked into tiles
+    accent = spec.get("accent") or (sc.get("palette") or {}).get("ACCENT") or YELLOW
     for rid, m in feat.items():
         ys, xs = np.nonzero(m)
         regions[rid] = {"box": [int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)]}
         a = Image.fromarray((m * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.8))
-        paint = Image.new("RGBA", a.size, YELLOW)
+        paint = Image.new("RGBA", a.size, accent)
         paint.putalpha(a)
         for L in range(LEVELS):
             tiles[f"paint-{rid}-{L}"] = save_tiles(paint, out, f"paint-{rid}-{L}", keep=lambda t: t.getchannel("A").getextrema()[1] > 0)
