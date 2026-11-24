@@ -33,7 +33,7 @@ def ratio(l1, l2):
     return (hi + 0.05) / (lo + 0.05)
 
 
-def glyph_contrasts(drawn, behind, min_diff=8, core_share=0.5, min_core=4):
+def glyph_contrasts(drawn, behind, min_diff=8, core_share=0.5, min_core=12):
     """Per-glyph contrast of a text against what is behind it. drawn, behind: H x W x 3 uint8 pictures of one region,
     with the text and with it hidden. Returns [(x0, x1, ratio)] per glyph, left to right, or [] if the text changed
     no pixel at all (then it cannot be seen: treat it as ratio 1)."""
@@ -55,7 +55,7 @@ def glyph_contrasts(drawn, behind, min_diff=8, core_share=0.5, min_core=4):
     for x0, x1 in runs:
         d = diff[:, x0:x1]
         core = d >= max(min_diff + 1, core_share * d.max())
-        if core.sum() < min_core:           # a dot, an antialiasing sliver: too small to judge alone
+        if core.sum() < min_core:           # an antialiasing sliver (a box edge composited a shade differently): too small to judge alone. A full stop at the 56 px floor has about 30 core pixels
             continue
         out.append((x0, x1, float(np.median(ratio(ld[:, x0:x1][core], lb[:, x0:x1][core])))))
     if not out:                             # only small marks (punctuation, a thin line of text): judge them together

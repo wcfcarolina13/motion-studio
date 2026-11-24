@@ -17,6 +17,7 @@
 <script src="kit.js"></script>
 <script src="figure.js"></script>
 <script src="closeup.js"></script>
+<script src="mapscene.js" onerror="void 0"></script>
 <script src="timeline.js"></script>
 <script>
 // Long-form engine: a narrated film is a list of segments (timeline.js, written by longform.py from the
@@ -1128,7 +1129,11 @@ B.capture = (s, g) => {
 };
 
 const OPAQUE = new Set(["stage", "board", "crowd"]);   // scenes with their own set: no drifting dots behind them
-const FULL = new Set(["panel"]);                       // full-frame images: they cut (or fade), and nothing shows behind them
+const FULL = new Set(["panel", "map"]);                // full-frame images: they cut (or fade), and nothing shows behind them
+// the map scene (mapscene.js, references/maps.md): one engraved map shared by a run of map segments, drawn in its own layer
+const MAP = window.MapScene ? window.MapScene({ K, W, H, READ, VERT, SAFE, SEGS, TL, sceneG, cueT }) : null;
+if (MAP) B.map = MAP.build;
+else if (SEGS.some(s => s.type === "map")) window.STUDIO.warnings.push("map segments need mapscene.js in the film folder (longform.py init copies it)");
 
 // ── build every segment once ─────────────────────────────
 const built = SEGS.map((s, i) => {
@@ -1192,10 +1197,10 @@ const vig = (() => {
 void vig;
 
 // panel images must be decoded before a frame is taken (render.py waits on STUDIO.ready)
-window.STUDIO.ready = Promise.all([...new Set(PANEL_IMAGES.filter(Boolean))].map(src => {
+window.STUDIO.ready = Promise.all([...new Set(PANEL_IMAGES.concat(MAP ? MAP.images : []).filter(Boolean))].map(src => {
   const im = new Image(); im.src = src;
   return im.decode().catch(() => { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`panel image missing or unreadable: ${src}`); });
-}));
+}).concat(MAP ? [MAP.ready] : []));
 
 // the source line and the chapter label, as runs of segments that show the same words: each run fades in over 0.35 s
 // from its first segment's start and out over the 0.2 s before the next run (0.3 s after the last segment). Set in one
@@ -1214,6 +1219,7 @@ const showLabel = (el, runs, t) => {
 
 // ── render(t) ────────────────────────────────────────────
 K.run(t => {
+  if (MAP) MAP.frame(t);
   dots.forEach(d => K.set(d.el, { cx: (d.x + t * d.v) % W, cy: d.y, r: d.s }));
   K.show(bgG, !built.some(b => (OPAQUE.has(b.s.type) && t >= b.s.t0 + WIPE && t <= b.s.t1) || (FULL.has(b.s.type) && t >= b.s.t0 && t <= b.s.t1)));
   built.forEach(b => {
