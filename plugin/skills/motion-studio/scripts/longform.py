@@ -205,6 +205,23 @@ def homograph_blocks(sc, ids=None):
 # with another voice, pack or speed: a re-voice at 1.17 slipped into the toll-text film (2026-10-23).
 VOICE = {"engine": "kokoro", "pack": "v1.0", "name": "am_michael", "speed": 1.0}   # the owner's pick (2026-10-23)
 VOICE_KEYS = ("engine", "pack", "name", "speed")
+# Paid voices wait for the final animation pass (owner's rule, 2026-11-24): drafts and animatics are voiced with a free
+# engine (Kokoro, or an open model on Colab), and a paid engine is used once, for the final read, after the owner signs
+# off the last animation pass. That sign-off is recorded in script.json as "animation_signed_off": {"by", "on"}, written
+# only on the owner's word. Until then `lines` won't hand over lines for a paid voice and `voiced` won't record one.
+PAID_VOICE_ENGINES = ("elevenlabs", "eleven")
+
+
+def paid_voice_block(sc, v):
+    """Why a paid voice may not be used yet, or None."""
+    if not str(v.get("engine", "")).lower().startswith(PAID_VOICE_ENGINES):
+        return None
+    so = sc.get("animation_signed_off") or {}
+    if so.get("by") and so.get("on"):
+        return None
+    return (f"{v['engine']} is a paid voice, and paid voices wait until the owner signs off the final animation pass "
+            "(script.json \"animation_signed_off\": {\"by\", \"on\"}, set only on their word). Voice drafts with a free "
+            "engine: set \"voice\" back to Kokoro (the default) or an open model on Colab.")
 
 
 def voice_for(sc, s):
@@ -232,6 +249,9 @@ def voice_problems(film, sc):
             out.append(f"{s['id']}: no record of how it was voiced (run `voiced` after voicing it)")
             continue
         got = {k: e.get(k) for k in VOICE_KEYS}
+        blk = paid_voice_block(sc, got)
+        if blk:
+            out.append(f"{s['id']}: voiced before sign-off. {blk}")
         if got["engine"] == want["engine"] == "human":
             continue
         diff = [f"{k} {got[k]!r} (film: {want[k]!r})" for k in VOICE_KEYS if got[k] != want[k]]
@@ -270,7 +290,11 @@ def cmd_voiced(a):
         if not clip.exists():
             print(f"  {s['id']}: no clip yet, skipped")
             continue
-        rec[s["id"]] = dict(voice_for(sc, s), **over, text=text, sha1=sha1(clip))
+        v = dict(voice_for(sc, s), **over)
+        blk = paid_voice_block(sc, v)
+        if blk:
+            raise SystemExit(f"voiced stopped at {s['id']}: {blk}")
+        rec[s["id"]] = dict(v, text=text, sha1=sha1(clip))
         n += 1
     vj.write_text(json.dumps(rec, indent=1, ensure_ascii=False) + "\n")
     print(f"{n} clip(s) recorded -> {vj}")
@@ -327,6 +351,9 @@ def cmd_lines(a):
         print(f"LISTEN: {len(listen)} word(s) with two readings the voice usually gets right; check them in the listen-through: "
               + ", ".join(listen), file=sys.stderr)
     v = voice_for(sc, {})
+    paid = sorted({blk for s, _ in lines if (blk := paid_voice_block(sc, voice_for(sc, s)))})
+    if paid:
+        raise SystemExit("lines stopped: " + "\n  ".join(paid))
     print(f"VOICE: {v['engine']} {v['name']}, pack {v['pack']}, speed {v['speed']}; run `voiced` after voicing", file=sys.stderr)
     if a.json:      # a drama: one voice per speaker, inner monologue read closer and quieter
         print(json.dumps([{"id": s["id"], "speaker": s.get("speaker", "narrator"), "mono": bool(s.get("mono")), "voice": voice_for(sc, s), "text": text,
