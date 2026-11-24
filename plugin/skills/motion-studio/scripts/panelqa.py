@@ -28,6 +28,14 @@ MAX_CHARS = 2               # characters in frame; attention bleeds between look
 MAX_HANDS = 2               # visible hands per panel
 PLATE_SHOTS = {"CU", "ECU", "INS"}     # a plate's framing gets copied, which breaks a close shot
 NEG_OK = {"no text"}        # the shared style suffix; left alone
+WHITE_LEVEL = 235           # owner's rule (2026-11-24): grounds are warm cream, never paper white; a pixel with every
+WHITE_MAX = 0.25            # channel at or over 235 counts as white, and a still over 25% white is flagged
+DARK = re.compile(r"\b(?:night\w*|midnight|after dark|dusk|nightfall|moonlit|flashlight|torch(?:light)?|headlamp|lantern|"
+                  r"pitch[- ]black|darkness)\b", re.I)
+SKY_SAID = re.compile(r"\b(?:night sky|dark sky|black sky|starry|stars|moonless|indigo sky|navy sky|no sky|indoors|interior|"
+                      r"inside)\b", re.I)
+SKY_BRIGHT = re.compile(r"\b(?:daylight|sunny|sunlit|bright sky|blue sky|midday|noon|afternoon sun|morning sun)\b", re.I)
+WHITE_GROUND = re.compile(r"\b(?:pure white|white background|white paper|stark white|bright white)\b", re.I)
 HIDDEN = re.compile(r"pocket|behind (?:his|her|their|the) back|under the table|below the (?:frame|panel)|out of (?:frame|shot)"
                     r"|in (?:his|her|their) lap|in shadow|hidden|cropped|off[- ]frame", re.I)
 CONTACT = re.compile(r"handshake|shak\w* hands|hug\w*|embrac\w*|holding hands|hand on (?:his|her|their) (?:shoulder|arm|back|cheek)"
@@ -74,7 +82,7 @@ def scene_words(prompt, boiler, boiler_re=None):
     """Words of the scene description: sentences that only say what a reference image is ("Image 1 is the identity
     reference for ...") and the shared style ending are fixed boilerplate, not scene."""
     return sum(len(x.split()) for x in sentences(prompt) if not ROLE.match(x) and x not in boiler and
-               not (boiler_re and boiler_re.search(x)))
+               not x.startswith("Scale:") and not (boiler_re and boiler_re.search(x)))
 
 
 def lint(items, boiler_re=None):
@@ -118,9 +126,24 @@ def lint(items, boiler_re=None):
         negs = [x.group(0) for x in NEG.finditer(p) if x.group(0).lower() not in NEG_OK]
         if negs:
             w.append(f"negative phrasing ({', '.join(repr(x) for x in negs[:3])}); klein has no negative prompt, say what is there instead")
+        dark = DARK.search(p)
+        if dark and SKY_BRIGHT.search(p):
+            w.append(f"\"{dark.group(0)}\" with \"{SKY_BRIGHT.search(p).group(0)}\": the light contradicts itself; pick one time of day")
+        elif dark and not SKY_SAID.search(p):
+            w.append(f"a dark scene (\"{dark.group(0)}\") that doesn't say its sky: models default to a bright one; say "
+                     "\"night, dark navy sky, the only light is the flashlight\" or set it indoors")
+        wg = WHITE_GROUND.search(p)
+        if wg:
+            w.append(f"\"{wg.group(0)}\": grounds are warm cream, not white (owner's rule); say \"warm cream paper\"")
         if w:
             out.append((it.get("id"), w))
     return out
+
+
+def white_share(path):
+    """The share of a still's pixels that are near-white (every channel at or over WHITE_LEVEL), on a 160x90 copy."""
+    a = read_rgb(path, 160, 90)
+    return float((a.min(axis=2) >= WHITE_LEVEL).mean())
 
 
 # ---- images through ffmpeg (the engine has no PIL dependency) ----
