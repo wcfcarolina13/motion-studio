@@ -7,7 +7,8 @@
 #   Settings (env): COLAB_SESSION name (default ms-<out dir>-<pid>, unique per run; a name already live is refused), COLAB_GPUS order, STALL_ALERT / STALL_STOP seconds, COLAB_ALERT notifier
 #   command, UNIT_BUDGET units per run, COLAB_DRIVE_DIR for an attended run's second copy on Drive, HF_TOKEN_FILE for a read-only Hugging Face token. The rules behind
 #   them are in references/colab.md.
-#   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 2 means the render started
+#   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 3 means every card asked
+#   for is already in use on the account (another lane or project); retry_colab.sh waits on it without using a try. Exit 2 means the render started
 #   but didn't finish, or an output didn't come down whole (what came down is kept); that is not retried, since a retry
 #   could burn units on the same fault. Run retry_colab.sh again by hand to send only the jobs still missing.
 set -uo pipefail
@@ -48,13 +49,19 @@ GPU=""
 # hold Wan 14B, so the default Wan scripts get "L4" and swapped-in jobs (stills, voice) get "L4 T4". G4 is not offered
 # to the CLI. Since about 2026-11-23 the CLI often answers 503 for L4 and A100.
 if [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; then DEF_GPUS="L4"; else DEF_GPUS="L4 T4"; fi
+# "precondition failed" means the account already holds its one runtime of that type (the plan allows about one
+# runtime per GPU type, 2026-11-24): that is a wait, not a fault, so when every card answers it the run exits 3.
+BUSY=1
 for g in ${COLAB_GPUS:-$DEF_GPUS}; do
-  if timeout 1800 colab new -s $S --gpu $g --high-mem; then GPU=$g; break; fi
+  newout=$(timeout 1800 colab new -s $S --gpu $g --high-mem 2>&1); rc=$?; echo "$newout"
+  if [ $rc -eq 0 ]; then GPU=$g; BUSY=0; break; fi
+  grep -qi "precondition" <<< "$newout" || BUSY=0
   echo "no $g, trying next"; timeout 300 colab stop -s $S 2>/dev/null || true
   # A failed `new` can still leave a runtime assigned and billing, listed as [?] (no local name, so not stoppable here)
   hidden=$(timeout 120 colab sessions 2>/dev/null | grep '^\[?\]')
   [ -n "$hidden" ] && alert "Colab: a runtime with no session name is assigned and may be billing; stop it at colab.research.google.com (Runtime > Manage sessions): $hidden"
 done
+[ -z "$GPU" ] && [ $BUSY = 1 ] && { echo "BUSY: every card asked for is already in use on this account"; exit 3; }
 [ -z "$GPU" ] && { echo "FAILED: no GPU"; exit 1; }
 echo "GPU $GPU" | tee -a usage.log
 # Smoke test before anything is uploaded: a runtime can come up with no working GPU or a full disk.
