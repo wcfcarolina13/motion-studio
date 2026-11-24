@@ -4,7 +4,7 @@
 #   SETUP=x.py RENDER=y.py swap in other remote scripts. A render script must move each finished file into /content/out
 #   whole (write elsewhere, then os.replace), print "OUTFILE <name>" for it, and write /content/out/RENDER_DONE last.
 #   pull_live.sh downloads each file as it appears, so a session that drops mid-render keeps everything finished.
-#   Settings (env): COLAB_SESSION name, COLAB_GPUS order, STALL_ALERT / STALL_STOP seconds, COLAB_ALERT notifier
+#   Settings (env): COLAB_SESSION name (default ms-<out dir>-<pid>, unique per run; a name already live is refused), COLAB_GPUS order, STALL_ALERT / STALL_STOP seconds, COLAB_ALERT notifier
 #   command, UNIT_BUDGET units per run, COLAB_DRIVE_DIR for an attended run's second copy on Drive, HF_TOKEN_FILE for a read-only Hugging Face token. The rules behind
 #   them are in references/colab.md.
 #   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 2 means the render started
@@ -16,7 +16,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 [ $# -ge 1 ] || { echo "usage: run_colab.sh <in_dir> [out_dir]"; exit 2; }
 IN=$(cd "$1" && pwd); OUT=${2:-$IN/../out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 cd "$OUT"
-S=${COLAB_SESSION:-motion-studio-wan}      # one name per concurrent run; `colab stop -s` only ever stops this one
+# A unique name per run. Two runs under one name (2026-11-24): the second `colab new` took the name, the first run's
+# runtime became an unnamed "[?]" one the CLI can neither pull from nor stop, and 14 finished stills were stranded.
+S=${COLAB_SESSION:-ms-$(basename "$OUT" | tr -c 'A-Za-z0-9\n' '-' | cut -c1-24)-$$}
 SETUP=${SETUP:-$HERE/remote_setup.py}; RENDER=${RENDER:-$HERE/remote_render.py}
 [[ $SETUP = /* ]] || SETUP=$HERE/$SETUP; [[ $RENDER = /* ]] || RENDER=$HERE/$RENDER
 PULL=""
@@ -32,6 +34,10 @@ cleanup() {
 }
 balance() { timeout 120 colab usage 2>/dev/null | sed -n 's/^Current balance: \([0-9.]*\).*/\1/p'; }
 alert() { echo "ALERT $*" | tee -a usage.log; [ -n "${COLAB_ALERT:-}" ] && $COLAB_ALERT "$*"; }
+# Refuse a name that is already live, before the exit trap is set: the trap stops session $S, which would be the other run's.
+if timeout 120 colab sessions 2>/dev/null | grep -qF "[$S]"; then
+  echo "FAILED: a Colab session named $S is already running; set COLAB_SESSION to another name or leave it unset"; exit 2
+fi
 trap cleanup EXIT
 date '+start %F %T' | tee -a usage.log; timeout 60 colab version | tee -a usage.log; timeout 120 colab usage | tee -a usage.log
 B0=$(balance)
