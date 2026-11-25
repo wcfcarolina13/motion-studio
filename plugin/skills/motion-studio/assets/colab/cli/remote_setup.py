@@ -1,4 +1,4 @@
-# Picks the model size from the GPU: 40 GB+ (A100) gets 8-bit experts for full-quality 720p renders;
+# MIN_VRAM_GB: 22 (Wan 14B; a T4 can't hold it). Picks the model size from the GPU: 40 GB+ (A100) gets 8-bit experts for full-quality 720p renders;
 # a 24 GB L4 gets 4-bit (Q4_K_M) plus the Lightning 4-step LoRAs, since 8-bit at 720p ran out of memory there (2026-11-23).
 import subprocess, os, sys, time
 open('/content/setup_alive', 'w').write(str(time.time()))     # first thing: run_colab.sh checks it to tell a live setup from a dropped one

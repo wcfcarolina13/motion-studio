@@ -49,7 +49,10 @@ GPU=""
 # about 2.3 for an L4 (2026-11-24), so it is only used when asked for (COLAB_GPUS="A100 L4"). T4 (16 GB, no bf16) can't
 # hold Wan 14B, so the default Wan scripts get "L4" and swapped-in jobs (stills, voice) get "L4 T4". G4 is not offered
 # to the CLI. Since about 2026-11-23 the CLI often answers 503 for L4 and A100.
-if [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; then DEF_GPUS="L4"; else DEF_GPUS="L4 T4"; fi
+# A setup script can declare the card memory it needs with a "MIN_VRAM_GB: <n>" comment; over 16 keeps it off the T4
+# (Z-Image went out of memory on a T4's 14.6 GB, 2026-11-25).
+need=$(grep -o 'MIN_VRAM_GB: *[0-9]*' "$SETUP" 2>/dev/null | grep -o '[0-9]*$' | head -1)
+if [ "${need:-0}" -gt 16 ] || { [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; }; then DEF_GPUS="L4"; else DEF_GPUS="L4 T4"; fi
 # "precondition failed" means the account already holds its one runtime of that type (the plan allows about one
 # runtime per GPU type, 2026-11-24): that is a wait, not a fault, so when every card answers it the run exits 3.
 BUSY=1
@@ -153,11 +156,20 @@ done
 wait $EX 2>/dev/null; sleep 1      # let tee flush
 # The exec can return while the kernel still renders ("Connection was lost"). Unless the render visibly crashed or
 # stalled, keep the session while the puller still gets new files, under the same stall watch.
-if [ ! -e .stalled ] && ! grep -q "RENDER DONE" render.out && ! grep -qE "^Traceback|FAILED:" render.out; then
+# A crash in the kernel prints IPython's traceback ("OutOfMemoryError   Traceback (most recent call last)"), which
+# doesn't start a line with "Traceback": match the word anywhere (a T4 OOM sat 10 min as "detached", 2026-11-25).
+# A detached render is also probed: a kernel that answers a one-line exec at once is idle, so the render is dead.
+kernel_idle() { timeout 90 colab exec -s $S --timeout 45 <<< "print('KERNEL' + '_IDLE')" 2>/dev/null | grep -q KERNEL_IDLE; }
+if [ ! -e .stalled ] && ! grep -q "RENDER DONE" render.out && ! grep -qE "Traceback|FAILED" render.out; then
   echo "PHASE render detached: the exec returned early; waiting on the puller for RENDER_DONE"
+  n=0
   while kill -0 "$PULL" 2>/dev/null; do
     stalled && break
-    sleep 10
+    if [ $((n % 30)) = 3 ] && ! timeout 120 colab ls -s $S /content/out 2>/dev/null | grep -qx RENDER_DONE && kernel_idle; then
+      echo "FAILED: the render is no longer running on the runtime (kernel idle, no RENDER_DONE)" | tee -a render.out usage.log
+      break
+    fi
+    n=$((n + 1)); sleep 10
   done
 fi
 rm -f .stalled

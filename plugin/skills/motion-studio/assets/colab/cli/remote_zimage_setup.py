@@ -1,5 +1,5 @@
 # Z-Image Turbo stills on Colab (Tongyi-MAI/Z-Image-Turbo, weights Apache-2.0, licence read from the model card
-# 2026-11-24). Ported from the Shoestring stills route that rendered about 31 s a still on an L4. Run it through
+# 2026-11-24). MIN_VRAM_GB: 20 (a T4's 14.6 GB ran out of memory on the first still, 2026-11-25). Ported from the Shoestring stills route that rendered about 31 s a still on an L4. Run it through
 # run_colab.sh with SETUP=remote_zimage_setup.py RENDER=remote_zimage_render.py; inputs are described there.
 import os, subprocess, sys, time
 open('/content/setup_alive', 'w').write(str(time.time()))     # first thing: run_colab.sh checks it (#109)

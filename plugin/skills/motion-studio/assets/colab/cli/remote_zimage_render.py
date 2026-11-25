@@ -12,8 +12,11 @@ while not os.path.exists('/content/zimage_path.txt'):
         raise SystemExit('FAILED: setup did not finish (no sign of life for %d s)' % (time.time() - last))
     print('waiting for setup', flush=True); time.sleep(30)
 from diffusers import ZImagePipeline
-# bf16 where the card has it (L4, A100). A T4 has none, so it gets fp16, which can overflow into a black frame: each
-# still is checked below and a blank one fails loudly instead of being published.
+# The 6B transformer alone is about 12 GB in 16-bit: a card under 20 GB (a T4) runs out of memory on the first still,
+# so it is refused before the weights load. bf16 on L4 and A100.
+if torch.cuda.get_device_properties(0).total_memory / 1e9 < 20:
+    raise SystemExit('FAILED: Z-Image needs a card with 20 GB or more (L4, A100); this one has %.1f GB'
+                     % (torch.cuda.get_device_properties(0).total_memory / 1e9))
 dt = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 pipe = ZImagePipeline.from_pretrained(open('/content/zimage_path.txt').read().strip(), torch_dtype=dt, low_cpu_mem_usage=False)
 vram = torch.cuda.get_device_properties(0).total_memory / 1e9
@@ -46,7 +49,7 @@ for j in jobs:
                guidance_scale=0.0, generator=torch.Generator('cuda').manual_seed(int(j.get('seed', 7)))).images[0]
     lo, hi = img.convert('L').getextrema()
     if hi - lo < 8:
-        bad += 1; print(f'FAILED {name}: blank image (levels {lo}-{hi}), likely fp16 overflow on this card', flush=True); continue
+        bad += 1; print(f'FAILED {name}: blank image (levels {lo}-{hi})', flush=True); continue
     img.save('/content/tmp/' + name); publish('/content/tmp/' + name, name)
     print(f'OUTFILE {name}', flush=True); print(f'STILL {name} {time.time() - t0:.1f}s', flush=True)
 open('/content/tmp/RENDER_DONE', 'w').write(f'done, {bad} failed'); os.replace('/content/tmp/RENDER_DONE', '/content/out/RENDER_DONE')
