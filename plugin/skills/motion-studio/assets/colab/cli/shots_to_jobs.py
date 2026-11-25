@@ -20,6 +20,9 @@ name = a.model or cfg.get('model') or reg['default']
 if name not in reg['models']:
     raise SystemExit(f"unknown stills model {name}; known: {', '.join(reg['models'])}")
 m = dict(reg['models'][name], name=name)
+if m.get('route') == 'codex':
+    raise SystemExit(f"{name} runs on the Mac, not Colab: python3 scripts/codex_stills.py {a.shots} <out_dir> --allow-codex "
+                     "(spends the owner's Codex allowance; only with his yes)")
 if m.get('draft') and not a.draft:
     raise SystemExit(f"{name} is a draft model (layout only; render refuses its stills): pass --draft to use it for drafts")
 m['call'] = dict(m['call'], **cfg.get('settings', {}))
