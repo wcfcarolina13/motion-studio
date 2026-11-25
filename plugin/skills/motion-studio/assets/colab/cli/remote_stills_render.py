@@ -25,7 +25,12 @@ if vram < M.get('min_vram_gb', 20) * 0.9:
 dt = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 # DiffusionPipeline reads the class from the model's own model_index.json, so a new model needs no code here
 extra = {k: M[k] for k in ('custom_pipeline', 'trust_remote_code') if M.get(k)}      # a model card's own pipeline code
-pipe = DiffusionPipeline.from_pretrained(open('/content/model_path.txt').read().strip(), torch_dtype=dt, low_cpu_mem_usage=False, **extra)
+# "dtypes": per-component dtypes from the card, e.g. {"default": "bf16", "vae": "fp32"} (MOSS-Image keeps its VAE in fp32)
+DT = {'bf16': dt, 'fp16': torch.float16, 'fp32': torch.float32}
+tdt = {k: DT[v] for k, v in M['dtypes'].items()} if M.get('dtypes') else dt
+pipe = DiffusionPipeline.from_pretrained(open('/content/model_path.txt').read().strip(), torch_dtype=tdt, low_cpu_mem_usage=False, **extra)
+if M.get('reset_scheduler'):        # the card re-creates its scheduler from its own config after loading
+    pipe.scheduler = type(pipe.scheduler).from_config(pipe.scheduler.config)
 # whole model on the card when it fits with room; otherwise one component at a time (slower, same pictures)
 # (model offload moves a whole component at once: Qwen's 40 GB transformer overflowed an L4 that way, 2026-11-25, so a
 # model too big for that marks itself "offload": "sequential", one layer at a time)
@@ -60,7 +65,7 @@ for j in jobs:
     if M.get('negative'):
         kw['negative_prompt'] = M.get('negative_prompt', ' ')
     img = pipe(prompt=prompt, height=j.get('h', M['h']), width=j.get('w', M['w']),
-               generator=torch.Generator('cuda').manual_seed(int(j.get('seed', 7))), **kw).images[0]
+               generator=torch.Generator(M.get('generator', 'cuda')).manual_seed(int(j.get('seed', 7))), **kw).images[0]
     lo, hi = img.convert('L').getextrema()
     if hi - lo < 8:
         bad += 1; print(f'FAILED {name}: blank image (levels {lo}-{hi})', flush=True); continue

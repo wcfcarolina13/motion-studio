@@ -69,12 +69,27 @@
    "h": 768,
    "call": {
     "num_inference_steps": 50,
-    "guidance_scale": 3.0
+    "guidance_scale": 3.0,
+    "uncond_skip_layers": [
+     22
+    ]
    },
-   "negative": true,
-   "negative_prompt": "",
-   "status": "broken 2026-11-25: render failed with 'module diffusers has no attribute MOSSImagePipeline'. The latest release, diffusers 0.43.0, has no MOSS pipeline (checked in its wheel), so the card's '0.38' is not enough. Setup now stops on this with a clear message; the Mac should read the card's loading code and set custom_pipeline, trust_remote_code or the package it names.",
-   "note": "5B; settings from the model card and community, not yet measured on our L4 (size, seconds per still, peak memory). The card's negative-branch skip at layer 22 is not passed: its argument name is unverified. The 8-step DMD LoRA (lodestones/Kromoss, CFG 1) would be a draft model and is not added."
+   "negative": false,
+   "note": "5B. Loading and call copied from the model card (read by the Mac 2026-11-25): custom_pipeline pipeline_moss_image with trust_remote_code (the repo's own code; diffusers 0.43.0 has no MOSS pipeline), VAE in fp32, scheduler re-created from its config, CPU generator, uncond_skip_layers [22] for the negative branch. Not yet measured on our L4 (seconds per still, peak memory). The 8-step DMD LoRA (lodestones/Kromoss, CFG 1) would be a draft model and is not added.",
+   "custom_pipeline": "pipeline_moss_image",
+   "trust_remote_code": true,
+   "pip": [
+    "transformers>=5.3",
+    "accelerate>=1.10",
+    "safetensors>=0.6",
+    "Pillow>=10"
+   ],
+   "dtypes": {
+    "default": "bf16",
+    "vae": "fp32"
+   },
+   "reset_scheduler": true,
+   "generator": "cpu"
   }
  },
  "excluded": {
