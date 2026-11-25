@@ -1133,7 +1133,9 @@ B.panel = (s, g) => {
   const cam = panelCam(d);
   const fz = d.freeze ? (d.freeze === true ? s.t1 - 0.6 : cueT(d.freeze, s.t1 - 0.6)) : null;
   const sh = d.shake ? { t: cueT(d.shake, s.t0), a: d.shake.amp || 14 } : null;
-  return t => {
+  // the camera as a pure function of t, also handed to check (STUDIO.panelCam), which predicts from it and the still how
+  // much the picture will move before anything is rendered
+  const camAt = t => {
     const end = fz != null ? Math.min(fz, s.t1) : s.t1;
     const p = K.eio(K.prog(Math.min(t, end), s.t0, end));
     let z = Math.exp(K.lerp(Math.log(cam.from.z), Math.log(cam.to.z), p));
@@ -1146,6 +1148,11 @@ B.panel = (s, g) => {
     // keep the frame covered: the camera can't look past the still's edge
     const hw = W / (2 * z), hh = H / (2 * z);
     cx = Math.min(Math.max(cx, hw), IW - hw); cy = Math.min(Math.max(cy, hh), IH - hh);
+    return { z, cx, cy };
+  };
+  (window.STUDIO.panelCam = window.STUDIO.panelCam || {})[s.id] = { at: camAt, iw: IW, ih: IH, w: W, h: H };
+  return t => {
+    const { z, cx, cy } = camAt(t);
     g.__cam = { z, cx, cy };
     if (fz != null) K.set(sat, { values: (d.flashback ? 0.55 : 1) * K.lerp(1, 0.3, K.eout(K.prog(t, fz, fz + 0.25))) });
     const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;
