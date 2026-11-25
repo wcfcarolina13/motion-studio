@@ -278,9 +278,16 @@ B.cutaway = (s, g) => {
     return gg; })() : null;
   const dimL = d.dims !== false ? K.el("line", { stroke: C.GREY, "stroke-width": 2 }, g) : null;
   const dimT = d.dims !== false ? K.text(`${sh.toFixed(2)} m`, { ...AUX, "font-family": SANS, "font-size": 24, fill: C.GREY, "text-anchor": "middle" }, g) : null;
+  // the height dimension stands LEFT of the subject (between it and the person when there is room, else left of the
+  // person), its figure written along the line as in a drawing: every leader runs right, so none can cross it (on the
+  // right it was crossed by every leader, 2026-11-25)
+  const dimX = per && gap * k < 70 ? x0 - (gap + pw) * k - 34 : x0 - 34;
   const parts = (d.parts || []).map((p, i) => {
     let el, cx, cy;
-    if (p.rect) { const [x, y, w, h] = p.rect; el = K.el("rect", { x: X(x), y: Y(y + h), width: w * k, height: h * k, rx: 6 }, g); cx = x + w / 2; cy = y + h / 2; }
+    // a thin part (a roof, a seat) is pointed at near its right end, so its leader leaves it at once instead of running
+    // along it and hiding it (a roof's leader ran its whole length, 2026-11-25)
+    if (p.rect) { const [x, y, w, h] = p.rect; el = K.el("rect", { x: X(x), y: Y(y + h), width: w * k, height: h * k, rx: 6 }, g);
+      cx = h * k < 40 ? Math.max(x + w / 2, x + w - 22 / k) : x + w / 2; cy = y + h / 2; }
     else if (p.circle) { const [x, y, r] = p.circle; el = K.el("circle", { cx: X(x), cy: Y(y), r: r * k }, g); cx = x; cy = y; }
     else { el = K.el("path", { d: toPx(p.path) }, g); const ns = String(p.path).match(/-?\d*\.?\d+/g).map(Number);
       cx = ns.filter((_, j) => j % 2 === 0).reduce((a, b) => a + b, 0) / Math.max(1, ns.length / 2); cy = ns.filter((_, j) => j % 2).reduce((a, b) => a + b, 0) / Math.max(1, ns.length / 2); }
@@ -293,7 +300,7 @@ B.cutaway = (s, g) => {
   // labels: a column right of the drawing, in the order of the parts' heights (top first), so leaders don't cross
   const order = [...parts].sort((a, b) => b.cy - a.cy), lx = V(x0 + sw * k + 140, SAFE.x0 + 40);
   // each label sits level with its part where it can (short, near-flat leaders), pushed down only as far as the one above needs
-  const top = V(120, gy + 90), gapL = V(26, 18);
+  const top = V(230, gy + 90), gapL = V(26, 18);     // 16:9: starts below the HUD's counter card (top right, to about y 200)
   let ly = top;
   order.forEach(q => { q.ly = Math.max(ly, V(Y(q.cy) - LS * 0.45, ly)); ly = q.ly + q.lines.length * pitch(LS) + gapL; });
   const over = ly - gapL - V(gy + 20, SAFE.y1);   // ran past the ground: lift the stack back up
@@ -304,14 +311,15 @@ B.cutaway = (s, g) => {
     K.set(ground, { x1: x0 - (per ? (pw + gap) * k + 60 : 60), y1: gy, x2: x0 + sw * k + 60, y2: gy, opacity: o });
     shell.setAttribute("stroke-dashoffset", shellLen * (1 - draw)); shell.style.opacity = o;
     if (man) man.style.opacity = K.eout(K.prog(t, s.t0 + 0.4, s.t0 + 0.9)) * o;
-    if (dimL) { const dp = K.eout(K.prog(t, s.t0 + 0.6, s.t0 + 1.1)) * o; const dx = X(sw) + 40;
-      K.set(dimL, { x1: dx, y1: gy, x2: dx, y2: gy - sh * k * dp, opacity: o }); K.set(dimT, { x: dx, y: gy - sh * k - 18, opacity: dp }); }   // the figure sits on top of its line, clear of the label column
+    if (dimL) { const dp = K.eout(K.prog(t, s.t0 + 0.6, s.t0 + 1.1)) * o, dx = dimX, my = gy - sh * k / 2;
+      K.set(dimL, { x1: dx, y1: gy, x2: dx, y2: gy - sh * k * dp, opacity: o });
+      K.set(dimT, { x: dx - 12, y: my, opacity: dp, transform: `rotate(-90 ${dx - 12} ${my})` }); }
     const live = parts.filter(q => t >= q.t), newest = live[live.length - 1];
     parts.forEach(q => {
       const p = K.eout(K.prog(t, q.t, q.t + 0.4)) * o, hot = q === newest;
       K.set(q.el, { fill: hot ? C.ACCENT : (q.p.fill || C.GREY), "fill-opacity": 0.85 * p, opacity: p > 0 ? 1 : 0 });
       q.lines.forEach((m, j) => placeMask(m, lx, q.ly + LS * 0.8 + j * pitch(LS), p, "start"));
-      const ax = X(q.cx), ay = Y(q.cy), bx = lx - 20, by = q.ly + LS * 0.45, ex = X(sw) + 70;
+      const ax = X(q.cx), ay = Y(q.cy), bx = lx - 20, by = q.ly + LS * 0.45, ex = X(sw) + 50;
       // leader: level out of the drawing to just past the wall, then to its label; labels run in height order, so no two cross
       K.set(q.lead, { points: `${ax},${ay} ${ex},${ay} ${ex + (bx - ex) * 0.6},${by} ${bx},${by}`, opacity: p, stroke: hot ? C.ACCENT : C.GREY });
       K.set(q.dot, { cx: ax, cy: ay, opacity: p, fill: hot ? C.ACCENT : C.GREY });

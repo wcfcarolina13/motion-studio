@@ -34,8 +34,8 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, allow_
     single commonest colour, and its mean sits several levels off the palette's flat BG (paper 237,231,221 vs 246,242,233).
     loop: the film is cut to loop (a Short whose end jumps back to its opening). The jump in its last 0.5 s is then not a
     pop, but only if the last frame really matches frame 0 (mean difference within 3 levels); otherwise that fails.
-    motion: the film moves from its first frame and never sits still for long (motioncheck.py; floor = max(0.02,
-    0.25 x the film's median) unless motion_floor is set). stills: the board's deliberate holds [(t0, t1), ...], excused.
+    motion: the film moves from its first frame and never sits still for long (motioncheck.py; floor = 0.25 x the
+    film's median, kept between 0.02 and 0.2: motioncheck.floor_of) unless motion_floor is set). stills: the board's deliberate holds [(t0, t1), ...], excused.
     motion_mask: [(y0, y1), ...] source rows to blank first, e.g. a caption band."""
     video = Path(video)
     fails = []
