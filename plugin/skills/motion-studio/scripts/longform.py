@@ -3028,10 +3028,16 @@ def _check(a, film):
     # 1b. motion, predicted: a panel whose camera barely moves over a plain still fails final's motion check, and finding
     # out there costs a whole render (a padlock close-up and a dark room under the default push, Shoestring, 2026-11-25)
     if a.motion_estimate:
-        mfloor, low = motion_flags(panel_motion(film, segs), floor=a.motion_floor)
-        report.append(f"panel motion (predicted from each still and its camera): floor {mfloor:.3f}, {len(low)} panel(s) at or near it")
+        floor0 = a.motion_floor
+        if floor0 is None and (film / "out" / "silent.mp4").exists():    # final's floor rides on the whole film's median,
+            import motioncheck                                            # which the last render gives far better than the
+            floor0 = motioncheck.check(motioncheck.windows(film / "out" / "silent.mp4"))[0]   # panels alone
+        mfloor, low = motion_flags(panel_motion(film, segs), floor=floor0)
+        report.append(f"panel motion (predicted from each still and its camera; it reads low, so near the floor usually "
+                      f"passes): floor {mfloor:.3f}, {len(low)} panel(s) at or near it")
         for sid, m in low:
-            flags.append(f"{sid}: panel predicted to move too little (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it a "
+            how = "to move too little" if m < mfloor else "to move barely above it"
+            flags.append(f"{sid}: panel predicted {how} (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it a "
                          f"stronger camera (\"camera\": {{\"from\": {{\"x\", \"y\", \"z\"}}, \"to\": {{...}}}}, a zoom change of 10% or more, "
                          f"or a pan with z at least 1.12) or cut it shorter")
     video = film / "out" / "silent.mp4"
@@ -3374,7 +3380,7 @@ def main():
     p.add_argument("--repeat", type=int, default=8, help="moments rendered twice to check frames are repeatable (0 skips)")
     p.add_argument("--no-motion-estimate", dest="motion_estimate", action="store_false",
                    help="skip predicting each panel's motion from its still and camera")
-    p.add_argument("--motion-floor", type=float, help="motion floor for the panel prediction (default: final's rule applied to the panels)")
+    p.add_argument("--motion-floor", type=float, help="motion floor for the panel prediction (default: final's rule on the last render, else on the panels)")
     p.add_argument("--text-step", type=float, default=0.1, help="seconds between on-screen samples for the text sheet, hold test and pacing tests (0 skips them all)")
     p.add_argument("--contrast", type=float, default=3.0, help="lowest glyph contrast against the pixels behind it, WCAG ratio (0 skips)")
     p.add_argument("--no-flash-rate", action="store_true", help="skip the WCAG 2.3.1 flash-rate test on the render")

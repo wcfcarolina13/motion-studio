@@ -1086,7 +1086,10 @@ function panelCam(d) {
   const [fx, fy] = d.focus || [0.5, 0.45], [def, z0, z1] = SHOT_CAM[d.shot] || ["push", 1.02, 1.08];
   let mv = d.camera || def;
   if (mv === "pan") mv = fx < 0.5 ? "pan-left" : "pan-right";
-  const zp = Math.max(z0, z1, 1.08), dx = 0.05, c = { x: 0.5, y: 0.5 }, f = { x: fx, y: fy };
+  // a pan or tilt travels dx either side of centre, so the zoom must leave that much picture outside the frame:
+  // z >= 1 / (1 - 2 dx) = 1.11. At 1.08 the camera sat against the still's edge for the first and last 40% of the move
+  // (a WIDE yard shot held still for over 2 s and failed final's motion check, 2026-11-25)
+  const dx = 0.05, zp = Math.max(z0, z1, 1 / (1 - 2 * dx) + 0.01), c = { x: 0.5, y: 0.5 }, f = { x: fx, y: fy };
   switch (mv) {
     case "pull":      return { from: { ...f, z: Math.max(z0, z1) }, to: { ...c, z: Math.min(z0, z1) } };
     case "pan-left":  return { from: { x: 0.5 + dx, y: fy, z: zp }, to: { x: 0.5 - dx, y: fy, z: zp } };
