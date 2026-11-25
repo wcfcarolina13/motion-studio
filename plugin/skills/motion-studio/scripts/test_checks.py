@@ -183,6 +183,32 @@ class PartialRender(unittest.TestCase):
             longform.segment_pick(self.TL, "zz", None, None)
 
 
+    def test_map_change_splices_every_map_segment(self):
+        import copy, json, os, time
+        import longform
+        with tempfile.TemporaryDirectory() as d:
+            film, parts = Path(d), Path(d, "out", "parts")
+            (film / "maps").mkdir(); (film / "maps" / "tile.png").write_bytes(b"x")
+            parts.mkdir(parents=True)
+            tl = copy.deepcopy(self.TL); tl["map"] = {"proj": 1}
+            n = int(tl["duration"] * 30); ranges = longform.part_ranges(tl, n)
+            for i0, i1 in ranges:
+                (parts / f"p{i0:07d}-{i1:07d}.mp4").write_bytes(b"v")
+            longform.write_manifest(film, tl, parts, 1.0)
+            new = copy.deepcopy(tl); new["map"] = {"proj": 2}; new["segments"][2]["data"] = {"camera": {"zoom": 2}}
+            dirty, only = longform.partial_problems(film, new, parts, ["c"], 1.0, ranges)
+            self.assertEqual(only, ["b", "c"])
+            self.assertTrue(all(a < 14 * 30 + 18 and b > 10 * 30 for a, b in dirty))   # only b, c and d's head
+            # a tile repainted with no timeline change: the map segments again, nothing else
+            time.sleep(0.01); (film / "maps" / "tile.png").write_bytes(b"yy")
+            dirty, only = longform.partial_problems(film, tl, parts, ["b", "c"], 1.0, ranges)
+            self.assertEqual(only, ["b", "c"])
+            # a change outside the map still refuses
+            other = copy.deepcopy(tl); other["grade"] = {"vignette": 0.5}
+            with self.assertRaises(SystemExit):
+                longform.partial_problems(film, other, parts, ["b", "c"], 1.0, ranges)
+
+
 class PanelMotion(unittest.TestCase):
     def test_flags_only_quiet_panels(self):
         import longform

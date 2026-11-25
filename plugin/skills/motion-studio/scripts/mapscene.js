@@ -114,22 +114,54 @@
       return [cx, cy];
     };
     keys.forEach(k => { [k.mx, k.my] = clampView(k.mx, k.my, k.z, k); });
-    // each key starts from wherever the camera is when it begins (a move cut short by the next key hands on its state)
+    // ── drift: after a key's move settles, the camera keeps pushing in slowly until the next key, so a hold is never a
+    // still (a map waiting for its first cue word sat still for 3.5 s and failed final's motion check three renders in a
+    // row, 2026-11-25). Zoom only, so the subject stays centred; on ones, not twos, since a slow move stepped on twos is a
+    // held pair then a jump, which the pop check reads as pops and the eye as judder. It eases in over DRIFT_EASE s, its
+    // speed is DRIFT %/s or slower so a long hold spreads at most DRIFT_SPAN over the whole hold, and it goes in or out,
+    // whichever keeps the map on one size of its tiles (a size change mid-hold would show as a pop).
+    // "map_drift" in engine.json: true (DRIFT), a number (% a second) or false; a segment's "drift" overrides it for the
+    // holds that start in that segment.
+    const DRIFT = 1.0, DRIFT_SPAN = Math.log(1.12), DRIFT_EASE = 0.6;
+    const driftPct = k => {
+      const sg = segs.find(x => x.id === k.seg), own = sg && sg.data ? sg.data.drift : undefined, v = own !== undefined ? own : TL.map_drift;
+      return v === true ? DRIFT : typeof v === "number" ? Math.max(0, v) : 0;
+    };
+    const setDrift = (k, i) => {
+      const start = k.t + (k.frames || 0) / FPS, nx = keys[i + 1], end = nx && nx.run === k.run ? nx.t : k.run.t1;
+      const len = Math.max(0, end - start), pct = driftPct(k);
+      if (!pct || len < 0.5) { k.drift = null; return; }
+      const u = Math.log2(1 / k.z) + 0.15, f = u - Math.floor(u), margin = 0.03;       // room, in tile sizes, before the next size
+      let rate = Math.log(1 + pct / 100), span = Math.min(DRIFT_SPAN, rate * len) / Math.LN2, dir = 1;
+      if (f - margin >= span) dir = 1;                     // zooming in lowers u
+      else if (1 - f - margin >= span) dir = -1;
+      else { dir = f >= 1 - f ? 1 : -1; span = Math.max(0, (dir > 0 ? f : 1 - f) - margin); }
+      rate = Math.min(rate, span * Math.LN2 / Math.max(len - DRIFT_EASE / 2, 0.1));
+      k.drift = { start, rate: dir * rate };
+    };
+    // the drift's log-zoom at time t into a hold: speed ramps up linearly over DRIFT_EASE, then holds (continuous speed)
+    const driftAt = (d, t) => { const x = Math.max(0, t - d.start); return d.rate * (x < DRIFT_EASE ? x * x / (2 * DRIFT_EASE) : x - DRIFT_EASE / 2); };
+    // each key starts from wherever the camera is when it begins (a move cut short by the next key hands on its state),
+    // drift included; its own drift is set once its move length is known, before the next key reads it
     keys.forEach((k, i) => {
       const p = keys[i - 1];
-      if (!p || p.run !== k.run) { k.from = { mx: k.mx, my: k.my, z: k.z }; k.frames = 0; return; }
+      if (!p || p.run !== k.run) { k.from = { mx: k.mx, my: k.my, z: k.z }; k.frames = 0; setDrift(k, i); return; }
       k.from = camAt(k.t, i);
       if (k.frames == null) {
         const pan = Math.hypot(k.mx - k.from.mx, k.my - k.from.my) * Math.min(k.z, k.from.z) / W, zz = Math.abs(Math.log2(k.z / k.from.z));
         k.frames = Math.round(16 + 10 * Math.min(1, (pan + zz) / 2));
       }
+      setDrift(k, i);
     });
-    function camAt(t, upto = keys.length) {
+    // t: the move's time (on twos); td: the drift's time (on ones). The next key starts from wherever this returns, drift
+    // included, so a move begins exactly where the drift left the camera.
+    function camAt(t, upto = keys.length, td = t) {
       let k = null;
       for (let i = 0; i < upto; i++) if (keys[i].t <= t + 1e-6) k = keys[i];
       if (!k) { const f = keys[0]; return f ? { mx: f.mx, my: f.my, z: f.z } : { mx: P.w / 2, my: P.h / 2, z: Math.max(W / P.w, H / P.h) }; }
       const p = k.frames ? sm(K.clamp01((t - k.t) / (k.frames / FPS))) : 1;
-      const z = Math.exp(K.lerp(Math.log(k.from.z), Math.log(k.z), p));
+      let z = Math.exp(K.lerp(Math.log(k.from.z), Math.log(k.z), p));
+      if (p >= 1 && k.drift) z *= Math.exp(driftAt(k.drift, td));
       const [mx, my] = clampView(K.lerp(k.from.mx, k.mx, p), K.lerp(k.from.my, k.my, p), z);
       return { mx, my, z };
     }
@@ -428,7 +460,7 @@
       if (!anyRun) return;
       if (fontsOk && !measured) measure();
       const tq = twos(t);
-      cam = camAt(tq);
+      cam = camAt(tq, keys.length, t);
       const camT = `translate(${W / 2} ${H / 2}) scale(${cam.z.toFixed(5)}) translate(${(-cam.mx).toFixed(2)} ${(-cam.my).toFixed(2)})`;
       camG.setAttribute("transform", camT);
       Object.keys(segG).forEach(k => { if (k[0] === "p") segG[k].setAttribute("transform", camT); });
@@ -455,7 +487,8 @@
       // the segment's own group stays empty: the map and its pieces live in the shared layer, so they carry across segments
       build: () => () => {},
       // for check: piece arrivals (they slap in on purpose) and the camera moves
-      events: () => ({ pieces: pieces.concat(cards).map(q => q.t0), ink: inks.map(q => q.t0), moves: keys.filter(k => k.frames).map(k => [k.t, k.frames / FPS]) }),
+      events: () => ({ pieces: pieces.concat(cards).map(q => q.t0), ink: inks.map(q => q.t0), moves: keys.filter(k => k.frames).map(k => [k.t, k.frames / FPS]),
+                     runs: runs.map(r => [r.t0, r.t1]), drift: keys.map(k => k.drift ? [k.drift.start, k.drift.rate] : null) }),
     };
   };
 })();
