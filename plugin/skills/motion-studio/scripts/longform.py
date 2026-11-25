@@ -187,8 +187,9 @@ def gate_real_assets(film, segs, step):
 
 
 # what `init` writes to a new film's engine.json: behaviour that is on for new films but would change an older film's
-# re-render. "anticipate": figures lean back before a big pose change, overshoot and settle (figure.js F.at; 2026-10-25)
-ENGINE_DEFAULTS = {"anticipate": True}
+# re-render. "anticipate": figures lean back before a big pose change, overshoot and settle (figure.js F.at; 2026-10-25).
+# "map_drift": a map camera pushes in slowly across every hold instead of sitting still (mapscene.js; 2026-11-25)
+ENGINE_DEFAULTS = {"anticipate": True, "map_drift": True}
 
 
 def cmd_init(a):
@@ -945,7 +946,8 @@ def cmd_timeline(a):
     tl = {"title": sc["title"], "palette": sc.get("palette", {}), "theme": sc.get("theme", {}), "duration": total, "segments": segs, "format": fmt,
           "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1),
-          "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False)))}
+          "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False))),
+          "map_drift": sc.get("map_drift", eng.get("map_drift", False))}
     if sc.get("sizes"):
         tl["sizes"] = sc["sizes"]
     problems += cutaway_problems(segs, sc.get("sizes") or {})
@@ -1295,11 +1297,27 @@ def partial_problems(film, tl, parts, only, scale, ranges):
                          "render the whole film once first")
     old = json.loads(mf.read_text())
     probs = []
+    only = list(only)
+    code, files = _code_and_files(film)
+    ot = old["timeline"]
+    # the map (maps/map.json in the timeline, its tiles and fonts, map_drift) is shared by every map segment and used by
+    # nothing else: a change there redoes every map segment instead of refusing the splice (each map fix used to cost a
+    # whole render, 2026-11-25)
+    maps = [sg["id"] for sg in tl["segments"] if sg["type"] == "map"]
+    map_keys = ("map", "map_drift")
+    map_files = [k for k in sorted(set(files) | set(old["files"])) if files.get(k) != old["files"].get(k)
+                 and k.split("/", 1)[0] in ("maps", "fonts")]
+    if maps and (any(ot.get(k) != tl.get(k) for k in map_keys) or map_files):
+        add = [m for m in maps if m not in only]
+        if add:
+            print(f"render --only: the map changed ({', '.join([k for k in map_keys if ot.get(k) != tl.get(k)] + map_files[:3])}), "
+                  f"so every map segment is redone too: {', '.join(add)}")
+            only += add
+    else:
+        map_keys, map_files = (), []
     if old.get("scale") != scale or old.get("fps") != FPS:
         probs.append(f"render settings changed (scale {old.get('scale')} -> {scale})")
-    code, files = _code_and_files(film)
     probs += [f"page code changed: {k}" for k in sorted(set(code) | set(old["code"])) if code.get(k) != old["code"].get(k)]
-    ot = old["timeline"]
     if [(s["id"], round(s["t0"], 4), round(s["t1"], 4)) for s in ot["segments"]] != \
             [(s["id"], round(s["t0"], 4), round(s["t1"], 4)) for s in tl["segments"]] or ot["duration"] != tl["duration"]:
         probs.append("segment timing changed (a re-voice, a new segment or a moved cut)")
@@ -1309,12 +1327,12 @@ def partial_problems(film, tl, parts, only, scale, ranges):
                 probs.append(f"{sn['id']} changed but is not named")
             elif sn["id"] in only and {k: v for k, v in so.items() if k != "data"} != {k: v for k, v in sn.items() if k != "data"}:
                 probs.append(f"{sn['id']} changed outside its data (a counter, tag or caption carries into later segments)")
-    rest = lambda t: {k: v for k, v in t.items() if k != "segments"}
+    rest = lambda t: {k: v for k, v in t.items() if k != "segments" and k not in map_keys}
     if rest(ot) != rest(tl):
         probs.append("film-wide timeline settings changed (captions, chapters, cues, grade, map)")
     named = json.dumps([sg for sg in tl["segments"] if sg["id"] in only])
     for k in sorted(set(files) | set(old["files"])):
-        if files.get(k) != old["files"].get(k) and k not in named:
+        if files.get(k) != old["files"].get(k) and k not in named and k not in map_files:
             probs.append(f"{k} changed and is not used by the named segments")
     missing = [Path(f"p{i0:07d}-{i1:07d}.mp4") for i0, i1 in ranges if not (parts / f"p{i0:07d}-{i1:07d}.mp4").exists()]
     if missing:
@@ -1324,11 +1342,11 @@ def partial_problems(film, tl, parts, only, scale, ranges):
                          "mix two versions. Render the whole film instead (or fix these):\n  " + "\n  ".join(probs[:12]))
     segs, dirty = tl["segments"], []
     for i, sg in enumerate(segs):
-        if sg["id"] in only:
-            dirty.append((_frame(sg["t0"]), _frame(sg["t1"])))
+        if sg["id"] in only:      # the last segment owns the tail after its last word (a map holds to the end)
+            dirty.append((_frame(sg["t0"]), _frame(tl["duration"] if i == len(segs) - 1 else sg["t1"])))
             if i + 1 < len(segs):         # the next scene's first moments carry this one's outgoing wipe
                 dirty.append((_frame(segs[i + 1]["t0"]), _frame(segs[i + 1]["t0"] + HEAD)))
-    return [(i0, i1) for i0, i1 in ranges if any(i0 < b and a < i1 for a, b in dirty)]
+    return [(i0, i1) for i0, i1 in ranges if any(i0 < b and a < i1 for a, b in dirty)], [i for i in (sg["id"] for sg in segs) if i in only]
 
 
 class ChunkStopped(RuntimeError):
@@ -1481,7 +1499,7 @@ def _render(a, film, st):
     jobs = [(str(film), i0, i1, str(parts / f"p{i0:07d}-{i1:07d}.mp4"), a.scale) for i0, i1 in ranges]
     only = segment_pick(tl, a.only, a.seg_from, a.seg_to)
     if only:
-        dirty = partial_problems(film, tl, parts, only, a.scale, ranges)
+        dirty, only = partial_problems(film, tl, parts, only, a.scale, ranges)
         print(f"render --only: {', '.join(only)}; re-rendering {sum(i1 - i0 for i0, i1 in dirty)} of {n} frames "
               f"and keeping the rest from the last render")
         st.note(f"partial render: {', '.join(only)}; other frames kept from the previous render")
@@ -2421,6 +2439,60 @@ def panel_motion(film, segs):
     return out
 
 
+def map_motion(film, segs):
+    """{"<segment> hold a-b s": per-window motion} for every stretch of a map run where the camera isn't in a move,
+    measured on the page's own frames the way final measures the video (motioncheck: a frame every 0.1 s at a quarter
+    size, gray, mean change per half-second window on the film's 0.5 s grid). A map's look is its vector art, so unlike a
+    panel it can't be predicted from a still: the holds are rendered (JPEG, about 0.1 s a frame), the moves are left out
+    since they pass by a wide margin. A map that waited for its first cue word sat still for 3.5 s and failed final three
+    renders in a row before this (2026-11-25)."""
+    import io
+    import motioncheck
+    import numpy as np
+    import render
+    from PIL import Image
+    if not any(s["type"] == "map" for s in segs):
+        return {}
+    step, per = 1 / motioncheck.FPS, max(1, int(round(motioncheck.FPS * motioncheck.WINDOW)))
+    out = {}
+    with render.Film(film) as f:
+        ev = f.page.evaluate("typeof MAP !== 'undefined' && MAP ? MAP.events() : null")
+        if not ev:
+            return {}
+        ow, oh = max(2, f.w // 4 // 2 * 2), max(2, f.h // 4 // 2 * 2)
+        cache = {}
+
+        def gray(k):                    # the k-th tenth of a second, as final's motion check sees it
+            if k not in cache:
+                f.page.evaluate(f"window.seek({k * step:.6f})")
+                im = Image.open(io.BytesIO(f.page.screenshot(type="jpeg", quality=95))).convert("L")
+                cache[k] = np.asarray(im.resize((ow, oh), Image.BICUBIC), dtype=np.int16)
+            return cache[k]
+        for r0, r1 in ev["runs"]:
+            busy = sorted((t - 0.05, t + d + 0.05) for t, d in ev["moves"] if r0 - 1e-6 <= t <= r1)
+            holds, a = [], r0
+            for m0, m1 in busy:
+                if m0 > a:
+                    holds.append((a, min(m0, r1)))
+                a = max(a, m1)
+            if a < r1:
+                holds.append((a, r1))
+            for h0, h1 in holds:
+                w0 = math.ceil(h0 / motioncheck.WINDOW - 1e-9) * motioncheck.WINDOW
+                wins = []
+                while w0 + motioncheck.WINDOW <= h1 + 1e-9:
+                    k0 = int(round(w0 * motioncheck.FPS))
+                    fr = [gray(k0 + j) for j in range(per + 1)]
+                    wins.append(float(np.mean([np.abs(fr[j + 1] - fr[j]).mean() for j in range(per)])))
+                    w0 += motioncheck.WINDOW
+                    for k in [k for k in cache if k < k0]:
+                        del cache[k]
+                if wins:
+                    sid = next((s["id"] for s in segs if s["t0"] - 1e-6 <= h0 < s["t1"]), "map")
+                    out[f"{sid} map hold {h0:.1f}-{h1:.1f} s"] = wins
+    return out
+
+
 def motion_flags(est, floor=None, stretch=2.0, margin=1.2):
     """(floor, [(panel id, quietest 2 s mean)]) for panels predicted to sit under final's motion floor. Without a floor
     given, final's own rule is applied to the panels' estimates (the larger of 0.02 and a quarter of the median window),
@@ -3109,9 +3181,22 @@ def _check(a, film):
         if floor0 is None and (film / "out" / "silent.mp4").exists():    # final's floor rides on the whole film's median,
             import motioncheck                                            # which the last render gives far better than the
             floor0 = motioncheck.check(motioncheck.windows(film / "out" / "silent.mp4"))[0]   # panels alone
-        mfloor, low = motion_flags(panel_motion(film, segs), floor=floor0)
+        est = panel_motion(film, segs)
+        mest = map_motion(film, segs)
+        if floor0 is None and est and mest:     # no render yet: the floor comes from panels and maps together
+            import numpy as np
+            floor0 = max(0.02, 0.25 * float(np.median([v for w in list(est.values()) + list(mest.values()) for v in w])))
+        mfloor, low = motion_flags(est, floor=floor0)
+        mfloor2, mlow = motion_flags(mest, floor=floor0 if floor0 is not None else (mfloor if est else None))
         report.append(f"panel motion (predicted from each still and its camera; it reads low, so near the floor usually "
                       f"passes): floor {mfloor:.3f}, {len(low)} panel(s) at or near it")
+        if mest:
+            report.append(f"map holds (rendered and measured like final): {len(mest)} hold(s), {len(mlow)} at or near "
+                          f"the floor {mfloor2:.3f}")
+        for sid, m in mlow:
+            how = "too little" if m < mfloor2 else "barely above it"
+            flags.append(f"{sid}: moves {how} (quietest 2 s {m:.3f}, floor {mfloor2:.3f}); turn on \"map_drift\": true in "
+                         f"engine.json (a slow push across every hold), or add a camera key or a piece inside the hold")
         for sid, m in low:
             how = "to move too little" if m < mfloor else "to move barely above it"
             flags.append(f"{sid}: panel predicted {how} (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it a "
