@@ -24,7 +24,8 @@ if vram < M.get('min_vram_gb', 20) * 0.9:
     raise SystemExit('FAILED: %s needs a card with about %d GB or more; this one has %.1f GB' % (M.get('name'), M.get('min_vram_gb', 20), vram))
 dt = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 # DiffusionPipeline reads the class from the model's own model_index.json, so a new model needs no code here
-pipe = DiffusionPipeline.from_pretrained(open('/content/model_path.txt').read().strip(), torch_dtype=dt, low_cpu_mem_usage=False)
+extra = {k: M[k] for k in ('custom_pipeline', 'trust_remote_code') if M.get(k)}      # a model card's own pipeline code
+pipe = DiffusionPipeline.from_pretrained(open('/content/model_path.txt').read().strip(), torch_dtype=dt, low_cpu_mem_usage=False, **extra)
 # whole model on the card when it fits with room; otherwise one component at a time (slower, same pictures)
 # (model offload moves a whole component at once: Qwen's 40 GB transformer overflowed an L4 that way, 2026-11-25, so a
 # model too big for that marks itself "offload": "sequential", one layer at a time)

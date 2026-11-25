@@ -30,7 +30,7 @@ for n in range(6):
     alive()
     try:
         P = hub.snapshot_download(M['repo'], allow_patterns=['model_index.json', 'scheduler/*', 'text_encoder/*', 'tokenizer/*',
-                                                             'processor/*', 'transformer/*', 'vae/*'])
+                                                             'processor/*', 'transformer/*', 'vae/*', '*.py'])
         break
     except Exception as e:
         if n == 5: raise
@@ -38,5 +38,19 @@ for n in range(6):
         if n >= 1 and os.environ.get('HF_HUB_DISABLE_XET') != '1':     # Xet failed twice even with a token: plain HTTP
             os.environ['HF_HUB_DISABLE_XET'] = '1'; hub.constants.HF_HUB_DISABLE_XET = True
         for _ in range(n + 1): time.sleep(30); alive()
+# The pipeline class the weights name must load here, or the render fails on its first line after setup has spent the
+# download (MOSS-Image, 2026-11-25: "module diffusers has no attribute MOSSImagePipeline"). A class diffusers lacks is
+# tried from source once; a model whose card ships its own pipeline code sets "custom_pipeline" or "trust_remote_code"
+# in stills_models.json, and the render passes them on.
+cls = json.load(open(os.path.join(P, 'model_index.json'))).get('_class_name', 'DiffusionPipeline')
+has = lambda: subprocess.run([sys.executable, '-c', f"import diffusers; getattr(diffusers, {cls!r})"], capture_output=True).returncode == 0
+if not (M.get('custom_pipeline') or M.get('trust_remote_code')) and not has():
+    print('diffusers lacks', cls, '(named by model_index.json); installing from source', flush=True)
+    pip('git+https://github.com/huggingface/diffusers'); alive()
+    if not has():
+        raise SystemExit(f"FAILED: neither released nor source diffusers has {cls}, which {M['repo']} needs. Read the model "
+                         "card's loading code and set \"custom_pipeline\" or \"trust_remote_code\" (or its own package) "
+                         "in stills_models.json")
+print('pipeline class', cls, flush=True)
 open('/content/tmp_model_path.txt', 'w').write(P); os.replace('/content/tmp_model_path.txt', '/content/model_path.txt')
 print('SETUP DONE', flush=True)
