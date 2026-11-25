@@ -149,6 +149,7 @@ class MapBoil(unittest.TestCase):
         import longform
         segs = [{"type": "map", "t0": 1.0, "t1": 2.0}, {"type": "stat", "t0": 2.0, "t1": 3.0}]
         self.assertEqual(sorted(longform.map_boil_steps(segs)), [32, 40, 48, 56])
+        self.assertEqual(sorted(longform.map_boil_steps(segs[:1], end=2.5)), [32, 40, 48, 56, 64, 72])
 
     def test_final_asks_for_the_mix(self):
         import argparse
