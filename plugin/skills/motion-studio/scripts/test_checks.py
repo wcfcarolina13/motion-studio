@@ -426,3 +426,10 @@ class Set3D(unittest.TestCase):
     def test_camera_keys_are_shots(self):
         import longform
         self.assertEqual(longform.shot_starts([self.SEG, {"id": "b", "type": "stat", "t0": 4.0, "t1": 6.0}]), [0.3, 2.4, 4.0])
+
+    def test_one_worker_for_set3d_on_a_mac(self):
+        import longform
+        tl3, tl2 = {"segments": [self.SEG]}, {"segments": [{"id": "b", "type": "stat"}]}
+        self.assertEqual(longform.render_workers(tl3, "darwin"), 1)
+        self.assertEqual(longform.render_workers(tl3, "linux"), 4)
+        self.assertEqual(longform.render_workers(tl2, "darwin"), 4)

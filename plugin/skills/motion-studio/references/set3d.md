@@ -56,7 +56,8 @@ A new shot is cheap here (one camera key), which is why set3d can run near the b
 ## What it needs to run
 
 - Nothing paid and no model: three.js runs in the same Chromium page as every other scene. $0.
-- **Speed**: about 0.7 s a 1080p frame in the cloud container, where headless Chromium has no GPU and draws WebGL in software (measured 2026-11-25), so a 1-minute Short is about 20 minutes on one worker and a 10-minute film about an hour on four. On the Mac, Chrome uses the GPU for WebGL, which should be much faster; this is not yet measured.
+- **Speed**: about 0.7 s a 1080p frame in the cloud container, where headless Chromium has no GPU and draws WebGL in software (measured 2026-11-25), so a 1-minute Short is about 20 minutes on one worker and a 10-minute film about an hour on four. On the Mac, see below.
+- **Speed on the Mac**: 0.16 s a 1080p frame on an M2 Pro with one render worker (Metal WebGL, measured 2026-11-25), about 4x the cloud. Four workers were about 11x slower in wall time, the pages fighting over the GPU, so `render` uses one worker for a set3d film on a Mac unless `--workers` says otherwise; the cloud keeps four.
 - **Same machine for a whole render.** Software and GPU WebGL can differ by a few pixel values, so don't splice `render --only` parts made on one machine into a render made on another.
 
 ## Trade-offs
