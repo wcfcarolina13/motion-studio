@@ -1,5 +1,5 @@
 """Stills from ChatGPT images through the Codex CLI on the Mac: one `codex exec` per shot, no Colab.
-    python3 codex_stills.py shots.json <out_dir> --allow-codex [--tries 3] [--only s03 s07] [--sizes script.json]
+    python3 codex_stills.py shots.json <out_dir> --allow-codex [--tries 3] [--only s03 s07] [--sizes script.json] [--edit-from base.png]
 
 Every call uses the owner's Codex plan allowance, so nothing runs without --allow-codex (or CODEX_STILLS_OK=1). Since
 2026-11-25 it is the default route for finished stills (the owner: "Chatgpt makes the best images by far"); the
@@ -32,6 +32,16 @@ For each shot without output yet (a rerun redoes only the missing ones):
 The face check is FACE_CHECK_CMD with {path} for the image (default: the Claude CLI reads the image and answers FACE
 or NOFACE; the owner's Claude plan, no extra cost). FACE_CHECK_CMD=off skips it. An answer that is neither is kept and
 listed in <out>/review.tsv for a person to look at, so an unclear judge never spends another Codex call.
+Flipbook frames (longform.md, panel "frames"): a shot with "edit_from" and "change" instead of "prompt" is an edit of
+another still, so its composition stays locked: {"id": "s03b", "edit_from": "s03", "change": "the flashlight is raised
+to her shoulder"}. "edit_from" names an earlier shot in this run (its untouched original is used) or a PNG path;
+--edit-from PNG is the base for every shot in the file that names none. The base goes to Codex as an attached image
+(`-i`) with "the same picture, change only ...", and the result is cropped to 16:9 like any shot. A frame must match
+its base's size to flip cleanly, so an edit that comes back at the base's shape but another size is resized to it, and
+one at another shape is re-rolled. After each edit the frame is compared with its base (gray, 64x36, correlation): a
+frame under 0.6 is kept but listed in review.tsv as "composition may have moved", a first guess at the line, not a
+measured one.
+
 Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
 import argparse, json, os, shlex, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -74,6 +84,38 @@ def ask(shot, style, faceless, scale="", w=1536, h=1024):
     return " ".join(p for p in parts if p)
 
 
+def ask_edit(shot, faceless, w=1536, h=1024):
+    parts = ["Edit the attached picture. Keep it the same picture: the same composition, camera angle, framing, people, "
+             "objects, colours, line work and light, everything in the same place. Change only this: "
+             + shot["change"].strip().rstrip(".") + "."]
+    parts.append(f"Make exactly one image, landscape, {w}x{h}, the same size as the attached picture, and save it as "
+                 "image.png in the current folder.")
+    parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
+    if faceless:
+        parts.append("No human face may be visible anywhere: show people from behind, cropped at the shoulders, or as "
+                     "hands only. This is a hard rule.")
+    return " ".join(parts)
+
+
+def likeness(a, b):
+    """Correlation of two pictures' gray thumbnails (64x36): about 1 when the composition held, low when it moved."""
+    import numpy as np
+    from PIL import Image
+    g = [np.asarray(Image.open(p).convert("L").resize((64, 36)), dtype=float).ravel() for p in (a, b)]
+    g = [x - x.mean() for x in g]
+    den = float(np.sqrt((g[0] ** 2).sum() * (g[1] ** 2).sum()))
+    return float((g[0] * g[1]).sum() / den) if den else 0.0
+
+
+def edit_base(shot, out, default):
+    """The base picture for an edit: an earlier shot's untouched original, a PNG path, or --edit-from."""
+    ref = shot.get("edit_from") or default
+    if not ref:
+        return None
+    cand = [os.path.join(out, "originals", f"{ref}.png"), ref, os.path.join(out, ref)]
+    return next((c for c in cand if os.path.isfile(c)), "")
+
+
 def face_verdict(path, cmd):
     if cmd == "off":
         return "NOFACE"
@@ -111,6 +153,7 @@ def main():
     ap.add_argument("--tries", type=int, default=3)
     ap.add_argument("--only", nargs="+")
     ap.add_argument("--sizes", help="read the size sheet from this script.json (its \"sizes\") instead of shots.json")
+    ap.add_argument("--edit-from", help="base PNG for every shot with a \"change\" and no \"edit_from\" (flipbook frames)")
     a = ap.parse_args()
     if not (a.allow_codex or os.environ.get("CODEX_STILLS_OK") == "1"):
         raise SystemExit("codex_stills.py spends the owner's Codex allowance: pass --allow-codex once he has said yes")
@@ -134,14 +177,24 @@ def main():
         if os.path.exists(dst) and os.path.getsize(dst) > 0:
             print(f"have {s['id']}"); continue
         faceless = s.get("faceless", cfg.get("faceless", False))
-        prompt = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes))
+        base = edit_base(s, a.out, a.edit_from) if s.get("change") else None
+        if base == "":
+            failed.append(s["id"]); review.append((s["id"], f"edit base {s.get('edit_from') or a.edit_from} not found (run its shot first)"))
+            print(f"{s['id']}: no edit base"); continue
+        if base:
+            from PIL import Image
+            with Image.open(base) as im:
+                bw, bh = im.size
+            prompt, extra = ask_edit(s, faceless, bw, bh), ["-i", os.path.abspath(base)]
+        else:
+            prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes)), []
         done = False
         for t in range(1, a.tries + 1):
             work = tempfile.mkdtemp(prefix="codex-still-")
             since = time.time() - 1
             calls += 1; t0 = time.time()
             try:
-                r = subprocess.run(cmd + [prompt], cwd=work, capture_output=True, text=True, timeout=timeout)
+                r = subprocess.run(cmd + extra + [prompt], cwd=work, capture_output=True, text=True, timeout=timeout)
                 note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
             except subprocess.TimeoutExpired:
                 note = f"codex timed out after {timeout} s"
@@ -153,13 +206,27 @@ def main():
                 W, H = im.size
             if not 1.4 <= W / H <= 1.85:
                 print(f"{s['id']} try {t}: {W}x{H} is not landscape 3:2 to 16:9; re-rolling"); shutil.rmtree(work, True); continue
+            if base and (W, H) != (bw, bh) and abs(W / H - bw / bh) > 0.01:
+                print(f"{s['id']} try {t}: {W}x{H} is not its base's shape ({bw}x{bh}); re-rolling"); shutil.rmtree(work, True); continue
             orig = os.path.join(a.out, "originals", f"{s['id']}.png")
+            if os.path.exists(orig + ".fit.png"):
+                os.remove(orig + ".fit.png")
             shutil.copyfile(png, orig + ".part"); os.replace(orig + ".part", orig)
+            if base and (W, H) != (bw, bh):      # the base's shape at another size: the frame is resized to flip cleanly
+                with Image.open(orig) as im:
+                    im.convert("RGB").resize((bw, bh), Image.LANCZOS).save(orig + ".fit.png")
+                review.append((s["id"], f"resized {W}x{H} to its base's {bw}x{bh}; originals/{s['id']}.png.fit.png was used for the crop"))
             shutil.rmtree(work, True)
             v = face_verdict(orig, face_cmd) if faceless else "NOFACE"
             if v == "FACE":
                 print(f"{s['id']} try {t}: face check found a face; re-rolling"); os.remove(orig); continue
-            crop_16x9(orig, dst, f"originals/{s['id']}.png")
+            src = orig + ".fit.png" if os.path.exists(orig + ".fit.png") else orig
+            crop_16x9(src, dst, f"originals/{s['id']}.png")
+            if base:
+                k = likeness(base, src)
+                print(f"{s['id']}: likeness to its base {k:.2f}")
+                if k < 0.6:
+                    review.append((s["id"], f"composition may have moved from its base (likeness {k:.2f}): look before using it as a frame"))
             if v == "UNCLEAR":
                 review.append((s["id"], "face check unclear: look at it"))
             print(f"{s['id']}: {W}x{H} -> 16:9 in {time.time() - t0:.0f} s (try {t})")
