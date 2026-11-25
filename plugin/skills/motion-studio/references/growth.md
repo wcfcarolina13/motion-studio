@@ -26,6 +26,7 @@ Adopted 2026-11-16, after Bradley rejected two rounds of roadkill Short titles a
 
 ## Pre-voice checklist
 
+- [ ] The narration went through the spoken line edit (the `spoken-line-edit` skill; SKILL.md), every line it changed went back through the claim audit, and the AI-tells check shows no HARD hits [owner's rule, 2026-11-25].
 - [ ] Frame 0 reads muted, like a thumbnail: one centred subject, 3 objects at most, already mid-action, with no setup or title card [P].
 - [ ] 3–5 hooks were written for this Short (first line plus what frame 0 shows), and the best one was picked. Log the runners-up in the title log, so a dud can be rebuilt from the next one [P, Become_Viral].
 - [ ] Each hook is one of three shapes: something nobody can explain, something strange the narrator noticed, or a weird situation already happening. Each opens a question the viewer wants closed [P, Johnny Harris breakdown; mechanism: information-gap curiosity, Loewenstein 1994].
