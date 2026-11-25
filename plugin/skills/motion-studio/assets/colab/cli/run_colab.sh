@@ -73,8 +73,11 @@ GPU=""
 # to the CLI. Since about 2026-11-23 the CLI often answers 503 for L4 and A100.
 # A setup script can declare the card memory it needs with a "MIN_VRAM_GB: <n>" comment; over 16 keeps it off the T4
 # (Z-Image went out of memory on a T4's 14.6 GB, 2026-11-25).
+# An in_dir's min_vram_gb file (shots_to_jobs.py writes it per model) raises it; over 24 needs an A100 (Qwen-Image).
 need=$(grep -o 'MIN_VRAM_GB: *[0-9]*' "$SETUP" 2>/dev/null | grep -o '[0-9]*$' | head -1)
-if [ "${need:-0}" -gt 16 ] || { [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; }; then DEF_GPUS="L4"; else DEF_GPUS="L4 T4"; fi
+inneed=$(cat "$IN/min_vram_gb" 2>/dev/null | tr -dc 0-9); [ "${inneed:-0}" -gt "${need:-0}" ] && need=$inneed
+if [ "${need:-0}" -gt 24 ]; then DEF_GPUS="A100"
+elif [ "${need:-0}" -gt 16 ] || { [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; }; then DEF_GPUS="L4"; else DEF_GPUS="L4 T4"; fi
 # "precondition failed" means the account already holds its one runtime of that type (the plan allows about one
 # runtime per GPU type, 2026-11-24): that is a wait, not a fault, so when every card answers it the run exits 3.
 # The request runs in the background and is waited on, so a cancel reaches the cleanup at once and knows it was out.
