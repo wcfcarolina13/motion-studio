@@ -1086,7 +1086,8 @@ B.crowd = (s, g) => {
 // data: { image: "panels/p03.png", shot?: "EST"|"WIDE"|"MED"|"CU"|"ECU"|"INS"|"OTS"|"TWO", focus?: [x, y] (0..1 of the frame),
 //         camera?: "push"|"pull"|"pan-left"|"pan-right"|"tilt-up"|"tilt-down"|"hold" | {from: {x, y, z}, to: {x, y, z}},
 //         flashback?: true, caption_card?: "text" | {text, at?, hold?}, freeze?: true | {at}, shake?: {at, amp?},
-//         enter?: "cut"|"fade", exit?: "cut"|"fade" }
+//         enter?: "cut"|"fade", exit?: "cut"|"fade",
+//         frames?: ["a.png", {image: "b.png", at?: "cue word"}, ...], fps?: 4, loop?: true, hold_last?: false }   (flipbook)
 // The camera crops and scales the still (z >= 1 keeps the frame covered); each shot type has a default move.
 const SHOT_CAM = { EST: ["pull", 1.16, 1.0], WIDE: ["pan", 1.08, 1.08], MED: ["push", 1.02, 1.08], CU: ["push", 1.04, 1.13],
                    ECU: ["push", 1.08, 1.2], INS: ["push", 1.03, 1.1], OTS: ["pan", 1.1, 1.12], TWO: ["push", 1.0, 1.05] };
@@ -1121,8 +1122,16 @@ B.panel = (s, g) => {
   // the still keeps its 16:9 shape: a tall frame sees a third of it, and focus/camera choose which third
   const IW = V(W, H * 16 / 9), IH = H;
   K.el("rect", { x: 0, y: 0, width: IW, height: IH, fill: "#000" }, g);
-  const img = K.el("image", { href: d.image, x: 0, y: 0, width: IW, height: IH, preserveAspectRatio: "xMidYMid slice", filter: `url(#${id})` }, g);
-  void img;
+  // a flipbook panel (data.frames): every frame is its own image, stacked, and one shows at a time on the schedule
+  // timeline wrote as data.flips ([[t, frame], ...], absolute seconds on whole video frames), so the flips are exact
+  // frames that final's pop check allows. Separate images rather than one swapped href: a swapped href decodes again
+  // and can be caught blank by a screenshot
+  const srcs = d.frames && d.frames.length ? d.frames.map(f => typeof f === "string" ? f : f.image) : [d.image];
+  srcs.slice(1).forEach(x => PANEL_IMAGES.push(x));
+  const imgs = srcs.map(src => K.el("image", { href: src, x: 0, y: 0, width: IW, height: IH, preserveAspectRatio: "xMidYMid slice", filter: `url(#${id})` }, g));
+  const flips = d.flips && d.flips.length ? d.flips : [[s.t0, 0]];
+  const frameAt = t => { let k = flips[0][1]; for (const [ft, i] of flips) { if (t + 1e-4 >= ft) k = i; else break; } return k; };
+  let shown = -1;
   if (d.flashback) {
     if (!fbVig) {
       const gr = K.el("radialGradient", { id: "fbvig", cx: "50%", cy: "50%", r: "70%" }, K.defs);
@@ -1167,6 +1176,7 @@ B.panel = (s, g) => {
   return t => {
     const { z, cx, cy } = camAt(t);
     g.__cam = { z, cx, cy };
+    if (imgs.length > 1) { const k = frameAt(t); if (k !== shown) { imgs.forEach((im, i) => K.show(im, i === k)); shown = k; } }
     if (fz != null) K.set(sat, { values: (d.flashback ? 0.55 : 1) * K.lerp(1, 0.3, K.eout(K.prog(t, fz, fz + 0.25))) });
     const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;
     g.setAttribute("opacity", Math.min(fin, fout));

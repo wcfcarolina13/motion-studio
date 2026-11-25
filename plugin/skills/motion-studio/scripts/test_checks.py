@@ -287,6 +287,7 @@ from PIL import Image
 st = os.environ["FAKE_STATE"]; n = int(open(st).read()) if os.path.exists(st) else 0
 open(st, "w").write(str(n + 1))
 open(st + ".prompts", "a").write(sys.argv[-1] + "\n")
+open(st + ".argv", "a").write(" ".join(sys.argv[1:-1]) + "\n")
 w, h = [tuple(map(int, x.split("x"))) for x in os.environ["FAKE_SIZES"].split()][n]
 d = os.path.join(os.environ["CODEX_IMAGES"], "sess%d" % n); os.makedirs(d, exist_ok=True)
 Image.new("RGB", (w, h), (200, 150, 90)).save(os.path.join(d, "ig_%d.png" % n))
@@ -433,3 +434,86 @@ class Set3D(unittest.TestCase):
         self.assertEqual(longform.render_workers(tl3, "darwin"), 1)
         self.assertEqual(longform.render_workers(tl3, "linux"), 4)
         self.assertEqual(longform.render_workers(tl2, "darwin"), 4)
+
+
+class Flipbook(unittest.TestCase):
+    def seg(self, **d):
+        return {"id": "p", "type": "panel", "t0": 1.0, "t1": 3.0, "data": dict({"frames": ["a.png", "b.png", "c.png"]}, **d)}
+
+    def test_cycles_at_4fps_and_loops(self):
+        import longform
+        flips, probs = longform.panel_flips(self.seg())
+        self.assertFalse(probs)
+        self.assertEqual(flips[:5], [[1.0, 0], [1.2667, 1], [1.5, 2], [1.7333, 0], [2.0, 1]])   # 7.5 frames a drawing, rounded to whole frames
+        self.assertEqual(len(flips), 8)
+        self.assertTrue(all(abs(t * 30 - round(t * 30)) < 0.003 for t, _ in flips))   # on whole video frames (4 decimals)
+
+    def test_hold_last_and_fps(self):
+        import longform
+        flips, _ = longform.panel_flips(self.seg(hold_last=True, fps=2))
+        self.assertEqual(flips, [[1.0, 0], [1.5, 1], [2.0, 2]])
+        flips, _ = longform.panel_flips(self.seg(fps=6))
+        self.assertEqual(flips[1], [1.1667, 1])                                           # 1 + 1/6 s, on frame 35
+
+    def test_cued_frames(self):
+        import longform
+        s = self.seg(frames=["a.png", {"image": "b.png", "at": "lifts", "t": 1.7}, {"image": "c.png", "at": "light", "t": 2.4}])
+        self.assertEqual(longform.panel_flips(s), ([[1.0, 0], [1.7, 1], [2.4, 2]], []))
+        s["data"]["frames"][2] = "c.png"
+        self.assertTrue(longform.panel_flips(s)[1])                                       # a cued flipbook needs every cue
+        self.assertEqual(longform.flip_frames([dict(self.seg(), data={"flips": [[1.0, 0], [1.7, 1], [2.4, 2]]})]), {51, 72})
+
+    def test_images(self):
+        import longform
+        self.assertEqual(longform.panel_images({"frames": ["a.png", {"image": "b.png", "at": "x"}]}), ["a.png", "b.png"])
+        self.assertEqual(longform.panel_images({"image": "a.png"}), ["a.png"])
+        self.assertEqual(longform.panel_images({}), [])
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_page_flips_on_schedule(self):
+        import io, json, longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            for name, c in (("a", (200, 30, 30)), ("b", (30, 200, 30)), ("c", (30, 30, 200))):
+                Image.new("RGB", (1920, 1080), c).save(film / "panels" / f"{name}.png")
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            seg = {"id": "p", "type": "panel", "t0": 0.0, "t1": 3.0, "data": {"camera": "hold", "image": "panels/a.png",
+                   "frames": ["panels/a.png", {"image": "panels/b.png", "t": 1.0}, {"image": "panels/c.png", "t": 2.0}]}}
+            seg["data"]["flips"], probs = longform.panel_flips(seg)
+            self.assertFalse(probs)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 3.0, "segments": [seg], "grade": {"vignette": 0}}) + ";\n")
+            got = []
+            with render.Film(film) as f:
+                for t in (0.5, 29 / 30, 1.0, 2.5):
+                    f.seek(t)
+                    px = Image.open(io.BytesIO(f.page.locator("#stage").screenshot())).convert("RGB").getpixel((960, 540))
+                    got.append(max(range(3), key=lambda i: px[i]))
+                self.assertFalse(f.errors)
+            self.assertEqual(got, [0, 0, 1, 2])                    # red, still red one frame before the cue, green, blue
+
+
+class CodexEdit(unittest.TestCase):
+    """codex_stills edit mode: flipbook frames edited from a base still, against the same fake codex."""
+    FAKE, JUDGE, run_it = CodexStills.FAKE, CodexStills.JUDGE, CodexStills.run_it
+
+    def test_edit_from_locks_the_base(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            shots = {"style": "ink.", "shots": [
+                {"id": "a", "prompt": "A woman holds a flashlight."},
+                {"id": "a2", "edit_from": "a", "change": "the flashlight is raised to her shoulder"},
+                {"id": "z", "edit_from": "nope", "change": "anything"}]}
+            # a2 comes back at the base's shape but half the size: resized to the base
+            r = self.run_it(d, "1536x1024 768x512", "", shots=shots)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)          # z has no base
+            argv = Path(d, "n.argv").read_text().splitlines()
+            self.assertNotIn("-i", argv[0]); self.assertIn(f"-i {d}/out/originals/a.png", argv[1])
+            prompts = Path(d, "n.prompts").read_text().splitlines()
+            self.assertIn("Change only this: the flashlight is raised to her shoulder.", prompts[1])
+            self.assertNotIn("ink.", prompts[1])                             # the style isn't asked for again
+            self.assertEqual(Image.open(f"{d}/out/a2.png").size, Image.open(f"{d}/out/a.png").size)
+            rv = Path(d, "out", "review.tsv").read_text()
+            self.assertIn("a2\tresized 768x512", rv); self.assertIn("z\tedit base nope not found", rv)

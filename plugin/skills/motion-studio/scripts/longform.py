@@ -169,14 +169,14 @@ def draft_stills(film, segs):
     (owner's rule, 2026-11-25). An upscaled copy loses the stamp, so its source is read too."""
     out = []
     for sg in segs:
-        img = (sg.get("data") or {}).get("image")
-        if sg["type"] != "panel" or not img:
+        if sg["type"] != "panel":
             continue
-        cands = [film / img] + ([film / img.split("panels-hd/", 1)[1]] if "panels-hd/" in img else [])
-        hit = next((png_text(p) for p in cands if png_text(p).get("motion-studio-draft") == "1"), None)
-        if hit is not None:
-            out.append(f'{sg["id"]}: {img} is a draft still ({hit.get("motion-studio-model", "draft model")}, layout only); '
-                       f'redraw it with a full-quality model before render')
+        for img in panel_images(sg.get("data")):
+            cands = [film / img] + ([film / img.split("panels-hd/", 1)[1]] if "panels-hd/" in img else [])
+            hit = next((png_text(p) for p in cands if png_text(p).get("motion-studio-draft") == "1"), None)
+            if hit is not None:
+                out.append(f'{sg["id"]}: {img} is a draft still ({hit.get("motion-studio-model", "draft model")}, layout only); '
+                           f'redraw it with a full-quality model before render')
     return out
 
 
@@ -413,10 +413,10 @@ def panel_list(film, sc, problems=None):
         if s.get("type") != "panel":
             continue
         d = s.get("data") or {}
-        img = d.get("image")
+        img = (panel_images(d) or [None])[0]       # a flipbook panel is listed by its first frame (its key drawing)
         if not img:
             if problems is not None:
-                problems.append(f"{s['id']}: panel scene with no data.image")
+                problems.append(f"{s['id']}: panel scene with no data.image or data.frames")
             continue
         p = panels.setdefault(img, {"image": img, "beats": [], "shot": d.get("shot"), "char_in_frame": d.get("char_in_frame", []),
                                     "flashback": bool(d.get("flashback")), "prompt": d.get("prompt", ""), "seed": d.get("seed"),
@@ -754,7 +754,7 @@ def cmd_upscale(a):
     if not binary:
         raise SystemExit(f"{a.bin} not found: install realesrgan-ncnn-vulkan (github.com/xinntao/Real-ESRGAN releases, BSD-3) "
                          "or pass --bin /path/to/realesrgan-ncnn-vulkan")
-    imgs = sorted({(s.get("data") or {}).get("image") for s in load_script(film)["segments"] if s.get("type") == "panel"} - {None})
+    imgs = sorted({x for s in load_script(film)["segments"] if s.get("type") == "panel" for x in panel_images(s.get("data"))})
     done = skipped = 0
     for img in imgs:
         src = film / img
@@ -906,12 +906,22 @@ def cmd_timeline(a):
             seg["words"] = [[x["w"], round(t + x["t0"], 3), round(t + x["t1"], 3)] for x in w["words"]]
         elif s.get("narration") and allwords:
             problems.append(f"{s['id']}: narration changed since `align`; run align again")
-        if seg.get("type") == "panel" and (seg.get("data") or {}).get("image"):
-            hd = hd_path(film, seg["data"]["image"])
-            if hd:
-                seg["data"] = dict(seg["data"], image=str(hd.relative_to(film)))
-            elif (film / seg["data"]["image"]).exists() and image_size(film / seg["data"]["image"])[0] < 1920:
-                problems.append(f"{s['id']}: panel {seg['data']['image']} is under 1920 wide and has no upscale; run `upscale`")
+        if seg.get("type") == "panel" and panel_images(seg.get("data")):
+            # a flipbook's frames are drawn over one composition, so every frame must be the first one's size, or a flip jumps
+            srcs = panel_images(seg["data"])
+            sizes = [image_size(film / x) if (film / x).exists() else None for x in srcs]
+            if sizes[0] and any(z and z != sizes[0] for z in sizes[1:]):
+                problems.append(f"{s['id']}: flipbook frames differ in size from the first ({sizes[0][0]}x{sizes[0][1]}): " +
+                                ", ".join(f"{x} {z[0]}x{z[1]}" for x, z in zip(srcs, sizes) if z and z != sizes[0]))
+            use = []
+            for x, z in zip(srcs, sizes):
+                hd = hd_path(film, x)
+                if not hd and z and z[0] < 1920:
+                    problems.append(f"{s['id']}: panel {x} is under 1920 wide and has no upscale; run `upscale`")
+                use.append(str(hd.relative_to(film)) if hd else x)
+            seg["data"] = dict(seg["data"], image=use[0])
+            if seg["data"].get("frames"):
+                seg["data"]["frames"] = [u if isinstance(f, str) else dict(f, image=u) for f, u in zip(seg["data"]["frames"], use)]
         if seg.get("type") == "capture":        # a captured screenshot: the file, its size and its credit come from the manifest
             cap = load_captures(film).get((seg.get("data") or {}).get("real"), {})
             if cap.get("file") and (film / cap["file"]).exists():
@@ -919,6 +929,10 @@ def cmd_timeline(a):
                 seg["data"] = dict(seg["data"], image=cap["file"], iw=iw, ih=ih, url=cap.get("url", ""))
                 seg.setdefault("source", cap.get("credit") or re.sub(r"^https?://(www\.)?([^/]+).*", r"\2", cap.get("url", "")))
         resolve_cues(seg.get("data", {}), seg.get("words"), seg, problems, cues)
+        if seg.get("type") == "panel" and len((seg.get("data") or {}).get("frames") or []) > 1:
+            flips, fp = panel_flips(seg)
+            problems += fp
+            seg["data"]["flips"] = flips
         if seg.get("sfx"):      # drama foley: "sfx": ["paper slap", {"kind": "low hit", "at": "envelope"}]
             seg["sfx"] = [dict(x, kind=kind_key(x["kind"])) if isinstance(x, dict) else {"kind": kind_key(x)} for x in seg["sfx"]]
             resolve_cues(seg["sfx"], seg.get("words"), seg, problems, cues)
@@ -1038,8 +1052,7 @@ def cmd_short(a):
     if (film / "sources").is_dir():
         shutil.copytree(film / "sources", dest / "sources", dirs_exist_ok=True)
     for x in segs:                          # panel stills and their upscaled copies, at the same relative paths
-        img = (x.get("data") or {}).get("image")
-        for src in ([film / img, hd_path(film, img)] if img else []):
+        for src in [p for img in panel_images(x.get("data")) for p in (film / img, hd_path(film, img))]:
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
@@ -2284,6 +2297,49 @@ def film_frame0(film):
     return np.frombuffer(raw, np.uint8).reshape(h, w, 3)
 
 
+def panel_images(d):
+    """Every still a panel shows: its frames (a flipbook panel) or its one image."""
+    fr = [f if isinstance(f, str) else (f or {}).get("image") for f in (d or {}).get("frames") or []]
+    return [x for x in fr if x] or ([d["image"]] if (d or {}).get("image") else [])
+
+
+def panel_flips(seg, fps=FPS):
+    """A flipbook panel's schedule, [[t, frame index], ...] in absolute seconds, every t on a whole video frame. With
+    any "at" cue on a frame, every frame after the first needs one and shows from its word (hold-on-cue). Otherwise the
+    frames cycle at data.fps (4: the limited animation of a flipbook, each drawing held for about 7 video frames),
+    looping unless "loop": false or "hold_last": true, which plays them once and holds the last. Returns (flips, problems)."""
+    d, t0, t1 = seg.get("data") or {}, seg["t0"], seg["t1"]
+    frames = d.get("frames") or []
+    q = lambda t: round(round(t * fps) / fps, 4)
+    if len(frames) < 2:
+        return [[q(t0), 0]], []
+    cued = [isinstance(f, dict) and "t" in f for f in frames]
+    if any(cued):
+        miss = [i for i, c in enumerate(cued) if i and not c]
+        if miss:
+            return [[q(t0), 0]], [f"{seg['id']}: flipbook frames {miss} have no \"at\" cue; give every frame after the first one, or none"]
+        ts = [t0] + [f["t"] for f in frames[1:]]
+        if any(b <= a for a, b in zip(ts, ts[1:])):
+            return [[q(t0), 0]], [f"{seg['id']}: flipbook frame cues are out of order ({', '.join(f'{t:.2f}' for t in ts)} s)"]
+        return [[q(t), i] for i, t in enumerate(ts)], []
+    step, once = 1 / float(d.get("fps", 4)), bool(d.get("hold_last")) or d.get("loop") is False
+    out, k, t = [], 0, t0
+    while t < t1 - 1e-6:
+        i = min(k, len(frames) - 1) if once else k % len(frames)
+        if not out or out[-1][1] != i:
+            out.append([q(t), i])
+        if once and k >= len(frames) - 1:
+            break
+        k += 1; t = t0 + k * step
+    return out, []
+
+
+def flip_frames(segs, fps=FPS):
+    """Video frames where a flipbook panel changes drawing, for verify's allow_frames, like the map's boil: exact
+    frames, so a real pop anywhere else in the panel is still caught."""
+    return {int(round(t * fps)) for sg in segs if sg["type"] == "panel" for t, _ in ((sg.get("data") or {}).get("flips") or [])[1:]}
+
+
 def map_boil_steps(segs, fps=30, end=None):
     """The map scene's boil: every 8th frame each paper piece, ink line and dust speck jumps to its next small jitter
     (mapscene.js), so the map is never still. Each jump is a step on otherwise held frames, which the pop check reads as a
@@ -2336,7 +2392,7 @@ def _final(a):
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
-    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
+    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")) | flip_frames(tl["segments"]), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
     # the channel logo in its own colours wherever it appears: a style pack or grade must never recolour it
     import brand
     rep, probs = brand.brand_problems(film, load_script(film))
