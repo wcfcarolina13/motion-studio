@@ -19,7 +19,8 @@ MAX=${COLAB_MAX_LANES:-2}
 [ "$N" -gt "$MAX" ] && { echo "$N lanes asked, plan allows $MAX at once (COLAB_MAX_LANES); using $MAX"; N=$MAX; }
 SETUP=${SETUP:-$HERE/remote_setup.py}; RENDER=${RENDER:-$HERE/remote_render.py}
 [[ $SETUP = /* ]] || SETUP=$HERE/$SETUP; [[ $RENDER = /* ]] || RENDER=$HERE/$RENDER
-if [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; then CARDS=(${COLAB_GPUS:-L4}); else CARDS=(${COLAB_GPUS:-L4 T4}); fi
+need=$(grep -o 'MIN_VRAM_GB: *[0-9]*' "$SETUP" 2>/dev/null | grep -o '[0-9]*$' | head -1)     # same rule as run_colab.sh
+if [ "${need:-0}" -gt 16 ] || { [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; }; then CARDS=(${COLAB_GPUS:-L4}); else CARDS=(${COLAB_GPUS:-L4 T4}); fi
 lane_gpus() { local g="COLAB_GPUS_$1"; [ -n "${!g:-}" ] && { echo "${!g}"; return; }; echo "${CARDS[$(($1 - 1))]:-}"; }
 for ((k = N; k > 1; k--)); do [ -n "$(lane_gpus $k)" ] && break; echo "lane $k has no card of its own (cards: ${CARDS[*]}); dropping it"; N=$((k - 1)); done
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/colab-lanes.XXXXXX")
