@@ -142,5 +142,24 @@ class FlashRate(unittest.TestCase):
             self.assertTrue(readcheck.flash_spans(v))
 
 
+class MapBoil(unittest.TestCase):
+    """The map's boil steps every 8th frame on purpose; final passes exactly those frames to the pop check."""
+
+    def test_frames_inside_map_segments_only(self):
+        import longform
+        segs = [{"type": "map", "t0": 1.0, "t1": 2.0}, {"type": "stat", "t0": 2.0, "t1": 3.0}]
+        self.assertEqual(sorted(longform.map_boil_steps(segs)), [32, 40, 48, 56])
+        self.assertEqual(sorted(longform.map_boil_steps(segs[:1], end=2.5)), [32, 40, 48, 56, 64, 72])
+
+    def test_final_asks_for_the_mix(self):
+        import argparse
+        import longform
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "out").mkdir()
+            with self.assertRaises(SystemExit) as e:
+                longform._final(argparse.Namespace(film=d))
+            self.assertIn("run `longform.py mix", str(e.exception.code))
+
+
 if __name__ == "__main__":
     unittest.main()

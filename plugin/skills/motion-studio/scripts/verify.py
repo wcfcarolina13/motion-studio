@@ -27,7 +27,7 @@ def _patch_median(rgb):
     return tuple(int(round(float(np.median(c[:, i])))) for i in range(3))
 
 
-def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground=None, loop=False, stills=None, motion=True,
+def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, allow_frames=(), ground=None, loop=False, stills=None, motion=True,
            motion_floor=None, motion_mask=()):
     """ground: the film's own frame 0 as the browser drew it (H x W x 3 uint8). When given, frame 0 of the video is
     judged against it, central-patch median to median, instead of against the flat colour bg: a textured ground has no
@@ -87,6 +87,7 @@ def verify(video, bpm=None, sheet_dest=None, bg=(11, 11, 11), allow=None, ground
     pops = [(i + 1, round((i + 1) / 30, 2)) for i in range(1, len(d) - 1) if d[i] > 1.0 and d[i] > 3 * max(d[i - 1], d[i + 1])]
     if allow:                                               # intended hits: scene wipes, stamps, hard cuts the film declares
         pops = [p for p in pops if not any(a0 - 0.05 <= p[1] <= a1 + 0.05 for a0, a1 in allow)]
+    pops = [p for p in pops if p[0] not in allow_frames]   # exact frames a scene steps on purpose (the map's boil)
     if loop:                                                # the loop cut: the end returns to the opening frame on purpose
         gap = float(np.abs(frames[-1] - frames[0]).mean())
         report(gap <= 3.0, f"loop: last frame matches frame 0 (mean difference {gap:.1f} levels, ≤ 3)")

@@ -1961,6 +1961,20 @@ def film_frame0(film):
     return np.frombuffer(raw, np.uint8).reshape(h, w, 3)
 
 
+def map_boil_steps(segs, fps=30, end=None):
+    """The map scene's boil: every 8th frame each paper piece, ink line and dust speck jumps to its next small jitter
+    (mapscene.js), so the map is never still. Each jump is a step on otherwise held frames, which the pop check reads as a
+    pop once a map carries enough pieces (a US-states map flagged every 24th frame, the cycle's biggest jump, 2026-11-25).
+    Returns the frame numbers where the boil steps inside map segments, for verify's allow_frames: exact frames, so a
+    real pop on any other frame of a map is still caught."""
+    out = set()
+    for k, sg in enumerate(segs):
+        if sg["type"] == "map":     # a film that ends on a map keeps the map (and its boil) to the last frame
+            t1 = end if k == len(segs) - 1 and end else sg["t1"]
+            out.update(f for f in range(int(sg["t0"] * fps + 1e-3), int(t1 * fps + 1e-3) + 1) if f % 8 == 0)
+    return out
+
+
 def cmd_final(a):
     with JobStatus(Path(a.film).resolve(), "final"):
         _final(a)
@@ -1969,6 +1983,8 @@ def cmd_final(a):
 def _final(a):
     import verify
     film = Path(a.film).resolve()
+    if not (film / "out" / "mix.wav").exists():     # render makes only the picture; the sound is its own step
+        raise SystemExit(f"final needs out/mix.wav, which `render` doesn't make: run `longform.py mix {a.film}` first")
     import render
     out = render.mux(film / "out" / "silent.mp4", film / "out" / "mix.wav", film / "out" / f"{film.name}.mp4")
     # scene wipes, stamps and drama panels' hard cuts are meant to hit: don't call them pops
@@ -1989,7 +2005,7 @@ def _final(a):
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
-    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
+    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
     # the channel logo in its own colours wherever it appears: a style pack or grade must never recolour it
     import brand
     rep, probs = brand.brand_problems(film, load_script(film))
