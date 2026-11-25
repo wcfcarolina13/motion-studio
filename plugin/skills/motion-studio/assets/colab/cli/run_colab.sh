@@ -19,6 +19,7 @@ export PATH=$HOME/.local/bin:$PATH
 # client.py). That explains most dropped smoke tests and setups that never started (2026-11-25), and the 120 s allocation
 # timeout behind orphan "[?]" runtimes (#263) is eased too. Our own `timeout` wrappers stay the outer limit.
 export COLAB_CLI_REQUEST_TIMEOUT=${COLAB_CLI_REQUEST_TIMEOUT:-60}
+export REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-60}     # kernel calls: jupyter_kernel_client reads this one (default 10 s in the installed CLI)
 HERE=$(cd "$(dirname "$0")" && pwd)
 [ $# -ge 1 ] || { echo "usage: run_colab.sh <in_dir> [out_dir]"; exit 2; }
 IN=$(cd "$1" && pwd); OUT=${2:-$IN/../out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)

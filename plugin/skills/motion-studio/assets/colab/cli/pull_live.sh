@@ -13,6 +13,7 @@
 set -uo pipefail
 export PATH=$HOME/.local/bin:$PATH
 export COLAB_CLI_REQUEST_TIMEOUT=${COLAB_CLI_REQUEST_TIMEOUT:-60}     # see run_colab.sh
+export REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-60}                       # see run_colab.sh
 [ $# -ge 2 ] || { echo "usage: pull_live.sh <session> <out_dir> [remote_dir]"; exit 2; }
 S=$1; OUT=$2; R=${3:-/content/out}; EVERY=${PULL_EVERY:-30}
 mkdir -p "$OUT"
