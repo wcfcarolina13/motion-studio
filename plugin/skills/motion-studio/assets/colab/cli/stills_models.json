@@ -57,6 +57,28 @@
    "licence": "OpenAI terms: the user owns the output and may use it commercially; files carry OpenAI's C2PA provenance, kept in the untouched originals.",
    "bakeoff": "2026-11-25 winner on anatomy, scale, night skies and no garbled text: 9 stills in about 6 min via codex exec. Faults: a face in 3 of 5 hero shots, 2 of 9 at an odd aspect (both now re-rolled by codex_stills.py).",
    "note": "Spends the owner's Codex allowance; not the default until he says yes."
+  },
+  "moss-image-sft": {
+   "repo": "OpenMOSS-Team/MOSS-Image-SFT",
+   "diffusers": "0.38",
+   "licence": "Apache-2.0 (Hugging Face model card cardData.license, read by the Mac 2026-11-25).",
+   "min_vram_gb": 20,
+   "full_gpu_gb": 40,
+   "w": 1344,
+   "h": 768,
+   "call": {
+    "num_inference_steps": 50,
+    "guidance_scale": 3.0
+   },
+   "negative": true,
+   "negative_prompt": "",
+   "note": "5B; settings from the model card and community, not yet measured on our L4 (size, seconds per still, peak memory). The card's negative-branch skip at layer 22 is not passed: its argument name is unverified. The 8-step DMD LoRA (lodestones/Kromoss, CFG 1) would be a draft model and is not added."
   }
+ },
+ "excluded": {
+  "HiDream-ai/HiDream-O1-Image": "MIT, but it runs from its own repo with transformers and flash-attn, not a diffusers pipeline, so the stills route can't load it; add a route only if a bake-off shows it beats the Codex route.",
+  "black-forest-labs/FLUX.2-dev": "non-commercial licence",
+  "Qwen/Qwen-Image-2.1": "research-only licence",
+  "Krea 2, FLUX 3 Klein": "revenue-capped licences (under $1M / $5M); only with the owner's OK"
  }
 }

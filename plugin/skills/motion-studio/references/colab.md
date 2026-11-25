@@ -21,6 +21,7 @@ Colab runtimes drop without warning, GPUs are refused for hours, and units burn 
   - `z-image`: full Z-Image, 40 steps, CFG 4, 1344x768, 20 GB or more, so L4 or A100.
   - `qwen-image-2512`: Qwen-Image 2512, 40 steps, true CFG 4, 1664x928. A100 only for now (`min_vram_gb` 40 sends the run to an A100): whole on the card at 70 GB or more (`full_gpu_gb`), sequential offload below that.
   - `z-image-turbo`: 9 steps, no guidance. Draft only; it needs `--draft`.
+  - `moss-image-sft`: MOSS-Image-SFT (5B, Apache-2.0), 50 steps, CFG 3, empty negative, 1344x768, diffusers 0.38 or later; L4 with model offload, whole on the card from 40 GB. Settings are the model card's, not yet measured here.
   - `chatgpt-image-codex`: ChatGPT images through the Codex CLI on the Mac, not Colab (below).
 
   - **Bake-off, 2026-11-25** (on an L4, since no A100 was free): ChatGPT images via `codex exec` won clearly. It drew 9 stills in about 6 minutes with right anatomy and scale, dark night skies and no garbled text. Full Z-Image took 155 to 215 s a still and still got object structure wrong (a seat on a pedestal, a drawn border, a melted hand truck). Qwen-Image 2512 ran out of memory on the L4 under model offload, because that moves its whole 40 GB transformer onto the card; it is marked `"offload": "sequential"` (one layer at a time) and a sequential retry was running.
