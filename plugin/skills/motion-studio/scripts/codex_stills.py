@@ -39,8 +39,11 @@ to her shoulder"}. "edit_from" names an earlier shot in this run (its untouched 
 (`--image=<path>`, one argument: a bare `-i` swallows the prompt that follows it) with "the same picture, change only ...", and the result is cropped to 16:9 like any shot. A frame must match
 its base's size to flip cleanly, so an edit that comes back at the base's shape but another size is resized to it, and
 one at another shape is re-rolled. After each edit the frame is compared with its base (gray, 64x36, correlation): a
-frame under 0.6 is kept but listed in review.tsv as "composition may have moved", a first guess at the line, not a
-measured one.
+frame under 0.9 is kept but listed in review.tsv as "composition may have moved". On the first real test (2026-11-25)
+edits asking for one small change scored 0.71 and 0.82, with the figure moved and the whole texture redrawn, which
+flipped at 4 fps reads as jitter. So edits suit a deliberate cut to a new drawing (a new pose), not flipbook in-betweens;
+motion over one still is the panel's "fx" layer (longform.md). Low scores are not re-rolled, since each try is a
+Codex call and the test suggests a re-roll rarely holds still either.
 
 Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
 import argparse, json, os, shlex, shutil, subprocess, sys, tempfile, time
@@ -50,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import scalecheck  # noqa: E402
 
 MODEL_TAG = "chatgpt-image via codex"
+LIKENESS = 0.9      # an edit under this correlation with its base has moved too much to flip as a frame
 FACE_DEFAULT = ('claude -p "Read the image file at {path}. Does it show any human face, including a partial, distant, '
                 'drawn or silhouetted face with visible features? Answer with one word on the last line: FACE or NOFACE." '
                 '--allowedTools Read')
@@ -227,7 +231,7 @@ def main():
             if base:
                 k = likeness(base, src)
                 print(f"{s['id']}: likeness to its base {k:.2f}")
-                if k < 0.6:
+                if k < LIKENESS:
                     review.append((s["id"], f"composition may have moved from its base (likeness {k:.2f}): look before using it as a frame"))
             if v == "UNCLEAR":
                 review.append((s["id"], "face check unclear: look at it"))

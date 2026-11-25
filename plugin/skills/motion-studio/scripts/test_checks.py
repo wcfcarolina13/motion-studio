@@ -521,3 +521,31 @@ class CodexEdit(unittest.TestCase):
             self.assertEqual(Image.open(f"{d}/out/a2.png").size, Image.open(f"{d}/out/a.png").size)
             rv = Path(d, "out", "review.tsv").read_text()
             self.assertIn("a2\tresized 768x512", rv); self.assertIn("z\tedit base nope not found", rv)
+
+
+class PanelFx(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_effects_draw_and_never_flash(self):
+        import io, json, longform, render
+        import numpy as np
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            Image.new("RGB", (1920, 1080), (60, 60, 70)).save(film / "panels" / "a.png")
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            fx = [{"type": "rain"}, {"type": "snow", "area": [0, 0, 0.5, 1]}, {"type": "beam", "from": [0.3, 0.5], "aim": [0.7, 0.7]},
+                  {"type": "flicker", "amount": 1.0}, {"type": "flicker", "pos": [0.5, 0.3], "radius": 0.9, "amount": 1.0},
+                  {"type": "steam", "pos": [0.5, 0.8]}, {"type": "fog"}]
+            seg = {"id": "p", "type": "panel", "t0": 0.0, "t1": 2.0, "data": {"image": "panels/a.png", "camera": "hold", "fx": fx}}
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 2.0, "segments": [seg], "grade": {"vignette": 0}}) + ";\n")
+            frames = []
+            with render.Film(film) as f:
+                self.assertTrue(any('"fog"' in w for w in f.studio.get("warnings", [])))   # an unknown effect is named
+                for i in range(60):
+                    f.seek(i / 30)
+                    frames.append(np.asarray(Image.open(io.BytesIO(f.page.locator("#stage").screenshot())).convert("RGB").resize((320, 180))))
+                self.assertFalse(f.errors)
+            self.assertGreater(float(np.abs(frames[30].astype(int) - frames[29]).mean()), 0.5)   # rain and snow move every frame
+            self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])                 # the flickers stay under the flash limit
