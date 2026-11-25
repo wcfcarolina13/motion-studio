@@ -8,7 +8,8 @@
 #   command, UNIT_BUDGET units per run, COLAB_DRIVE_DIR for an attended run's second copy on Drive, HF_TOKEN_FILE for a read-only Hugging Face token. The rules behind
 #   them are in references/colab.md.
 #   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 3 means every card asked
-#   for is already in use on the account (another lane or project); retry_colab.sh waits on it without using a try. Exit 2 means the render started
+#   for is already in use on the account (another lane or project); retry_colab.sh waits on it without using a try.
+#   Exit 4 means the runtime came up but setup never started on it; retry_colab.sh retries that at once. Exit 2 means the render started
 #   but didn't finish, or an output didn't come down whole (what came down is kept); that is not retried, since a retry
 #   could burn units on the same fault. Run retry_colab.sh again by hand to send only the jobs still missing.
 set -uo pipefail
@@ -98,7 +99,23 @@ fi
 bash "$HERE/pull_live.sh" $S "$OUT" > >(tee -a pull.log) 2>&1 & PULL=$!
 echo "PHASE setup"; T0=$(date +%s)
 # "Connection was lost" here does not stop the remote setup; the render script waits for it, so carry on.
-colab exec -s $S -f "$SETUP" --timeout 0 || echo "setup exec returned an error; render will wait for setup to finish"
+if ! colab exec -s $S -f "$SETUP" --timeout 0; then
+  echo "setup exec returned an error; checking the setup is alive on the runtime"
+  # A dropped exec once left an L4 billing 25 min with no setup running while the render waited out its 45 min limit
+  # (2026-11-24). A setup script that touches /content/setup_alive first thing must show it within SETUP_SEEN seconds
+  # (180) of starting, or the runtime is dead: exit 4, which retry_colab.sh retries at once (a try, with no 20 min wait).
+  if grep -q setup_alive "$SETUP"; then
+    seen=0
+    while [ $(( $(date +%s) - T0 )) -lt "${SETUP_SEEN:-180}" ]; do
+      timeout 120 colab ls -s $S /content 2>/dev/null | grep -qxE 'setup_alive|paths.txt' && { seen=1; break; }
+      sleep 15
+    done
+    [ $seen = 1 ] || { echo "FAILED: setup never started on the runtime (no /content/setup_alive)"; exit 4; }
+    echo "setup is alive; render will wait for it"
+  else
+    echo "this setup script doesn't touch /content/setup_alive, so a dead setup is caught only by the render's own wait"
+  fi
+fi
 echo "setup $(( $(date +%s)-T0 ))s" | tee -a usage.log
 echo "PHASE render"; T0=$(date +%s)
 : > render.out

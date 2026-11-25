@@ -55,7 +55,7 @@ done
 worst=0
 for i in "${!pids[@]}"; do
   wait "${pids[$i]}"; rc=$?; echo "lane ${lanes[$i]} ended: exit $rc"
-  [ $rc -eq 2 ] && worst=2; [ $rc -eq 1 ] && [ $worst -eq 0 ] && worst=1
+  [ $rc -eq 2 ] && worst=2; [ $rc -ne 0 ] && [ $rc -ne 2 ] && [ $worst -eq 0 ] && worst=1
 done
 rm -rf "$TMP"
 exit $worst
