@@ -14,6 +14,11 @@
 #   could burn units on the same fault. Run retry_colab.sh again by hand to send only the jobs still missing.
 set -uo pipefail
 export PATH=$HOME/.local/bin:$PATH
+# The CLI's own request timeout is 10 s, but a cold Colab kernel takes 12 to 39 s to answer, so the first calls after
+# "Session READY" died with "Connection was lost" (google-colab-cli issues #285 and #264; the CLI reads this variable in
+# client.py). That explains most dropped smoke tests and setups that never started (2026-11-25), and the 120 s allocation
+# timeout behind orphan "[?]" runtimes (#263) is eased too. Our own `timeout` wrappers stay the outer limit.
+export COLAB_CLI_REQUEST_TIMEOUT=${COLAB_CLI_REQUEST_TIMEOUT:-60}
 HERE=$(cd "$(dirname "$0")" && pwd)
 [ $# -ge 1 ] || { echo "usage: run_colab.sh <in_dir> [out_dir]"; exit 2; }
 IN=$(cd "$1" && pwd); OUT=${2:-$IN/../out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
@@ -46,7 +51,7 @@ cleanup() {
     echo "a runtime request was in flight; watching for $S for ${NEW_GRACE:-150} s"
     t0=$(date +%s)
     while [ $(( $(date +%s) - t0 )) -lt "${NEW_GRACE:-150}" ]; do
-      if timeout 60 colab sessions 2>/dev/null | grep -qF "[$S]"; then
+      if timeout 90 colab sessions 2>/dev/null | grep -qF "[$S]"; then
         timeout 300 colab stop -s $S; echo "stopped $S, which came up after the run ended" | tee -a usage.log; break
       fi
       sleep 10
