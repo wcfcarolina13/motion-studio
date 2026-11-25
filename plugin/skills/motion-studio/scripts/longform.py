@@ -424,6 +424,35 @@ def cmd_panels(a):
         print(f"{len(warned)} panel prompts have lint warnings; run `longform.py lint {a.film}`")
 
 
+def cutaway_problems(segs, sizes):
+    """A cutaway is accurate by construction only if its subject and person are in the size sheet and every part fits
+    inside the subject (2 cm of slack for line weight)."""
+    out = []
+    for sg in segs:
+        if sg.get("type") != "cutaway":
+            continue
+        d = sg.get("data") or {}
+        sub = sizes.get(d.get("subject"))
+        if not sub:
+            out.append(f'{sg["id"]}: cutaway subject "{d.get("subject")}" is not in "sizes"')
+            continue
+        if d.get("person") and d["person"] not in sizes:
+            out.append(f'{sg["id"]}: cutaway person "{d["person"]}" is not in "sizes"')
+        w = (sub.get("w") if d.get("view") == "front" else sub.get("d") or sub.get("w")) or sub["h"]
+        for p in d.get("parts") or []:
+            if "rect" in p:
+                x, y, pw, ph = p["rect"]; xs, ys = [x, x + pw], [y, y + ph]
+            elif "circle" in p:
+                x, y, r = p["circle"]; xs, ys = [x - r, x + r], [y - r, y + r]
+            else:
+                nums = [float(v) for v in re.findall(r"-?\d*\.?\d+", str(p.get("path", "")))]
+                xs, ys = nums[0::2] or [0], nums[1::2] or [0]
+            if min(xs) < -0.02 or max(xs) > w + 0.02 or min(ys) < -0.02 or max(ys) > sub["h"] + 0.02:
+                out.append(f'{sg["id"]}: cutaway part "{p.get("label")}" reaches outside the {d["subject"]} '
+                           f'({w:g} m by {sub["h"]:g} m)')
+    return out
+
+
 def scale_verdicts(film):
     f = film / "out" / "scale.json"
     return json.loads(f.read_text()) if f.exists() else {}
@@ -853,6 +882,9 @@ def cmd_timeline(a):
           "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1),
           "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False)))}
+    if sc.get("sizes"):
+        tl["sizes"] = sc["sizes"]
+    problems += cutaway_problems(segs, sc.get("sizes") or {})
     if any(sg.get("type") == "map" for sg in segs):     # the map scene's projection and regions (mapart.py build)
         mj = film / "maps" / "map.json"
         if mj.exists():

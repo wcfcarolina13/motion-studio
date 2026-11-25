@@ -24,7 +24,7 @@ These are the owner's rules from a review of a long-form explainer's stills (202
 ## 3. Breakdown segments when parts matter
 
 - When the script turns on how something is built (repairs, costs, failure points), add a 30-60 s anatomy segment early, before the problems it explains: a cutaway or exploded view drawn without text, with labels in a real font laid over it by the engine, each arriving on its word. Each part named there should pay off later in the film (the part that breaks in act 2 was introduced in the breakdown).
-- Draw anatomy from the object sheet's sources, not from a model's guess. Image models invent internals, so a diagram-style drawing the engine builds (vector shapes from a reference photo or manufacturer diagram) is usually more accurate than a generated still.
+- Draw anatomy from the object sheet's sources, not from a model's guess. Image models invent internals, so a diagram-style drawing the engine builds is usually more accurate than a generated still. The `cutaway` scene (longform.md) is that drawing: the object to scale from `"sizes"`, a person beside it, and each part in real units with its label on its word. **When the image model gets an object's insides wrong twice, stop re-prompting and use the cutaway.** A generated still can still carry the mood around it (the hero lifting the lid), with the cutaway carrying the facts.
 - **Further.** An X-ray reveal (the shell fades to show the tank); "the five parts that break" as a countdown; a before-and-after of a repair; a cost tag pinned to each part, only with a sourced figure (or "price on request" when the price isn't public).
 
 ## 4. Light matches time and place (lint)

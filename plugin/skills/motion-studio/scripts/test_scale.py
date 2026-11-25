@@ -122,5 +122,26 @@ class LintTest(unittest.TestCase):
                 self.assertAlmostEqual(panelqa.white_share(f), want)
 
 
+class CutawayTest(unittest.TestCase):
+    SEG = {"id": "s04", "type": "cutaway", "data": {"subject": "porta-potty", "person": "man", "parts": [
+        {"label": "tank", "rect": [0.6, 0, 0.58, 0.43]}, {"label": "vent", "rect": [0.82, 0.43, 0.08, 1.88]},
+        {"label": "urinal", "path": "0.25 0.75 0.43 0.75 0.41 1.0 0.27 1.0"}]}}
+
+    def test_parts_inside_pass(self):
+        import longform
+        self.assertEqual(longform.cutaway_problems([self.SEG], SIZES), [])
+
+    def test_part_outside_and_unknown_names_fail(self):
+        import longform
+        seg = json.loads(json.dumps(self.SEG))
+        seg["data"]["parts"][1]["rect"] = [0.82, 0.43, 0.08, 2.1]    # a vent 0.2 m above the roof
+        self.assertIn('"vent" reaches outside', " ".join(longform.cutaway_problems([seg], SIZES)))
+        seg["data"]["view"] = "front"                                  # front view is only 1.12 m wide: the tank still fits
+        seg["data"]["person"] = "giant"
+        self.assertIn('person "giant"', " ".join(longform.cutaway_problems([seg], SIZES)))
+        seg["data"]["subject"] = "shed"
+        self.assertIn('subject "shed"', longform.cutaway_problems([seg], SIZES)[0])
+
+
 if __name__ == "__main__":
     unittest.main()
