@@ -18,6 +18,8 @@
 <script src="figure.js"></script>
 <script src="closeup.js"></script>
 <script src="mapscene.js" onerror="void 0"></script>
+<script src="three.min.js" onerror="void 0"></script>
+<script src="set3d.js" onerror="void 0"></script>
 <script src="timeline.js"></script>
 <script>
 // Long-form engine: a narrated film is a list of segments (timeline.js, written by longform.py from the
@@ -1221,12 +1223,33 @@ B.capture = (s, g) => {
   };
 };
 
-const OPAQUE = new Set(["stage", "board", "crowd"]);   // scenes with their own set: no drifting dots behind them
+const OPAQUE = new Set(["stage", "board", "crowd", "set3d"]);   // scenes with their own set: no drifting dots behind them
 const FULL = new Set(["panel", "map"]);                // full-frame images: they cut (or fade), and nothing shows behind them
 // the map scene (mapscene.js, references/maps.md): one engraved map shared by a run of map segments, drawn in its own layer
 const MAP = window.MapScene ? window.MapScene({ K, W, H, READ, VERT, SAFE, SEGS, TL, sceneG, cueT }) : null;
 if (MAP) B.map = MAP.build;
 else if (SEGS.some(s => s.type === "map")) window.STUDIO.warnings.push("map segments need mapscene.js in the film folder (longform.py init copies it)");
+// set3d (set3d.js, references/set3d.md): paper cutouts standing in a toon-lit 3D set, drawn by three.js into a canvas
+// that sits in the scene's own layer. The camera is the set's (a 3D camera), so the scene sets no __cam. Invisible proxy
+// rects follow each cutout's screen box (class = its pose and facing) and the set's anchor point, so check's pace and
+// beat probes, which watch the drawing's elements, see the 3D picture move
+if (window.S3 && !window.S3.missing) B.set3d = (s, g) => {
+  const sc = window.S3.build(s, { W, H, palette: TL.set3d && TL.set3d.palette });
+  const fo = K.el("foreignObject", { x: 0, y: 0, width: W, height: H }, g);
+  const cv = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
+  cv.width = W; cv.height = H; cv.style.cssText = `display:block;width:${W}px;height:${H}px`; fo.appendChild(cv);
+  const ctx = cv.getContext("2d"), px = K.el("g", { "data-proxy": "set3d" }, g), boxes = {};
+  const anchor = K.el("rect", { fill: "none", width: 64, height: 64 }, px);
+  let last = null;
+  return t => {
+    if (t === last) return; last = t;
+    const r = window.S3.draw(sc, t, ctx, W, H, s.words);
+    r.boxes.forEach(b => { const e = boxes[b.id] || (boxes[b.id] = K.el("rect", { fill: "none" }, px));
+      K.set(e, { x: b.x.toFixed(1), y: b.y.toFixed(1), width: Math.max(1, b.w).toFixed(1), height: Math.max(1, b.h).toFixed(1), class: b.cls }); });
+    K.set(anchor, { x: (r.anchor[0] - 32).toFixed(1), y: (r.anchor[1] - 32).toFixed(1) });
+  };
+};
+else if (SEGS.some(s => s.type === "set3d")) window.STUDIO.warnings.push("set3d segments need three.min.js and set3d.js in the film folder (longform.py init copies them)");
 
 // ── build every segment once ─────────────────────────────
 const built = SEGS.map((s, i) => {

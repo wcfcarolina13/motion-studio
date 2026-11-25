@@ -1,4 +1,6 @@
 """Tests for motioncheck.py, overlapcheck.py and readcheck.py: python3 -m unittest test_checks (from scripts/). Needs ffmpeg."""
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -372,3 +374,55 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Set3D(unittest.TestCase):
+    SEG = {"id": "a", "type": "set3d", "t0": 0.3, "t1": 4.0,
+           "words": [["Ada", 0.5, 0.8], ["walks", 0.9, 1.2], ["in.", 1.3, 1.6]],
+           "data": {"set": "room", "cast": [{"id": "ada", "look": "ada", "at": [-1, 0], "talks": True,
+                                             "keys": [{"t": 0.9, "to": [0.5, 0]}, {"t": 2.5, "pose": "cheer"}]},
+                                            {"id": "eli", "look": "eli", "back": True, "at": [1.5, 1]}],
+                    "camera": [{"shot": "wide"}, {"t": 2.4, "shot": "close", "on": "ada", "cut": True}]}}
+
+    def test_cast_and_stamp(self):
+        import copy, longform
+        segs = [self.SEG, copy.deepcopy(self.SEG)]
+        self.assertEqual([c["id"] for c in longform.set3d_cast(segs)], ["ada", "eli"])
+        s0 = longform.cast_stamp(segs, {})
+        segs[1]["data"]["cast"][0]["look"] = "bo"          # a changed look is a new design: the sheet is stale
+        self.assertNotEqual(longform.cast_stamp(segs, {}), s0)
+        self.assertNotEqual(longform.cast_stamp([self.SEG], {"ink": "#000000"}), longform.cast_stamp([self.SEG], {}))
+
+    def test_engine_knows_set3d(self):
+        import longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            probs, _ = longform.engine_drift(film, [self.SEG])
+            self.assertTrue(probs)                          # no set3d.js or three.min.js beside the page: unknown
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            self.assertEqual(longform.engine_drift(film, [self.SEG]), ([], []))
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_renders_and_moves(self):
+        import json, longform, render
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4.0, "segments": [self.SEG]}) + ";\n")
+            with render.Film(film) as f:
+                shots = []
+                for t in (1.0, 2.0, 3.0):
+                    f.seek(t)
+                    shots.append(f.page.evaluate("[...document.querySelectorAll('[data-proxy] rect')].map(r => [r.getAttribute('x'), r.getAttribute('class')])"))
+                self.assertFalse(f.errors)
+            self.assertEqual(len(shots[0]), 3)              # the set's anchor and one box per cutout
+            self.assertNotEqual(shots[0], shots[1])         # the walk and the camera move the proxies
+            self.assertIn("cheer r", [c for _, c in shots[2]])
+
+    def test_camera_keys_are_shots(self):
+        import longform
+        self.assertEqual(longform.shot_starts([self.SEG, {"id": "b", "type": "stat", "t0": 4.0, "t1": 6.0}]), [0.3, 2.4, 4.0])

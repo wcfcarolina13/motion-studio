@@ -23,6 +23,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
+  longform.py cast-sheet <film>                 set3d cast design sheet (review/cast-sheet.png); render needs it current
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
   longform.py mix <film> [--plan | --music a.mp3,b.mp3] [--whoosh id|w.wav | --no-whoosh] [--bed-db DB | --bed-gap LU]
                   [--bed-profile auto|short|long] [--bed-dip 3] [--bed-exempt REASON] [--no-sfx]
@@ -197,7 +198,7 @@ def cmd_init(a):
     for d in ("narration", "out", "review", "sources"):
         (film / d).mkdir(parents=True, exist_ok=True)
     shutil.copy(TEMPLATE, film / "film.html")
-    for f in ("kit.js", "figure.js", "closeup.js", "mapscene.js"):
+    for f in ENGINE_FILES:
         shutil.copy(HERE / f, film / f)
     # defaults a film made from today on gets, where an older film keeps the old behaviour so its re-renders don't change.
     # script.json overrides each ("anticipate": false)
@@ -464,7 +465,7 @@ def cmd_panels(a):
         print(f"{len(warned)} panel prompts have lint warnings; run `longform.py lint {a.film}`")
 
 
-ENGINE_FILES = ("kit.js", "figure.js", "closeup.js", "mapscene.js")
+ENGINE_FILES = ("kit.js", "figure.js", "closeup.js", "mapscene.js", "three.min.js", "set3d.js")
 
 
 def engine_drift(film, segs):
@@ -479,6 +480,8 @@ def engine_drift(film, segs):
     known = set(re.findall(r"^B\.(\w+)\s*=", html, re.M))
     if "B.map = MAP.build" in html and (film / "mapscene.js").exists():
         known.add("map")
+    if "B.set3d = " in html and all((film / f).exists() for f in ("set3d.js", "three.min.js")):
+        known.add("set3d")
     probs = [f'{sg["id"]}: scene type "{sg["type"]}" is not in this film\'s film.html (it would draw as "undefined"); '
              f'run `longform.py init {film}` to refresh the engine files (script.json is kept)'
              for sg in segs if sg["type"] not in known]
@@ -950,6 +953,8 @@ def cmd_timeline(a):
           "map_drift": sc.get("map_drift", eng.get("map_drift", False))}
     if sc.get("sizes"):
         tl["sizes"] = sc["sizes"]
+    if sc.get("set3d"):                                 # the 2.5D pack's film-wide settings (palette), references/set3d.md
+        tl["set3d"] = sc["set3d"]
     problems += cutaway_problems(segs, sc.get("sizes") or {})
     drift, drift_warn = engine_drift(film, segs)
     problems += drift
@@ -1013,7 +1018,7 @@ def cmd_short(a):
     for d in ("narration", "out", "review", "sources"):
         (dest / d).mkdir(parents=True, exist_ok=True)
     shutil.copy(TEMPLATE, dest / "film.html")
-    for f in ("kit.js", "figure.js", "closeup.js", "mapscene.js"):
+    for f in ENGINE_FILES:
         shutil.copy(HERE / f, dest / f)
     if (film / "engine.json").exists():     # the Short moves like its long-form film
         shutil.copy2(film / "engine.json", dest / "engine.json")
@@ -1038,7 +1043,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say") if k in sc}
+    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say", "set3d") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
@@ -1178,6 +1183,89 @@ def cmd_stills(a):
         raise SystemExit(f"stills stopped: {e}")
     print(f"{n} stills -> {out}")
     print("sheet ->", render.sheet(out, out.with_suffix(".png"), cols=6))
+
+
+CAST_POSES = ("stand", "point", "present", "think", "shrug", "worried", "cheer", "happy")
+
+
+def set3d_cast(segs):
+    """Every distinct cast member of the film's set3d segments: [{id, look, back}] in order of first appearance."""
+    seen, out = set(), []
+    for sg in segs:
+        if sg.get("type") != "set3d":
+            continue
+        for c in (sg.get("data") or {}).get("cast", []):
+            key = json.dumps([c.get("id"), c.get("look"), bool(c.get("back"))], sort_keys=True)
+            if key not in seen:
+                seen.add(key); out.append({"id": c.get("id"), "look": c.get("look"), "back": bool(c.get("back"))})
+    return out
+
+
+def cast_stamp(segs, palette):
+    return hashlib.sha256(json.dumps([set3d_cast(segs), palette], sort_keys=True).encode()).hexdigest()[:16]
+
+
+CAST_PAGE = """<!doctype html><meta charset="utf-8"><body style="margin:0;background:#fff">
+<canvas id="c"></canvas>
+<script src="../kit.js"></script><script src="../figure.js"></script><script src="../three.min.js"></script><script src="../set3d.js"></script>
+<script>
+(() => {
+const CAST = %s, POSES = %s, PAL = Object.assign({}, S3.PALETTE, %s), cw = 200, ch = 300, TOP = 64, left = 150;
+const c = document.getElementById("c"), cols = POSES.length + 2;
+c.width = left + cols * cw + 20; c.height = TOP + CAST.length * (ch + 24) + 20;
+const x = c.getContext("2d"); x.fillStyle = PAL.paper; x.fillRect(0, 0, c.width, c.height);
+x.fillStyle = PAL.ink; x.font = "600 22px sans-serif";
+["facing left", "back"].concat(POSES.map(p => p + (p === "stand" ? " (right)" : ""))).forEach((h, i) => x.fillText(h, left + i * cw + 12, 40));
+const cell = document.createElement("canvas"); cell.width = 512; cell.height = 768; const cx = cell.getContext("2d");
+CAST.forEach((m, r) => {
+  const L = typeof m.look === "object" ? Object.assign({}, S3.LOOKS.ada, m.look) : (S3.LOOKS[m.look] || Object.values(S3.LOOKS)[r %% 5]);
+  const y = TOP + r * (ch + 24);
+  x.fillStyle = PAL.ink; x.font = "700 26px sans-serif"; x.fillText(m.id || "?", 16, y + ch / 2);
+  x.font = "18px sans-serif"; x.fillText(typeof m.look === "string" ? m.look : "custom", 16, y + ch / 2 + 28);
+  if (m.back) x.fillText("(faceless)", 16, y + ch / 2 + 52);
+  const draw = (i, pose, f, back) => { S3.drawCutout(cx, L, F.POSES[pose] || {}, f, { back, ink: PAL.ink, paper: PAL.paper });
+    x.drawImage(cell, left + i * cw, y, cw, ch); };
+  draw(0, "stand", -1, m.back); draw(1, "stand", 1, true);
+  POSES.forEach((p, i) => draw(i + 2, p, 1, m.back));
+});
+window.DONE = true;
+})();
+</script>"""
+
+
+def cmd_cast_sheet(a):
+    """review/cast-sheet.png: every set3d cast member, facing each way, from the back and in the stock poses, so the
+    designs are agreed before any scene is animated (a cutout film's design sheet comes first). Its stamp, in
+    review/cast-sheet.json, is what render's set3d gate compares with the film's cast."""
+    from playwright.sync_api import sync_playwright
+    import render
+    film = Path(a.film).resolve()
+    sc = load_script(film)
+    segs = sc.get("segments", [])
+    cast = set3d_cast(segs) or [{"id": k, "look": k, "back": False} for k in ("ada", "bo", "cy", "dee", "eli")]
+    pal = (sc.get("set3d") or {}).get("palette", {})
+    page = film / "review" / "cast-sheet.html"
+    page.parent.mkdir(exist_ok=True)
+    page.write_text(CAST_PAGE % (json.dumps(cast), json.dumps(list(CAST_POSES)), json.dumps(pal)))
+    kw = {"executable_path": os.environ["MS_CHROMIUM"]} if os.environ.get("MS_CHROMIUM") else {"channel": "chrome"}
+    with sync_playwright() as pw:
+        b = pw.chromium.launch(headless=True, args=["--allow-file-access-from-files", *render.RASTER], **kw)
+        pg = b.new_page(); errs = []
+        pg.on("pageerror", lambda e: errs.append(str(e)))
+        pg.goto(page.as_uri())
+        try:
+            pg.wait_for_function("window.DONE === true", timeout=20000)
+        except Exception:
+            raise SystemExit(f"cast-sheet: the sheet did not finish drawing: {errs[0] if errs else 'no page error'}")
+        size = pg.evaluate("[document.getElementById('c').width, document.getElementById('c').height]")
+        pg.set_viewport_size({"width": size[0], "height": size[1]})
+        out = film / "review" / "cast-sheet.png"
+        pg.locator("#c").screenshot(path=str(out))
+        b.close()
+    if errs:
+        raise SystemExit(f"cast-sheet: page error: {errs[0]}")
+    (film / "review" / "cast-sheet.json").write_text(json.dumps({"stamp": cast_stamp(segs, pal), "cast": cast}, indent=1))
+    print(f"{len(cast)} cast -> {out}")
 
 
 def frange(a, b, step):
@@ -1485,12 +1573,20 @@ def _render(a, film, st):
         print(f"render: --skip-gate: {why}; rendering anyway", flush=True)
         st.note(f"gate skipped: {why}")
     page_gate(film, "render")
-    if tl.get("format") == "9x16":          # a Short is a new layout: look at its own contact sheet before spending a render on it
+    has3d = any(sg.get("type") == "set3d" for sg in tl["segments"])
+    if tl.get("format") == "9x16" or has3d:   # a Short is a new layout, and a 3D set's camera can frame anything: look at a contact sheet before spending a render
         made = (film / "timeline.js").stat().st_mtime
         sheets = [p for p in (film / "review").glob("stills-*.png") if p.stat().st_mtime >= made]
         if not sheets:
-            raise SystemExit("render stopped: a 9:16 film needs its own contact sheet first. Run `stills` and look at "
-                             "review/stills-segments.png (or stills-every.png); it must be newer than timeline.js")
+            raise SystemExit(f"render stopped: a {'9:16 film' if not has3d else 'film with set3d scenes'} needs its own contact "
+                             "sheet first. Run `stills` (set3d: `stills --every 1`) and look at review/stills-segments.png (or "
+                             "stills-every.png); it must be newer than timeline.js")
+    if has3d:                                 # the cutout designs are agreed on their own sheet before anything is animated
+        rec = film / "review" / "cast-sheet.json"
+        sc = load_script(film)
+        if not rec.exists() or json.loads(rec.read_text()).get("stamp") != cast_stamp(sc.get("segments", []), (sc.get("set3d") or {}).get("palette", {})):
+            raise SystemExit("render stopped: the set3d cast changed since its design sheet (or has none). Run "
+                             f"`longform.py cast-sheet {film}` and look at review/cast-sheet.png")
     n = math.ceil(tl["duration"] * FPS)
     # finished chunks survive a failed or interrupted render and are reused while the film is unchanged (render_stamp);
     # --fresh, or any change to the page, timeline, assets or settings, starts over, unless --only names what changed
@@ -2892,6 +2988,17 @@ PACE_BENCH = {"moving": 0.966, "shot_every": 2.1, "new_every": 1.0, "wps": 3.67,
 PACE_MERGE = 0.5    # new things starting within 0.5 s of the last counted one read as one event (a typed word, a burst)
 
 
+def shot_starts(segs):
+    """Where each shot starts: every segment, plus each camera key inside a set3d segment (a new framing of the set is a
+    new shot, as a cut between panels is)."""
+    out = []
+    for s in segs:
+        out.append(s["t0"])
+        if s.get("type") == "set3d":
+            out += [k["t"] for k in (s.get("data") or {}).get("camera", []) if isinstance(k.get("t"), (int, float)) and s["t0"] < k["t"] < s["t1"]]
+    return sorted(out)
+
+
 def pace_profile(beat_starts, moving, n_samples, words, talk_s, sfx_times, t_in, t_out, shot_starts=()):
     """The film's pace in the benchmark's terms: share of samples with something moving, median seconds between shots
     (segments), median and 90th-percentile seconds between new things (starts within PACE_MERGE of the last counted
@@ -3024,7 +3131,7 @@ def pacing(samples, keys, segs, sc, step, a):
         sfx_t = None
     nw = sum(len(s.get("words") or []) for s in segs)
     report.append(pace_line(pace_profile([b[0] for b in beats], sum(1 for r in per if r[1]), len(per), nw,
-                                         sum(y - x for x, y in talk), sfx_t, t_in, t_out, [s["t0"] for s in segs])))
+                                         sum(y - x for x, y in talk), sfx_t, t_in, t_out, shot_starts(segs))))
     for t0, t1, sp in long:
         flags.append(f"{seg_at(t0)}: one beat from {t0:.1f} to {t1:.1f} s with {sp:.1f} s of voice and nothing new "
                      f"moving or entering: add a beat, or mark it data-hold (segment \"steady\": true) if it is meant to hold")
@@ -3548,6 +3655,7 @@ def main():
     p.set_defaults(fn=cmd_timeline)
     p = sp.add_parser("captions"); p.add_argument("film"); p.add_argument("--lang", required=True)
     p.add_argument("--text", required=True, help='JSON {"<segment id>": "translated line"}'); p.set_defaults(fn=cmd_captions)
+    p = sp.add_parser("cast-sheet"); p.add_argument("film"); p.set_defaults(fn=cmd_cast_sheet)
     p = sp.add_parser("stills"); p.add_argument("film"); p.add_argument("--every", type=float); p.add_argument("--at", type=float, default=0.75)
     p.set_defaults(fn=cmd_stills)
     p = sp.add_parser("render"); p.add_argument("film"); p.add_argument("--workers", type=int, default=4); p.add_argument("--scale", type=float, default=1.0)
