@@ -190,7 +190,8 @@ def gate_real_assets(film, segs, step):
 # what `init` writes to a new film's engine.json: behaviour that is on for new films but would change an older film's
 # re-render. "anticipate": figures lean back before a big pose change, overshoot and settle (figure.js F.at; 2026-10-25).
 # "map_drift": a map camera pushes in slowly across every hold instead of sitting still (mapscene.js; 2026-11-25)
-ENGINE_DEFAULTS = {"anticipate": True, "map_drift": True}
+# "stat_drift": a stat scene rises slowly from its count on, so a long stat never holds still (longform.html; 2026-11-25)
+ENGINE_DEFAULTS = {"anticipate": True, "map_drift": True, "stat_drift": True}
 
 
 def cmd_init(a):
@@ -964,7 +965,8 @@ def cmd_timeline(a):
           "chapters": chapters, "captions": (fmt == "9x16" or bool(sc.get("captions", False))) and any("words" in s for s in segs),
           "grade": sc.get("grade", {"vignette": 0.35, "grain": 0}), "cues": cues, "type_scale": sc.get("type_scale", 1),
           "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False))),
-          "map_drift": sc.get("map_drift", eng.get("map_drift", False))}
+          "map_drift": sc.get("map_drift", eng.get("map_drift", False)),
+          "stat_drift": sc.get("stat_drift", eng.get("stat_drift", False))}
     if sc.get("sizes"):
         tl["sizes"] = sc["sizes"]
     if sc.get("set3d"):                                 # the 2.5D pack's film-wide settings (palette), references/set3d.md
@@ -2340,6 +2342,32 @@ def flip_frames(segs, fps=FPS):
     return {int(round(t * fps)) for sg in segs if sg["type"] == "panel" for t, _ in ((sg.get("data") or {}).get("flips") or [])[1:]}
 
 
+def stat_ticks(segs, fps=FPS):
+    """Video frames where a stat scene's count-up shows a new number, for verify's allow_frames. The count eases out, so
+    near its end the number holds for several frames and then steps a digit, which the pop check reads as a pop (three
+    stat scenes in Survive Year 1 flagged, 2026-11-25). Exact frames, worked out the way the page draws the count
+    (longform.html B.stat), so a real pop on any other frame is still caught. Both rounding rules are tried at an exact
+    half, since the page's toLocaleString and Python's round can differ there."""
+    from decimal import Decimal, ROUND_HALF_EVEN, ROUND_HALF_UP
+    out = set()
+    for sg in segs:
+        if sg["type"] != "stat":
+            continue
+        d = sg.get("data") or {}
+        dec, val = int(d.get("decimals") or 0), float(d.get("value") or 0)
+        c0 = d["t"] - 0.05 if d.get("t") is not None else sg["t0"] + 0.2
+        c1 = c0 + min(2.0, (sg["t1"] - c0) * 0.5)
+        q = Decimal(1).scaleb(-dec)
+        shown = lambda t, mode: Decimal(repr(val * (1 - (1 - min(1.0, max(0.0, (t - c0) / (c1 - c0)))) ** 3))).quantize(q, mode)
+        prev = None
+        for f in range(int(c0 * fps), int(c1 * fps) + 2):
+            cur = {shown(f / fps, m) for m in (ROUND_HALF_UP, ROUND_HALF_EVEN)}
+            if prev is not None and cur != prev:
+                out.add(f)
+            prev = cur
+    return out
+
+
 def map_boil_steps(segs, fps=30, end=None):
     """The map scene's boil: every 8th frame each paper piece, ink line and dust speck jumps to its next small jitter
     (mapscene.js), so the map is never still. Each jump is a step on otherwise held frames, which the pop check reads as a
@@ -2392,7 +2420,7 @@ def _final(a):
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
-    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")) | flip_frames(tl["segments"]), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
+    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")) | flip_frames(tl["segments"]) | stat_ticks(tl["segments"]), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
     # the channel logo in its own colours wherever it appears: a style pack or grade must never recolour it
     import brand
     rep, probs = brand.brand_problems(film, load_script(film))
@@ -2654,6 +2682,36 @@ def map_motion(film, segs):
                 if wins:
                     sid = next((s["id"] for s in segs if s["t0"] - 1e-6 <= h0 < s["t1"]), "map")
                     out[f"{sid} map hold {h0:.1f}-{h1:.1f} s"] = wins
+    return out
+
+
+def stat_motion(film, segs):
+    """{"<segment> stat": per-window motion} for every stat scene of 2 s or more, measured on the page's own frames the
+    way final measures the video (as map_motion does). A stat scene is a count-up and then words on a plain ground: a
+    7.5 s stat held still for 5 s after its count and failed final (2026-11-25). Turn on "stat_drift" to fix it."""
+    import io
+    import motioncheck
+    import numpy as np
+    import render
+    from PIL import Image
+    stats = [s for s in segs if s["type"] == "stat" and s["t1"] - s["t0"] >= 2.0]
+    if not stats:
+        return {}
+    step, per, out = 1 / motioncheck.FPS, max(1, int(round(motioncheck.FPS * motioncheck.WINDOW))), {}
+    with render.Film(film) as f:
+        ow, oh = max(2, f.w // 4 // 2 * 2), max(2, f.h // 4 // 2 * 2)
+
+        def gray(k):
+            f.page.evaluate(f"window.seek({k * step:.6f})")
+            im = Image.open(io.BytesIO(f.page.screenshot(type="jpeg", quality=95))).convert("L")
+            return np.asarray(im.resize((ow, oh), Image.BICUBIC), dtype=np.int16)
+        for sg in stats:
+            w0, wins = math.ceil(sg["t0"] / motioncheck.WINDOW - 1e-9) * motioncheck.WINDOW, []
+            while w0 + motioncheck.WINDOW <= sg["t1"] + 1e-9:
+                fr = [gray(int(round(w0 * motioncheck.FPS)) + j) for j in range(per + 1)]
+                wins.append(float(np.mean([np.abs(fr[j + 1] - fr[j]).mean() for j in range(per)])))
+                w0 += motioncheck.WINDOW
+            out[f"{sg['id']} stat"] = wins
     return out
 
 
@@ -3414,6 +3472,15 @@ def _check(a, film):
             floor0 = motioncheck.floor_of([v for w in list(est.values()) + list(mest.values()) for v in w])
         mfloor, low = motion_flags(est, floor=floor0)
         mfloor2, mlow = motion_flags(mest, floor=floor0 if floor0 is not None else (mfloor if est else None))
+        sest = stat_motion(film, segs)
+        sfloor, slow = motion_flags(sest, floor=floor0 if floor0 is not None else (mfloor if est else None))
+        if sest:
+            report.append(f"stat scenes (rendered and measured like final): {len(sest)}, {len(slow)} at or near the floor {sfloor:.3f}")
+        for sid, m in slow:
+            how = "too little" if m < sfloor else "barely above it"
+            flags.append(f"{sid.split()[0]}: stat scene moves {how} (quietest 2 s {m:.3f}, floor {sfloor:.3f}); turn on "
+                         f"\"stat_drift\": true in engine.json (the scene rises slowly from its count), raise the segment's "
+                         f"\"drift\" (px/s), or cut it shorter")
         report.append(f"panel motion (predicted from each still and its camera; it reads low, so near the floor usually "
                       f"passes): floor {mfloor:.3f}, {len(low)} panel(s) at or near it")
         if mest:
