@@ -45,6 +45,12 @@ flipped at 4 fps reads as jitter. So edits suit a deliberate cut to a new drawin
 motion over one still is the panel's "fx" layer (longform.md). Low scores are not re-rolled, since each try is a
 Codex call and the test suggests a re-roll rarely holds still either.
 
+The owner's review of the first 85 stills (picture-truth.md, rule 12) is built in: every prompt says each visible hand
+belongs to a person in the frame with exactly two hands; shots are linted before any call (money, hands with no body,
+tipped objects that don't say where their insides are, hidden things not drawn X-ray style), and the warnings go to
+review.tsv; and after each still LIMB_CHECK_CMD (default: the Claude CLI, answering EXTRA or OK; "off" skips it) looks
+for an extra, detached or bent limb, which goes to review.tsv for the pick pass rather than a re-roll.
+
 Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
 import argparse, json, os, shlex, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -53,6 +59,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import scalecheck  # noqa: E402
 
 MODEL_TAG = "chatgpt-image via codex"
+# the owner's review of the first 85 stills (picture-truth.md, rule 12): a hand-only close-up gave a bent arm from the
+# frame edge, and one shot a third hand
+HANDS = ("Every visible hand belongs to a person whose arm and shoulder are in the frame, and each person has exactly two "
+         "hands and two arms.")
+LIMB_DEFAULT = ('claude -p "Read the image file at {path}. Look only at people\'s arms and hands. Does anyone have more '
+                'than two arms or two hands, or is any arm or hand not attached to a body in the picture, or bent where '
+                'no joint is? Answer with one word on the last line: EXTRA or OK." --allowedTools Read')
 LIKENESS = 0.9      # an edit under this correlation with its base has moved too much to flip as a frame
 FACE_DEFAULT = ('claude -p "Read the image file at {path}. Does it show any human face, including a partial, distant, '
                 'drawn or silhouetted face with visible features? Answer with one word on the last line: FACE or NOFACE." '
@@ -82,9 +95,10 @@ def ask(shot, style, faceless, scale="", w=1536, h=1024):
     parts.append((shot.get("style") or style).strip())
     parts.append(f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
+    parts.append(HANDS)
     if faceless:
-        parts.append("No human face may be visible anywhere: show people from behind, cropped at the shoulders, or as "
-                     "hands only. This is a hard rule.")
+        parts.append("No human face may be visible anywhere: show people from behind or cropped at the shoulders, with "
+                     "their arms and shoulders in the frame. This is a hard rule.")
     return " ".join(p for p in parts if p)
 
 
@@ -95,9 +109,10 @@ def ask_edit(shot, faceless, w=1536, h=1024):
     parts.append(f"Make exactly one image, landscape, {w}x{h}, the same size as the attached picture, and save it as "
                  "image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
+    parts.append(HANDS)
     if faceless:
-        parts.append("No human face may be visible anywhere: show people from behind, cropped at the shoulders, or as "
-                     "hands only. This is a hard rule.")
+        parts.append("No human face may be visible anywhere: show people from behind or cropped at the shoulders, with "
+                     "their arms and shoulders in the frame. This is a hard rule.")
     return " ".join(parts)
 
 
@@ -118,6 +133,17 @@ def edit_base(shot, out, default):
         return None
     cand = [os.path.join(out, "originals", f"{ref}.png"), ref, os.path.join(out, ref)]
     return next((c for c in cand if os.path.isfile(c)), "")
+
+
+def judge(path, cmd, words, timeout_env="FACE_CHECK_TIMEOUT"):
+    """A vision judge's one-word answer from `words`, or UNCLEAR."""
+    try:
+        r = subprocess.run(cmd.replace("{path}", shlex.quote(path)), shell=True, capture_output=True, text=True,
+                           timeout=int(os.environ.get(timeout_env, 180)))
+    except subprocess.TimeoutExpired:
+        return "UNCLEAR"
+    lines = [ln.strip().strip(".*").upper() for ln in r.stdout.strip().splitlines() if ln.strip()]
+    return lines[-1] if lines and lines[-1] in words else "UNCLEAR"
 
 
 def face_verdict(path, cmd):
@@ -170,10 +196,19 @@ def main():
     if bad:
         raise SystemExit("size sheet problems, nothing run:\n  " + "\n  ".join(bad))
     os.makedirs(os.path.join(a.out, "originals"), exist_ok=True)
+    # what-gets-drawn lint (money, hands with no body, tipped objects, hidden things; picture-truth.md rule 12) before
+    # any Codex call. It warns, never stops: the words are a heuristic, and a person decides
+    import panelqa
+    todo = [x for x in shots if not os.path.exists(os.path.join(a.out, f"{x['id']}.png"))]
+    pre = panelqa.lint([dict(x, id=x["id"], prompt=x.get("prompt") or x.get("change") or "") for x in todo], route="codex")
+    for i, ws in pre:
+        for wtxt in ws:
+            print(f"LINT {i}: {wtxt}")
     cmd = shlex.split(os.environ.get("CODEX_CMD", "codex exec --skip-git-repo-check"))
     cmd += shlex.split(os.environ.get("CODEX_ARGS", '-m gpt-6-luna -c model_reasoning_effort="low"'))
     images = os.path.expanduser(os.environ.get("CODEX_IMAGES", "~/.codex/generated_images"))
     face_cmd = os.environ.get("FACE_CHECK_CMD", FACE_DEFAULT)
+    limb_cmd = os.environ.get("LIMB_CHECK_CMD", LIMB_DEFAULT)
     timeout = int(os.environ.get("CODEX_TIMEOUT", 600))
     review, calls, failed = [], 0, []
     for s in shots:
@@ -235,6 +270,12 @@ def main():
                     review.append((s["id"], f"composition may have moved from its base (likeness {k:.2f}): look before using it as a frame"))
             if v == "UNCLEAR":
                 review.append((s["id"], "face check unclear: look at it"))
+            # extra or detached limbs: listed for the pick pass, never re-rolled, since a judge agreed with people only
+            # about 60% of the time in our tests and each re-roll is a Codex call
+            lv = "OK" if limb_cmd == "off" else judge(src, limb_cmd, ("EXTRA", "OK"))
+            if lv != "OK":
+                review.append((s["id"], "limb check: an extra, detached or bent arm or hand; look at it" if lv == "EXTRA"
+                               else "limb check unclear: look at the arms and hands"))
             print(f"{s['id']}: {W}x{H} -> 16:9 in {time.time() - t0:.0f} s (try {t})")
             done = True; break
         if not done:
@@ -251,6 +292,7 @@ def main():
                    for s in to_mark if not a.only or s["id"] in a.only]
     with open(os.path.join(a.out, "usage.log"), "a") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\tcodex_stills\t{calls} codex calls\t{len(shots)} shots\t{len(failed)} failed\n")
+    review = [(i, "lint: " + wtxt) for i, ws in pre for wtxt in ws] + review
     if review:
         with open(os.path.join(a.out, "review.tsv"), "a") as f:
             f.writelines(f"{i}\t{why}\n" for i, why in review)

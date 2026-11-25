@@ -298,7 +298,7 @@ st = os.environ["JUDGE_STATE"]; n = int(open(st).read()) if os.path.exists(st) e
 open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].split()[n])
 """
 
-    def run_it(self, d, sizes, says, *extra, ok=True, shots=None):
+    def run_it(self, d, sizes, says, *extra, ok=True, shots=None, env_extra=None):
         import json, os
         try:
             import PIL  # noqa: F401
@@ -309,7 +309,8 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
             {"id": "a", "prompt": "a yard"}, {"id": "b", "prompt": "a truck", "faceless": False}]}))
         env = dict(os.environ, CODEX_CMD=f"python3 {d}/fake.py", CODEX_ARGS="", CODEX_IMAGES=f"{d}/gen",
                    FAKE_STATE=f"{d}/n", FAKE_SIZES=sizes, JUDGE_STATE=f"{d}/j", JUDGE_SAYS=says,
-                   FACE_CHECK_CMD=f"python3 {d}/judge.py {{path}}")
+                   FACE_CHECK_CMD=f"python3 {d}/judge.py {{path}}", LIMB_CHECK_CMD="off")
+        env.update(env_extra or {})
         env.pop("CODEX_STILLS_OK", None)
         return subprocess.run(["python3", str(Path(__file__).with_name("codex_stills.py")), f"{d}/shots.json", f"{d}/out",
                                *(["--allow-codex"] if ok else []), *extra], capture_output=True, text=True, env=env)
@@ -549,3 +550,36 @@ class PanelFx(unittest.TestCase):
                 self.assertFalse(f.errors)
             self.assertGreater(float(np.abs(frames[30].astype(int) - frames[29]).mean()), 0.5)   # rain and snow move every frame
             self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])                 # the flickers stay under the flash limit
+
+
+class StillReviewRules(unittest.TestCase):
+    """The owner's review of the first 85 ChatGPT stills (picture-truth.md, rule 12), as lint and prompt defaults."""
+    def lint(self, p, shot="MED"):
+        import panelqa
+        return [w for _, ws in panelqa.lint([{"id": 1, "prompt": p, "shot": shot}], route="codex") for w in ws]
+
+    def test_lint(self):
+        self.assertIn("money", self.lint("A man counts cash at a folding table.")[0])
+        self.assertTrue(self.lint("Close-up of his hands unlatching the door.", "CU"))
+        self.assertFalse(self.lint("Waist-up from behind, his hands unlatching the door.", "CU"))
+        self.assertTrue(self.lint("A porta-potty tipped on its side in the mud."))
+        self.assertFalse(self.lint("A porta-potty tipped on its side, door shut and latched."))
+        self.assertTrue(self.lint("The tank hidden under the floor."))
+        self.assertFalse(self.lint("The tank hidden under the floor shows as a faint see-through outline."))
+        # the open models' limits aren't the codex route's
+        self.assertFalse(self.lint("A yard with no trucks. " + "word " * 120))
+
+    def test_prompts_and_limb_flag(self):
+        import codex_stills
+        p = codex_stills.ask({"prompt": "A man at a gate."}, "ink.", True)
+        self.assertIn(codex_stills.HANDS, p); self.assertNotIn("hands only", p)
+        with tempfile.TemporaryDirectory() as d:
+            shots = {"style": "ink.", "shots": [{"id": "a", "prompt": "A man counts cash."}]}
+            Path(d, "limb.py").write_text("print('Looking.\\nEXTRA')")
+            r = CodexEdit.run_it(self, d, "1536x1024", "", shots=shots, env_extra={"LIMB_CHECK_CMD": f"python3 {d}/limb.py {{path}}"})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            rv = Path(d, "out", "review.tsv").read_text()
+            self.assertIn("a\tlint: money in the picture", rv); self.assertIn("a\tlimb check: an extra", rv)
+            self.assertEqual(Path(d, "n").read_text(), "1")              # flagged, not re-rolled
+
+    FAKE, JUDGE = CodexStills.FAKE, CodexStills.JUDGE

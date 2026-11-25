@@ -40,6 +40,15 @@ HIDDEN = re.compile(r"pocket|behind (?:his|her|their|the) back|under the table|b
                     r"|in (?:his|her|their) lap|in shadow|hidden|cropped|off[- ]frame", re.I)
 CONTACT = re.compile(r"handshake|shak\w* hands|hug\w*|embrac\w*|holding hands|hand on (?:his|her|their) (?:shoulder|arm|back|cheek)"
                      r"|grabs? (?:his|her|their) (?:arm|wrist|hand)", re.I)
+# the owner's review of 85 ChatGPT stills (picture-truth.md, rule 12)
+MONEY = re.compile(r"\b(?:cash|money|bills?|banknotes?|dollar notes?|coins?|wallets?|paychecks?|paycheques?|stacks? of \$|\$\d)", re.I)
+HAND_ONLY = re.compile(r"\b(?:hands? only|only (?:the |his |her |their )?hands?|close[- ]up (?:of|on) (?:the |his |her |their |a )?(?:\w+ )?hands?"
+                       r"|hands? (?:entering|reaching|coming) (?:in )?(?:from|into) (?:the )?(?:frame|edge)|just (?:the |a )?hands?)\b", re.I)
+BODY_SAID = re.compile(r"\b(?:waist[- ]up|from behind|shoulders?|whole (?:arm|body|figure)|full figure|torso|upper body)\b", re.I)
+TIPPED = re.compile(r"\b(?:tipped|tips? over|on its side|overturned|knocked over|toppled|upside[- ]down|fallen over|lying on its)\b", re.I)
+INSIDE_SAID = re.compile(r"\b(?:shut|closed|latched|now (?:on|faces|points|lies)|sideways|rotated|turned with it)\b", re.I)
+XRAY = re.compile(r"\b(?:hidden (?:inside|behind|under|in)|buried|underground|beneath the (?:floor|ground|surface)|inside the walls?|behind the wall)\b", re.I)
+XRAY_SAID = re.compile(r"\b(?:see[- ]through|x[- ]ray|cutaway|outline|transparent|ghost(?:ed)?)\b", re.I)
 MULTI = re.compile(r"\bwhile\b|\bthen\b|\bas (?:he|she|they)\b|\bidle\b", re.I)
 NEG = re.compile(r"\b(?:no|without|not|never|avoid|don't|doesn't|isn't)\s+[\w-]+", re.I)
 
@@ -85,10 +94,11 @@ def scene_words(prompt, boiler, boiler_re=None):
                not x.startswith("Scale:") and not (boiler_re and boiler_re.search(x)))
 
 
-def lint(items, boiler_re=None):
+def lint(items, boiler_re=None, route="klein"):
     """items: [{"id", "prompt", "shot"?, "refs"?, "plate"?, "char_in_frame"?}] -> [(id, [warnings])] for panels with any.
     A last sentence shared by at least half the prompts (the style anchor) is not counted as scene words; nor is any
-    sentence matching boiler_re."""
+    sentence matching boiler_re. route "codex" (ChatGPT images) leaves out the warnings that are about the open models'
+    limits (prompt length, reference count, negative phrasing, plates) and keeps the ones about what gets drawn."""
     boiler_re = re.compile(boiler_re, re.I) if boiler_re else None
     last = [sentences(it["prompt"])[-1:] for it in items if it.get("prompt")]
     counts = {}
@@ -104,10 +114,10 @@ def lint(items, boiler_re=None):
         shot = (it.get("shot") or "").upper()
         refs = it.get("refs") or []
         n_img = len(refs) + (1 if it.get("plate") else 0)
-        if n_img > MAX_IMAGES:
+        if n_img > MAX_IMAGES and route == "klein":
             w.append(f"{n_img} reference images; keep 1-2 in one style (identity mixes above {MAX_IMAGES})")
         words = scene_words(p, boiler, boiler_re)
-        if words > MAX_WORDS:
+        if words > MAX_WORDS and route == "klein":
             w.append(f"{words} scene words; keep to {MAX_WORDS} (one action, one setting; reference lines and the style ending don't count)")
         chars = it.get("char_in_frame") or []
         if len(chars) > MAX_CHARS:
@@ -121,10 +131,10 @@ def lint(items, boiler_re=None):
         m = MULTI.search(p)
         if m:
             w.append(f"maybe more than one action (\"{m.group(0)}\"); one verb per character, split the beat in two if needed")
-        if it.get("plate") and shot in PLATE_SHOTS:
+        if it.get("plate") and shot in PLATE_SHOTS and route == "klein":
             w.append(f"plate on a {shot} shot; its framing gets copied, leave it out or pre-crop it")
         negs = [x.group(0) for x in NEG.finditer(p) if x.group(0).lower() not in NEG_OK]
-        if negs:
+        if negs and route == "klein":
             w.append(f"negative phrasing ({', '.join(repr(x) for x in negs[:3])}); klein has no negative prompt, say what is there instead")
         dark = DARK.search(p)
         if dark and SKY_BRIGHT.search(p):
@@ -132,6 +142,22 @@ def lint(items, boiler_re=None):
         elif dark and not SKY_SAID.search(p):
             w.append(f"a dark scene (\"{dark.group(0)}\") that doesn't say its sky: models default to a bright one; say "
                      "\"night, dark navy sky, the only light is the flashlight\" or set it indoors")
+        mo = MONEY.search(p)
+        if mo:
+            w.append(f"money in the picture (\"{mo.group(0)}\"): drawn cash and wallets read as weird (owner's rule); show the "
+                     "number in a stat scene and what it buys or costs in the still")
+        ho = HAND_ONLY.search(p) or (shot in ("CU", "ECU", "INS") and hands_in(p)[0] and not BODY_SAID.search(p) and re.search(r"\bhands?\b", p, re.I))
+        if ho and not BODY_SAID.search(p):
+            w.append("hands with no body (a hand close-up or insert): bent arms and extra hands come from the frame edge; frame the "
+                     "action waist-up with the arm and shoulder in shot, or from behind")
+        tp = TIPPED.search(p)
+        if tp and not INSIDE_SAID.search(p):
+            w.append(f"a tipped object (\"{tp.group(0)}\") that doesn't say where its insides are: say it's shut (\"door shut and "
+                     "latched\") or where each inside part now lies, or the model draws them upright")
+        xr = XRAY.search(p)
+        if xr and not XRAY_SAID.search(p):
+            w.append(f"a hidden thing (\"{xr.group(0)}\") with no way to show it: draw it X-ray style, the cover solid and the "
+                     "thing a faint see-through outline")
         wg = WHITE_GROUND.search(p)
         if wg:
             w.append(f"\"{wg.group(0)}\": grounds are warm cream, not white (owner's rule); say \"warm cream paper\"")
