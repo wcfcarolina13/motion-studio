@@ -42,6 +42,7 @@ while [ $i -le 9 ]; do
     [ $busy -ge "$BUSY_MAX" ] && { echo "FAILED: cards still busy after $busy s"; exit 1; }
     echo "cards busy; waiting $BUSY_WAIT s (not a try)"; sleep "$BUSY_WAIT"; busy=$((busy + BUSY_WAIT)); continue
   fi
+  [ $rc -eq 4 ] && { echo "setup never started; retrying at once"; i=$((i + 1)); continue; }
   [ $rc -ne 1 ] && exit $rc        # 0 done, 2 render didn't finish: only 1 (no GPU, dead runtime) is worth retrying
   [ $i -lt 9 ] && sleep 1200
   i=$((i + 1))
