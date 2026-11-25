@@ -25,7 +25,8 @@ Tokens live next to the client secret: token.json, or token-<slug>.json with --c
 with --channel records which YouTube channel the token reaches in channels.json; every later command on that slug
 checks the token still reaches it, so one show's video can't land on another show's channel. channels.json may also
 hold, per slug: "disclosure" (a line appended word for word to the description and to every localized description,
-so the AI disclosure reads the same in every language), "synthetic": true (declare altered or synthetic content)
+so it reads the same in every language), "synthetic": true (declare altered or synthetic content on every upload;
+off by default, since YouTube asks for it only on realistic content and the package's policy.json turns it on per video)
 "language" (the default language of titles and audio) and "pre_upload_check" (a command, or a list of commands run
 in order, every upload to that channel must pass first, each given --package as its last argument; see upload
 --pre-upload-check).
@@ -243,6 +244,16 @@ def pre_upload_check(cmd, package=None):
     print(f"pre-upload check passed: {shlex.join(argv)}")
 
 
+def synthetic_for(a, cfg):
+    """The altered-or-synthetic flag for an upload. YouTube asks for it only on content that looks real (14328491), and
+    the owner asked that animated work stop being marked as AI (2026-11-25), so it is off unless --synthetic, the
+    channel's "synthetic", or the package's policy.json (D1_realistic / D1_ai_disclosure, policycheck.py) says otherwise.
+    A package that says something looks real always sets it, whatever the channel says."""
+    import policycheck
+    from_policy = policycheck.synthetic_from(a.package) if a.package else None
+    return bool(a.synthetic or cfg.get("synthetic") or from_policy)
+
+
 def cmd_upload(a):
     path = Path(a.file)
     size = path.stat().st_size
@@ -262,7 +273,7 @@ def cmd_upload(a):
                     "tags": [t.strip() for t in a.tags.split(",")] if a.tags else [],
                     "defaultLanguage": lang, "defaultAudioLanguage": lang},
         "status": {"privacyStatus": a.privacy, "selfDeclaredMadeForKids": a.made_for_kids,
-                   "containsSyntheticMedia": a.synthetic or bool(cfg.get("synthetic"))},
+                   "containsSyntheticMedia": synthetic_for(a, cfg)},
     }
     if a.publish_at:        # scheduled release: YouTube only accepts publishAt on a private upload, and flips it public then
         if a.privacy != "private": raise SystemExit("--publish-at needs --privacy private (YouTube makes it public at that time)")

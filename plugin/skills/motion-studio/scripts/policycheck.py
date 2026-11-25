@@ -36,9 +36,19 @@ CHECKS = {
     "S1_payoff_at": ("Where in the video is the title's promise paid off (m:ss)?", "time", None, "with S1"),
     "S2_schemes_or_payouts": ("Does it promote a scheme, a job offer, a payout or a get-rich offer?", "bool", False,
                               "2801973: spam and scams"),
-    "D1_ai_disclosure": ("Is the altered or synthetic content disclosure set for this upload (true), or is it not "
-                         "needed because the video is clearly animated and nothing in it looks real (\"not needed: <why>\")?",
-                         "disclosure", True, "14328491, disclosing altered or synthetic content; youtube.py --synthetic sets it"),
+    # YouTube asks for the altered-or-synthetic flag only for content that looks real: "Creators don't need to disclose
+    # non-realistic content that's made with AI", e.g. "an AI-generated or altered animation of a missile in a fully
+    # animated video"; "Cloning one's own voice to create voice overs or dubs" is listed as not needing it (14328491,
+    # read 2026-11-25). The owner asked that our animated content stop being marked as AI (2026-11-25), so the flag
+    # follows this answer: off unless something looks real.
+    "D1_realistic": ("Does anything in it look real that isn't: a real person appearing to say or do something they "
+                     "didn't (including a voice made to sound like a real person other than the creator), altered "
+                     "footage of a real event or place, a realistic generated scene that didn't happen, or AI-generated "
+                     "music as the video's main focus?", "bool", None,
+                     "14328491, the four kinds creators must disclose; animation and the creator's own cloned voice don't count"),
+    "D1_ai_disclosure": ("Is the altered or synthetic content flag set for this upload? It must match D1_realistic: "
+                         "true when something looks real, false otherwise (youtube.py sets it from this file).",
+                         "match", "D1_realistic", "14328491: disclose realistic AI content; don't mark the rest"),
     "D1_provenance_kept": ("Are all C2PA data and model watermarks left in place (no step strips or re-renders to hide them)?",
                            "bool", True, "2801973: evading detection counts as spam"),
 }
@@ -59,16 +69,20 @@ def problems(answers, siblings=()):
                 out.append(f"{k}: answer in a full sentence (8 words or more): {q} [{src}]")
             elif any((s.get(k) or "").strip().lower() == v.strip().lower() for s in siblings):
                 out.append(f"{k}: the same sentence as another episode's answer; say what this one adds [{src}]")
-        elif kind == "disclosure":
-            why = v.split(":", 1)[1] if isinstance(v, str) and v.lower().startswith("not needed:") else ""
-            if v is not True and len(re.findall(r"\w+", why)) < 4:
-                out.append(f"{k}: answer true, or \"not needed: <why, in 4 words or more>\": {q} [{src}]")
+        elif kind == "match":
+            want = answers.get(ok)
+            v = False if isinstance(v, str) and v.lower().startswith("not needed") else v     # the old answer form
+            if not isinstance(v, bool):
+                out.append(f"{k}: answer true or false: {q} [{src}]")
+            elif isinstance(want, bool) and v is not want:
+                out.append(f"{k}: answered {str(v).lower()} but {ok} is {str(want).lower()}: "
+                           f"{'set the flag, since something looks real' if want else 'leave the flag off, since nothing looks real'} [{src}]")
         elif kind == "time":
             if not (isinstance(v, str) and re.fullmatch(r"\d{1,3}:[0-5]\d", v.strip())):
                 out.append(f"{k}: give m:ss: {q} [{src}]")
         elif not isinstance(v, bool):
             out.append(f"{k}: answer true or false: {q} [{src}]")
-        elif v is not ok:
+        elif ok is not None and v is not ok:
             out.append(f"{k}: answered {str(v).lower()}, which fails: {q} [{src}]")
     unknown = sorted(set(answers) - set(CHECKS) - {"notes"})
     if unknown:
@@ -110,6 +124,22 @@ def main(argv):
         return 1
     print(f"policy check: all {len(CHECKS)} answers pass ({f})")
     return 0
+
+
+def synthetic_from(package):
+    """True or False from a package's policy.json (D1_ai_disclosure, or D1_realistic when that is all it says), or None
+    when the package has no answer, for youtube.py to set the altered-or-synthetic flag from."""
+    try:
+        ans = json.loads((Path(package) / "policy.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    for k in ("D1_ai_disclosure", "D1_realistic"):
+        v = ans.get(k)
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str) and v.lower().startswith("not needed"):
+            return False
+    return None
 
 
 if __name__ == "__main__":
