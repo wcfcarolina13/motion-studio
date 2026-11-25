@@ -26,7 +26,10 @@
 
     // ── small helpers ──
     const el = (tag, a, p) => K.el(tag, a, p);
-    const frameOf = t => Math.floor(t * FPS + 1e-6);
+    // the renderer seeks to t rounded to 6 decimals, so frame n can arrive as n/30 - 5e-7 s, which is n - 1.5e-5 frames:
+    // a 1e-6 margin put every third frame (n % 3 == 1) on the frame before, so moves on twos stepped 2-2-1-3 and the
+    // boil landed a frame late (2026-11-25). A thousandth of a frame covers the rounding and is far from the next frame.
+    const frameOf = t => Math.floor(t * FPS + 1e-3);
     const twos = t => Math.floor(frameOf(t) / 2) * 2 / FPS;              // motion steps on twos
     const hash = (...v) => { let h = 2166136261; v.forEach(x => { h ^= Math.round(x * 1000) | 0; h = Math.imul(h, 16777619); }); return ((h >>> 0) % 100000) / 100000; };
     const sm = x => x * x * (3 - 2 * x);
