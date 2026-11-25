@@ -424,6 +424,31 @@ def cmd_panels(a):
         print(f"{len(warned)} panel prompts have lint warnings; run `longform.py lint {a.film}`")
 
 
+ENGINE_FILES = ("kit.js", "figure.js", "closeup.js", "mapscene.js")
+
+
+def engine_drift(film, segs):
+    """(problems, warnings) about the film's own copy of the engine. A film keeps the film.html and scripts `init` copied
+    in, so a scene type added to the engine later is unknown to an older film, and its page draws it as a statement of
+    the word "undefined" with no error (two cutaways in a full film, 2026-11-25). A segment whose type the film's page
+    doesn't define is a problem; any engine file that differs from the engine's own copy is a warning."""
+    page = film / "film.html"
+    if not page.exists():
+        return [], []
+    html = page.read_text(errors="replace")
+    known = set(re.findall(r"^B\.(\w+)\s*=", html, re.M))
+    if "B.map = MAP.build" in html and (film / "mapscene.js").exists():
+        known.add("map")
+    probs = [f'{sg["id"]}: scene type "{sg["type"]}" is not in this film\'s film.html (it would draw as "undefined"); '
+             f'run `longform.py init {film}` to refresh the engine files (script.json is kept)'
+             for sg in segs if sg["type"] not in known]
+    stale = [n for n, src in [("film.html", TEMPLATE)] + [(f, HERE / f) for f in ENGINE_FILES]
+             if (film / n).exists() and (film / n).read_bytes() != src.read_bytes()]
+    warns = [f"engine files differ from the engine's: {', '.join(stale)}; run `longform.py init {film}` to refresh them "
+             f"(keep a copy first if you edited one by hand)"] if stale else []
+    return probs, warns
+
+
 def cutaway_problems(segs, sizes):
     """A cutaway is accurate by construction only if its subject and person are in the size sheet and every part fits
     inside the subject (2 cm of slack for line weight)."""
@@ -885,6 +910,10 @@ def cmd_timeline(a):
     if sc.get("sizes"):
         tl["sizes"] = sc["sizes"]
     problems += cutaway_problems(segs, sc.get("sizes") or {})
+    drift, drift_warn = engine_drift(film, segs)
+    problems += drift
+    for w in drift_warn:
+        print("WARN", w)
     if any(sg.get("type") == "map" for sg in segs):     # the map scene's projection and regions (mapart.py build)
         mj = film / "maps" / "map.json"
         if mj.exists():
@@ -2996,6 +3025,11 @@ def _check(a, film):
         write_gate(film, False, len(problems))
         (film / "review" / "check.txt").write_text(f"page: {len(problems)} problem(s)\n" + "\n".join(problems) + "\n")
         raise SystemExit(f"check stopped: the page is not clean ({len(problems)} problem(s)):\n" + "\n".join(problems))
+    drift, drift_warn = engine_drift(film, segs)
+    if drift:
+        write_gate(film, False, len(drift))
+        raise SystemExit("check stopped: the film's page can't draw every segment:\n" + "\n".join(drift))
+    flags += drift_warn
     report.append("page: clean (no errors at any segment's start, middle or end)")
     # 1. picture variety: how much of the film is words on a background. A text scene type counts unless what it draws
     # covers --picture-min of the frame (a kit pattern that turns it into motion graphics); measured from the page
