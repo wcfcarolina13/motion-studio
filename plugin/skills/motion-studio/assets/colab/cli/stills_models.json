@@ -1,7 +1,7 @@
 {
- "_doc": "Stills models for remote_stills_*.py, chosen by shots_to_jobs.py --model. Owner's rule (2026-11-25): step-distilled 'turbo' models are for drafts and layout only, never for anything that ships; their stills are stamped draft and render refuses them. 'default' is the model shots_to_jobs.py uses without --model. Every model here has commercially usable weights, with the licence read from its model card on the date given. full_gpu_gb, when set, is the card memory at which the whole pipeline goes on the GPU; below it the model loads one component at a time (default 1.5 x min_vram_gb). Excluded for licence: black-forest-labs/FLUX.2-dev (non-commercial).",
+ "_doc": "Stills models for remote_stills_*.py, chosen by shots_to_jobs.py --model. Owner's rule (2026-11-25): step-distilled 'turbo' models are for drafts and layout only, never for anything that ships; their stills are stamped draft and render refuses them. 'default' is the model shots_to_jobs.py uses without --model. Every model here has commercially usable weights, with the licence read from its model card on the date given. full_gpu_gb, when set, is the card memory at which the whole pipeline goes on the GPU; below it the model loads one component at a time (default 1.5 x min_vram_gb). Excluded for licence: black-forest-labs/FLUX.2-dev (non-commercial). offload 'sequential' moves one layer at a time onto the card when the pipeline doesn't fit whole (slowest, least memory). route 'codex' is not a Colab model: scripts/codex_stills.py makes its stills on the Mac.",
  "default": "z-image",
- "default_note": "Provisional until the 2026-11-25 A100 bake-off (Qwen-Image 2512 against full Z-Image) picks the winner.",
+ "default_note": "Provisional. The 2026-11-25 bake-off winner is chatgpt-image-codex, which waits on the owner's yes (it spends his Codex allowance); Qwen-Image 2512's sequential-offload retry is pending.",
  "models": {
   "z-image": {
    "repo": "Tongyi-MAI/Z-Image",
@@ -15,7 +15,8 @@
     "num_inference_steps": 40,
     "guidance_scale": 4.0
    },
-   "negative": true
+   "negative": true,
+   "bakeoff": "L4 bake-off 2026-11-25: 155-215 s per still with model offload; still gets object structure wrong (seat on a pedestal, drawn border, melted hand truck)."
   },
   "qwen-image-2512": {
    "repo": "Qwen/Qwen-Image-2512",
@@ -30,7 +31,9 @@
     "true_cfg_scale": 4.0
    },
    "negative": true,
-   "full_gpu_gb": 70
+   "full_gpu_gb": 70,
+   "offload": "sequential",
+   "card_note": "A100 80 GB for the whole pipeline on the card; below 70 GB it needs sequential offload (the plain model offload moves the 40 GB transformer onto the card at once and ran out of memory on an L4, 2026-11-25). Sequential offload on an L4 is untested, so min_vram_gb stays 40 until it is."
   },
   "z-image-turbo": {
    "repo": "Tongyi-MAI/Z-Image-Turbo",
@@ -45,6 +48,15 @@
     "guidance_scale": 0.0
    },
    "draft": true
+  },
+  "chatgpt-image-codex": {
+   "route": "codex",
+   "needs_owner_ok": true,
+   "w": 1536,
+   "h": 1024,
+   "licence": "OpenAI terms: the user owns the output and may use it commercially; files carry OpenAI's C2PA provenance, kept in the untouched originals.",
+   "bakeoff": "2026-11-25 winner on anatomy, scale, night skies and no garbled text: 9 stills in about 6 min via codex exec. Faults: a face in 3 of 5 hero shots, 2 of 9 at an odd aspect (both now re-rolled by codex_stills.py).",
+   "note": "Spends the owner's Codex allowance; not the default until he says yes."
   }
  }
 }
