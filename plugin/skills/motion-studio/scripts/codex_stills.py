@@ -36,7 +36,7 @@ Flipbook frames (longform.md, panel "frames"): a shot with "edit_from" and "chan
 another still, so its composition stays locked: {"id": "s03b", "edit_from": "s03", "change": "the flashlight is raised
 to her shoulder"}. "edit_from" names an earlier shot in this run (its untouched original is used) or a PNG path;
 --edit-from PNG is the base for every shot in the file that names none. The base goes to Codex as an attached image
-(`-i`) with "the same picture, change only ...", and the result is cropped to 16:9 like any shot. A frame must match
+(`--image=<path>`, one argument: a bare `-i` swallows the prompt that follows it) with "the same picture, change only ...", and the result is cropped to 16:9 like any shot. A frame must match
 its base's size to flip cleanly, so an edit that comes back at the base's shape but another size is resized to it, and
 one at another shape is re-rolled. After each edit the frame is compared with its base (gray, 64x36, correlation): a
 frame under 0.6 is kept but listed in review.tsv as "composition may have moved", a first guess at the line, not a
@@ -185,7 +185,9 @@ def main():
             from PIL import Image
             with Image.open(base) as im:
                 bw, bh = im.size
-            prompt, extra = ask_edit(s, faceless, bw, bh), ["-i", os.path.abspath(base)]
+            # --image=<path> as one argument: codex's -i takes any number of files, so a prompt after "-i <path>" was
+            # read as a second image and codex exited with "No prompt provided via stdin" (22 of 22 edits, 2026-11-25)
+            prompt, extra = ask_edit(s, faceless, bw, bh), [f"--image={os.path.abspath(base)}"]
         else:
             prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes)), []
         done = False

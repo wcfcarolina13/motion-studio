@@ -510,7 +510,11 @@ class CodexEdit(unittest.TestCase):
             r = self.run_it(d, "1536x1024 768x512", "", shots=shots)
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)          # z has no base
             argv = Path(d, "n.argv").read_text().splitlines()
-            self.assertNotIn("-i", argv[0]); self.assertIn(f"-i {d}/out/originals/a.png", argv[1])
+            self.assertNotIn("--image", argv[0])
+            # the image is one --image=<path> argument, never a bare -i, which takes every argument after it as a file
+            # and swallowed the prompt on the real CLI
+            self.assertEqual(argv[1].split()[-1], f"--image={d}/out/originals/a.png")
+            self.assertNotIn("-i", argv[1].split())
             prompts = Path(d, "n.prompts").read_text().splitlines()
             self.assertIn("Change only this: the flashlight is raised to her shoulder.", prompts[1])
             self.assertNotIn("ink.", prompts[1])                             # the style isn't asked for again
