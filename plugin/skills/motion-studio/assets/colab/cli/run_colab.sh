@@ -20,10 +20,15 @@ IN=$(cd "$1" && pwd); OUT=${2:-$IN/../out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && 
 cd "$OUT"
 # A unique name per run. Two runs under one name (2026-11-24): the second `colab new` took the name, the first run's
 # runtime became an unnamed "[?]" one the CLI can neither pull from nor stop, and 14 finished stills were stranded.
-S=${COLAB_SESSION:-ms-$(basename "$OUT" | tr -c 'A-Za-z0-9\n' '-' | cut -c1-24)-$$}
+# A lane's folder is <out>/.lane-<k>: name it after <out> plus the lane, so the name says which batch it is
+# (the leading dot used to give "ms--lane-1-<pid>", 2026-11-25).
+b=$(basename "$OUT"); lane=""
+case $b in .lane-*) lane=-${b#.}; b=$(basename "$(dirname "$OUT")");; esac
+b=$(printf %s "$b" | tr -c 'A-Za-z0-9' '-' | sed 's/^-*//' | cut -c1-24)
+S=${COLAB_SESSION:-ms-${b:-run}$lane-$$}
 SETUP=${SETUP:-$HERE/remote_setup.py}; RENDER=${RENDER:-$HERE/remote_render.py}
 [[ $SETUP = /* ]] || SETUP=$HERE/$SETUP; [[ $RENDER = /* ]] || RENDER=$HERE/$RENDER
-PULL=""
+PULL=""; NEWPID=""
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }   # GNU first: on Linux, stat -f means something else
 # Whatever ends the run, the puller gets its last pass while the session is still up, then the session stops.
 cleanup() {
@@ -32,7 +37,22 @@ cleanup() {
     for _ in $(seq 120); do kill -0 "$PULL" 2>/dev/null || break; sleep 5; done
     kill "$PULL" 2>/dev/null
   fi
-  echo "PHASE stop"; timeout 300 colab stop -s $S || true; timeout 120 colab usage | tee -a usage.log
+  echo "PHASE stop"; timeout 300 colab stop -s $S || true
+  # Cancelled while `colab new` was in flight (2026-11-25): the stop found no session, the runtime came up a moment
+  # later and billed about 35 min of L4 with no run behind it. So when a request was still out, kill it and watch for
+  # the name for NEW_GRACE seconds (150), stopping it the moment it appears.
+  if [ -n "$NEWPID" ]; then
+    kill "$NEWPID" 2>/dev/null
+    echo "a runtime request was in flight; watching for $S for ${NEW_GRACE:-150} s"
+    t0=$(date +%s)
+    while [ $(( $(date +%s) - t0 )) -lt "${NEW_GRACE:-150}" ]; do
+      if timeout 60 colab sessions 2>/dev/null | grep -qF "[$S]"; then
+        timeout 300 colab stop -s $S; echo "stopped $S, which came up after the run ended" | tee -a usage.log; break
+      fi
+      sleep 10
+    done
+  fi
+  timeout 120 colab usage | tee -a usage.log
 }
 balance() { timeout 120 colab usage 2>/dev/null | sed -n 's/^Current balance: \([0-9.]*\).*/\1/p'; }
 alert() { echo "ALERT $*" | tee -a usage.log; [ -n "${COLAB_ALERT:-}" ] && $COLAB_ALERT "$*"; }
@@ -41,6 +61,7 @@ if timeout 120 colab sessions 2>/dev/null | grep -qF "[$S]"; then
   echo "FAILED: a Colab session named $S is already running; set COLAB_SESSION to another name or leave it unset"; exit 2
 fi
 trap cleanup EXIT
+trap 'exit 143' TERM INT HUP   # a cancel runs the cleanup above (bash alone skips the EXIT trap on some signals)
 date '+start %F %T' | tee -a usage.log; timeout 60 colab version | tee -a usage.log; timeout 120 colab usage | tee -a usage.log
 B0=$(balance)
 echo "PHASE new"
@@ -55,9 +76,31 @@ need=$(grep -o 'MIN_VRAM_GB: *[0-9]*' "$SETUP" 2>/dev/null | grep -o '[0-9]*$' |
 if [ "${need:-0}" -gt 16 ] || { [ "$SETUP" = "$HERE/remote_setup.py" ] && [ "$RENDER" = "$HERE/remote_render.py" ]; }; then DEF_GPUS="L4"; else DEF_GPUS="L4 T4"; fi
 # "precondition failed" means the account already holds its one runtime of that type (the plan allows about one
 # runtime per GPU type, 2026-11-24): that is a wait, not a fault, so when every card answers it the run exits 3.
-BUSY=1
+# The request runs in the background and is waited on, so a cancel reaches the cleanup at once and knows it was out.
+request() {
+  timeout 1800 colab new -s $S --gpu $1 --high-mem > .new.out 2>&1 & NEWPID=$!
+  wait $NEWPID; local rc=$?; NEWPID=""; newout=$(cat .new.out); rm -f .new.out; echo "$newout"; return $rc
+}
+# An orphan is a runtime named by this script (ms-...-<pid>) whose run is gone from this Mac: no live process with that
+# pid running run_colab.sh. It holds its card and bills with nothing pulling from it, so it is stopped (the owner's
+# standing permission covers our own runtimes, colab.md). Returns 0 when it stopped one.
+reap_orphans() {
+  local n pid got=1
+  while IFS= read -r n; do
+    pid=${n##*-}; [[ $pid =~ ^[0-9]+$ ]] && [ "$n" != "$S" ] || continue
+    ps -o command= -p "$pid" 2>/dev/null | grep -q run_colab && continue
+    timeout 300 colab stop -s "$n" && got=0
+    alert "Colab: stopped $n, a runtime of ours whose run (pid $pid) is no longer running on this machine"
+  done < <(timeout 120 colab sessions 2>/dev/null | sed -n 's/^\[\(ms-[^]]*\)\].*/\1/p')
+  return $got
+}
+BUSY=1; reaped=0
 for g in ${COLAB_GPUS:-$DEF_GPUS}; do
-  newout=$(timeout 1800 colab new -s $S --gpu $g --high-mem 2>&1); rc=$?; echo "$newout"
+  request $g; rc=$?
+  # A busy card may be held by one of our own orphans: stop those once per run and ask for the card again.
+  if [ $rc -ne 0 ] && grep -qi "precondition" <<< "$newout" && [ $reaped = 0 ]; then
+    reaped=1; reap_orphans && { echo "asking for $g again"; request $g; rc=$?; }
+  fi
   if [ $rc -eq 0 ]; then GPU=$g; BUSY=0; break; fi
   grep -qi "precondition" <<< "$newout" || BUSY=0
   echo "no $g, trying next"; timeout 300 colab stop -s $S 2>/dev/null || true
