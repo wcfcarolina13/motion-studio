@@ -73,3 +73,6 @@ Colab runtimes drop without warning, GPUs are refused for hours, and units burn 
 
 - Colab forbids deepfakes. Any lip-sync, face-swap or voice job that involves a real person's face or voice is checked with the owner first, and never runs on Colab without that. Original characters are fine.
 - The account holder accepts Colab's terms and signs the CLI in themselves (see longform.md).
+
+**Anatomy gate on pulled stills.** After a stills run, on the Mac: `python3 scripts/anatomy.py <out_dir> --jobs <in_dir>/jobs.json --fix`. It judges each new still with people (anatomy.py, picture-truth.md rule 12), logs verdicts to `judge.tsv`, deletes a failed still and moves its seed by 1000 in jobs.json, so rerunning `run_colab.sh` (which redoes only missing stills) draws just those again. After `--tries` (3) fails a still is kept and listed in review.tsv. Exit 1 means something was redrawn or needs a look.
+
