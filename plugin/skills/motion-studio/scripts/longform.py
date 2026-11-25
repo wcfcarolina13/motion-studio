@@ -1548,6 +1548,15 @@ def page_gate(film, what):
     return lines
 
 
+def render_workers(tl, platform):
+    """Render workers when --workers isn't given: 4, but 1 for a film with set3d scenes on a machine whose Chrome draws
+    WebGL on the GPU (a Mac). On an M2 Pro a set3d film took 0.16 s a frame with one worker and about 11x longer in
+    wall time with four, the pages fighting over the GPU (2026-11-25). Linux (the cloud's software WebGL, on the CPU)
+    keeps 4."""
+    has3d = any(sg.get("type") == "set3d" for sg in tl.get("segments", []))
+    return 1 if has3d and platform == "darwin" else 4
+
+
 def cmd_render(a):
     film = Path(a.film).resolve()
     with JobStatus(film, "render") as st:
@@ -1611,11 +1620,12 @@ def _render(a, film, st):
     if len(todo) < len(jobs) and not only:
         print(f"resuming: {len(jobs) - len(todo)} of {len(jobs)} chunks already rendered")
     # each worker is a browser page: more than memory allows and the system starts killing them mid-chunk
-    workers, gb = a.workers, available_gb()
+    asked = a.workers if a.workers is not None else render_workers(tl, sys.platform)
+    workers, gb = asked, available_gb()
     if gb is not None:
         workers = max(1, min(workers, int((gb - HEADROOM_GB) / WORKER_GB)))
-        if workers < a.workers:
-            print(f"workers: {workers} (asked for {a.workers}; {gb:.1f} GB free at {WORKER_GB} GB each, {HEADROOM_GB} GB kept free)")
+        if workers < asked:
+            print(f"workers: {workers} (asked for {asked}; {gb:.1f} GB free at {WORKER_GB} GB each, {HEADROOM_GB} GB kept free)")
     import render
     stop = parts / "stop"
     stop.unlink(missing_ok=True)
@@ -3658,7 +3668,7 @@ def main():
     p = sp.add_parser("cast-sheet"); p.add_argument("film"); p.set_defaults(fn=cmd_cast_sheet)
     p = sp.add_parser("stills"); p.add_argument("film"); p.add_argument("--every", type=float); p.add_argument("--at", type=float, default=0.75)
     p.set_defaults(fn=cmd_stills)
-    p = sp.add_parser("render"); p.add_argument("film"); p.add_argument("--workers", type=int, default=4); p.add_argument("--scale", type=float, default=1.0)
+    p = sp.add_parser("render"); p.add_argument("film"); p.add_argument("--workers", type=int, help="pages rendering at once (default 4; 1 for set3d films on a Mac, references/set3d.md)"); p.add_argument("--scale", type=float, default=1.0)
     p.add_argument("--retries", type=int, default=2, help="re-runs of a failed chunk before render stops (finished chunks are kept)")
     p.add_argument("--skip-gate", action="store_true", help="render without a passing check on this version of the film (noted in out/render.status.json)")
     p.add_argument("--fresh", action="store_true", help="discard finished chunks and render every frame again")
