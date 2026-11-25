@@ -309,7 +309,7 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
             {"id": "a", "prompt": "a yard"}, {"id": "b", "prompt": "a truck", "faceless": False}]}))
         env = dict(os.environ, CODEX_CMD=f"python3 {d}/fake.py", CODEX_ARGS="", CODEX_IMAGES=f"{d}/gen",
                    FAKE_STATE=f"{d}/n", FAKE_SIZES=sizes, JUDGE_STATE=f"{d}/j", JUDGE_SAYS=says,
-                   FACE_CHECK_CMD=f"python3 {d}/judge.py {{path}}", LIMB_CHECK_CMD="off")
+                   FACE_CHECK_CMD=f"python3 {d}/judge.py {{path}}", ANATOMY_CHECK_CMD="off")
         env.update(env_extra or {})
         env.pop("CODEX_STILLS_OK", None)
         return subprocess.run(["python3", str(Path(__file__).with_name("codex_stills.py")), f"{d}/shots.json", f"{d}/out",
@@ -538,7 +538,8 @@ class PanelFx(unittest.TestCase):
                 shutil.copy(longform.HERE / f, film / f)
             fx = [{"type": "rain"}, {"type": "snow", "area": [0, 0, 0.5, 1]}, {"type": "beam", "from": [0.3, 0.5], "aim": [0.7, 0.7]},
                   {"type": "flicker", "amount": 1.0}, {"type": "flicker", "pos": [0.5, 0.3], "radius": 0.9, "amount": 1.0},
-                  {"type": "steam", "pos": [0.5, 0.8]}, {"type": "fog"}]
+                  {"type": "steam", "pos": [0.5, 0.8]}, {"type": "highlight", "pos": [0.6, 0.4], "r": 0.9, "zoom": 1.2, "t": 0.5},
+                  {"type": "fog"}]
             seg = {"id": "p", "type": "panel", "t0": 0.0, "t1": 2.0, "data": {"image": "panels/a.png", "camera": "hold", "fx": fx}}
             (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 2.0, "segments": [seg], "grade": {"vignette": 0}}) + ";\n")
             frames = []
@@ -569,17 +570,62 @@ class StillReviewRules(unittest.TestCase):
         # the open models' limits aren't the codex route's
         self.assertFalse(self.lint("A yard with no trucks. " + "word " * 120))
 
-    def test_prompts_and_limb_flag(self):
+    ANAT = r"""
+import os
+st = os.environ["ANAT_STATE"]; n = int(open(st).read()) if os.path.exists(st) else 0
+open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["ANAT_SAYS"].split("|")[n])
+"""
+
+    def test_prompt_default(self):
         import codex_stills
         p = codex_stills.ask({"prompt": "A man at a gate."}, "ink.", True)
-        self.assertIn(codex_stills.HANDS, p); self.assertNotIn("hands only", p)
+        self.assertIn(codex_stills.HANDS, p); self.assertIn("no impossible twist", p); self.assertNotIn("hands only", p)
+
+    def test_anatomy_fail_rerolls_and_logs(self):
+        import longform
         with tempfile.TemporaryDirectory() as d:
-            shots = {"style": "ink.", "shots": [{"id": "a", "prompt": "A man counts cash."}]}
-            Path(d, "limb.py").write_text("print('Looking.\\nEXTRA')")
-            r = CodexEdit.run_it(self, d, "1536x1024", "", shots=shots, env_extra={"LIMB_CHECK_CMD": f"python3 {d}/limb.py {{path}}"})
+            Path(d, "anat.py").write_text(self.ANAT)
+            shots = {"style": "ink.", "shots": [{"id": "a", "prompt": "A man counts cash."}, {"id": "b", "prompt": "An empty yard."}]}
+            env = {"ANATOMY_CHECK_CMD": f"python3 {d}/anat.py {{path}}", "ANAT_STATE": f"{d}/an",
+                   "ANAT_SAYS": "FAIL: head turned past the shoulder|PASS"}
+            r = CodexEdit.run_it(self, d, "1536x1024 1536x1024 1536x1024", "", shots=shots, env_extra=env)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            rv = Path(d, "out", "review.tsv").read_text()
-            self.assertIn("a\tlint: money in the picture", rv); self.assertIn("a\tlimb check: an extra", rv)
-            self.assertEqual(Path(d, "n").read_text(), "1")              # flagged, not re-rolled
+            self.assertEqual(Path(d, "n").read_text(), "3")              # a twice (one anatomy re-roll), b once
+            self.assertEqual(Path(d, "an").read_text(), "2")             # b has no people: not judged
+            log = [x.split("\t")[1:4] for x in Path(d, "out", "judge.tsv").read_text().splitlines()]
+            self.assertEqual(log, [["a", "1", "FAIL"], ["a", "2", "PASS"]])
+            self.assertEqual(longform.png_text(Path(d, "out", "a.png"))["motion-studio-anatomy"], "PASS")
+            self.assertIn("a\tlint: money in the picture", Path(d, "out", "review.tsv").read_text())
+
+    def test_anatomy_budget_and_last_try_keep(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "anat.py").write_text(self.ANAT)
+            shots = {"style": "ink.", "shots": [{"id": "a", "prompt": "A man waves."}]}
+            env = {"ANATOMY_CHECK_CMD": f"python3 {d}/anat.py {{path}}", "ANAT_STATE": f"{d}/an", "ANAT_SAYS": "FAIL: three hands|FAIL: bent knee"}
+            r = CodexEdit.run_it(self, d, "1536x1024 1536x1024", "", "--anatomy-rerolls", "1", shots=shots, env_extra=env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(Path(d, "n").read_text(), "2")              # the budget of 1 re-roll, then kept
+            self.assertTrue(Path(d, "out", "a.png").exists())
+            self.assertIn("a\tanatomy FAIL on its last try (bent knee)", Path(d, "out", "review.tsv").read_text())
+            self.assertIn("\ta\t2\tKEPT\tbent knee", Path(d, "out", "judge.tsv").read_text())
+
+    def test_colab_route_fix_moves_the_seed(self):
+        import json
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "anat.py").write_text(self.ANAT); st = Path(d, "stills"); st.mkdir()
+            for i in ("s1", "s2", "s3"):
+                Image.new("RGB", (8, 8)).save(st / f"{i}.png")
+            jobs = Path(d, "jobs.json")
+            jobs.write_text(json.dumps([{"id": "s1", "prompt": "A woman lifts a lid.", "seed": 7},
+                                        {"id": "s2", "prompt": "A truck at dawn.", "seed": 7},
+                                        {"id": "s3", "prompt": "His hands on a hose.", "seed": 9}]))
+            env = dict(os.environ, ANATOMY_CHECK_CMD=f"python3 {d}/anat.py {{path}}", ANAT_STATE=f"{d}/an", ANAT_SAYS="FAIL: fused fingers|PASS")
+            r = subprocess.run(["python3", str(Path(__file__).with_name("anatomy.py")), str(st), "--jobs", str(jobs), "--fix"],
+                               capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertFalse((st / "s1.png").exists()); self.assertTrue((st / "s3.png").exists())
+            self.assertEqual([j["seed"] for j in json.loads(jobs.read_text())], [1007, 7, 9])
+            self.assertEqual(Path(d, "an").read_text(), "2")              # the truck has no people
 
     FAKE, JUDGE = CodexStills.FAKE, CodexStills.JUDGE

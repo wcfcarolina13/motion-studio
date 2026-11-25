@@ -46,10 +46,13 @@ motion over one still is the panel's "fx" layer (longform.md). Low scores are no
 Codex call and the test suggests a re-roll rarely holds still either.
 
 The owner's review of the first 85 stills (picture-truth.md, rule 12) is built in: every prompt says each visible hand
-belongs to a person in the frame with exactly two hands; shots are linted before any call (money, hands with no body,
-tipped objects that don't say where their insides are, hidden things not drawn X-ray style), and the warnings go to
-review.tsv; and after each still LIMB_CHECK_CMD (default: the Claude CLI, answering EXTRA or OK; "off" skips it) looks
-for an extra, detached or bent limb, which goes to review.tsv for the pick pass rather than a re-roll.
+belongs to a person in the frame with exactly two hands, and that head, neck and limbs face and bend as a real body can;
+shots are linted before any call (money, hands with no body, tipped objects that don't say where their insides are,
+hidden things not drawn X-ray style), and the warnings go to review.tsv. The anatomy gate (anatomy.py; the owner: "Be
+sure anatomy horror is nipped in the process") judges every shot with people for neck twist, joint bends, limb and
+finger counts, proportion, floating parts and, on a faceless shot, a face. A FAIL re-rolls within --tries, up to
+--anatomy-rerolls per run (a quarter of the shots, at least 3); every verdict and its reason goes to judge.tsv and onto
+the still as PNG text motion-studio-anatomy; a still failing its last try is kept and listed in review.tsv.
 
 Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
 import argparse, json, os, shlex, shutil, subprocess, sys, tempfile, time
@@ -57,15 +60,14 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import scalecheck  # noqa: E402
+import anatomy  # noqa: E402
 
 MODEL_TAG = "chatgpt-image via codex"
 # the owner's review of the first 85 stills (picture-truth.md, rule 12): a hand-only close-up gave a bent arm from the
 # frame edge, and one shot a third hand
 HANDS = ("Every visible hand belongs to a person whose arm and shoulder are in the frame, and each person has exactly two "
-         "hands and two arms.")
-LIMB_DEFAULT = ('claude -p "Read the image file at {path}. Look only at people\'s arms and hands. Does anyone have more '
-                'than two arms or two hands, or is any arm or hand not attached to a body in the picture, or bent where '
-                'no joint is? Answer with one word on the last line: EXTRA or OK." --allowedTools Read')
+         "hands and two arms. Each person's head, neck, torso and limbs face and bend the way a real body can, with no "
+         "impossible twist: the head turns no further than over the shoulder line, and elbows and knees bend only one way.")
 LIKENESS = 0.9      # an edit under this correlation with its base has moved too much to flip as a frame
 FACE_DEFAULT = ('claude -p "Read the image file at {path}. Does it show any human face, including a partial, distant, '
                 'drawn or silhouetted face with visible features? Answer with one word on the last line: FACE or NOFACE." '
@@ -135,17 +137,6 @@ def edit_base(shot, out, default):
     return next((c for c in cand if os.path.isfile(c)), "")
 
 
-def judge(path, cmd, words, timeout_env="FACE_CHECK_TIMEOUT"):
-    """A vision judge's one-word answer from `words`, or UNCLEAR."""
-    try:
-        r = subprocess.run(cmd.replace("{path}", shlex.quote(path)), shell=True, capture_output=True, text=True,
-                           timeout=int(os.environ.get(timeout_env, 180)))
-    except subprocess.TimeoutExpired:
-        return "UNCLEAR"
-    lines = [ln.strip().strip(".*").upper() for ln in r.stdout.strip().splitlines() if ln.strip()]
-    return lines[-1] if lines and lines[-1] in words else "UNCLEAR"
-
-
 def face_verdict(path, cmd):
     if cmd == "off":
         return "NOFACE"
@@ -157,6 +148,19 @@ def face_verdict(path, cmd):
     lines = [ln.strip().strip(".*").upper() for ln in r.stdout.strip().splitlines() if ln.strip()]
     last = lines[-1] if lines else ""
     return last if last in ("FACE", "NOFACE") else "UNCLEAR"
+
+
+def stamp(path, key, value):
+    """Add one PNG text entry to a still, keeping the ones it has."""
+    from PIL import Image
+    from PIL.PngImagePlugin import PngInfo
+    im = Image.open(path); im.load()
+    info = PngInfo()
+    for k, v in (im.text or {}).items():
+        if k != key:
+            info.add_text(k, v)
+    info.add_text(key, value)
+    im.save(path + ".part", format="PNG", pnginfo=info); os.replace(path + ".part", path)
 
 
 def crop_16x9(src, dst, original_rel):
@@ -183,6 +187,7 @@ def main():
     ap.add_argument("--tries", type=int, default=3)
     ap.add_argument("--only", nargs="+")
     ap.add_argument("--sizes", help="read the size sheet from this script.json (its \"sizes\") instead of shots.json")
+    ap.add_argument("--anatomy-rerolls", type=int, help="most re-rolls the anatomy judge may ask for in this run (default: a quarter of the shots, at least 3)")
     ap.add_argument("--edit-from", help="base PNG for every shot with a \"change\" and no \"edit_from\" (flipbook frames)")
     a = ap.parse_args()
     if not (a.allow_codex or os.environ.get("CODEX_STILLS_OK") == "1"):
@@ -208,7 +213,8 @@ def main():
     cmd += shlex.split(os.environ.get("CODEX_ARGS", '-m gpt-6-luna -c model_reasoning_effort="low"'))
     images = os.path.expanduser(os.environ.get("CODEX_IMAGES", "~/.codex/generated_images"))
     face_cmd = os.environ.get("FACE_CHECK_CMD", FACE_DEFAULT)
-    limb_cmd = os.environ.get("LIMB_CHECK_CMD", LIMB_DEFAULT)
+    budget = a.anatomy_rerolls if a.anatomy_rerolls is not None else max(3, -(-len(shots) // 4))   # re-rolls the anatomy
+    # judge may spend in this run: a quarter of the shots (at least 3), so a judge having a bad day can't run up the bill
     timeout = int(os.environ.get("CODEX_TIMEOUT", 600))
     review, calls, failed = [], 0, []
     for s in shots:
@@ -270,12 +276,25 @@ def main():
                     review.append((s["id"], f"composition may have moved from its base (likeness {k:.2f}): look before using it as a frame"))
             if v == "UNCLEAR":
                 review.append((s["id"], "face check unclear: look at it"))
-            # extra or detached limbs: listed for the pick pass, never re-rolled, since a judge agreed with people only
-            # about 60% of the time in our tests and each re-roll is a Codex call
-            lv = "OK" if limb_cmd == "off" else judge(src, limb_cmd, ("EXTRA", "OK"))
-            if lv != "OK":
-                review.append((s["id"], "limb check: an extra, detached or bent arm or hand; look at it" if lv == "EXTRA"
-                               else "limb check unclear: look at the arms and hands"))
+            # the anatomy gate (anatomy.py): a FAIL re-rolls within --tries while the run's re-roll budget lasts; every
+            # verdict is logged to judge.tsv and stamped on the still, and one still failing on its last try is kept and
+            # listed for a person
+            if anatomy.needs_check(s):
+                av, why = anatomy.judge(src, faceless)
+                last = t >= a.tries or budget <= 0
+                anatomy.log(a.out, s["id"], t, av if not (av == "FAIL" and last) else "KEPT", why, f"originals/{s['id']}.png")
+                stamp(dst, "motion-studio-anatomy", f"{av}: {why}" if why else av)
+                if av == "FAIL" and not last:
+                    budget -= 1
+                    print(f"{s['id']} try {t}: anatomy FAIL ({why}); re-rolling ({budget} anatomy re-rolls left this run)")
+                    for x in (orig, orig + ".fit.png", dst):
+                        if os.path.exists(x): os.remove(x)
+                    continue
+                if av == "FAIL":
+                    review.append((s["id"], f"anatomy FAIL on its last try ({why}); kept for you to judge"
+                                   + ("" if t >= a.tries else "; the run's anatomy re-roll budget was spent")))
+                elif av == "UNCLEAR":
+                    review.append((s["id"], f"anatomy judge unclear ({why}): look at the people"))
             print(f"{s['id']}: {W}x{H} -> 16:9 in {time.time() - t0:.0f} s (try {t})")
             done = True; break
         if not done:

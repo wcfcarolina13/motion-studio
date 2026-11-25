@@ -1122,11 +1122,13 @@ function panelCam(d) {
 //   beam:    {from: [x, y], aim: [x, y], spread: degrees (16), sweep: degrees either side (6), period: s (4), reach: 0..1}
 //   flicker: {pos: [x, y], radius: 0..1 of width (0.12), amount: 0..1 (0.5), rate: Hz (6)} (no pos: the whole frame dims)
 //   steam:   {pos: [x, y], rise: 0..1 of height (0.25), width: 0..1 (0.06), puffs (6), period: s (3)}
+//   highlight: {pos: [x, y], r: 0..1 of width (0.15, at most 0.25), dim: outside darkening (0.28, at most 0.4),
+//              zoom: lens magnification inside (1 = none), color (the film's accent)}: a ring that springs open on its cue
 // A flicker is a smooth noise, never a hard on/off. Its glow is capped at radius 0.2 (under a quarter of the frame) and
 // amount 0.6, and the whole-frame dim at 0.08, so no flicker can reach the flash-rate check's limit (a flash, for
 // photosensitivity, is a 10% luminance swing over a quarter of the screen, more than three times a second).
 let fxN = 0;
-function panelFx(list, g, IW, IH, s) {
+function panelFx(list, g, IW, IH, s, imgSrc) {
   const out = [];
   (list || []).forEach((e, k) => {
     const id = `fx${fxN++}`, rnd = K.rng(1000 + k * 97 + fxN), t0 = cueT(e, s.t0), t1 = e.hold ? t0 + e.hold : s.t1 + 1;
@@ -1194,8 +1196,38 @@ function panelFx(list, g, IW, IH, s) {
         }
         grp.setAttribute("opacity", (op * live(t)).toFixed(3));
       };
+    } else if (e.type === "highlight") {
+      // a ring in the film's accent that springs open on its cue around one area, the rest of the still dimmed a little
+      // and the inside lifted (and, with zoom > 1, magnified like a lens). It eases in once and holds, so it never flashes
+      const [hx, hy] = e.pos || [0.5, 0.5], R = Math.min(Math.max(e.r ?? 0.15, 0.05), 0.25) * IW, X = hx * IW, Y = hy * IH;
+      const acc = e.color || C.ACCENT, dim = Math.min(e.dim ?? 0.28, 0.4), zoom = e.zoom ?? 1;
+      const mask = K.el("mask", { id: id + "m", maskUnits: "userSpaceOnUse", x: 0, y: 0, width: IW, height: IH }, K.defs);
+      K.el("rect", { x: 0, y: 0, width: IW, height: IH, fill: "#fff" }, mask);
+      const hole = K.el("circle", { cx: X, cy: Y, r: R, fill: "#000" }, mask);
+      const shade = K.el("rect", { x: 0, y: 0, width: IW, height: IH, fill: "#000", mask: `url(#${id}m)` }, grp);
+      let lens = null;
+      if (zoom > 1 && imgSrc) {
+        const clip = K.el("clipPath", { id: id + "c" }, K.defs), cc = K.el("circle", { cx: X, cy: Y, r: R }, clip);
+        lens = { g: K.el("g", { "clip-path": `url(#${id}c)` }, grp), cc };
+        K.el("image", { href: imgSrc, x: 0, y: 0, width: IW, height: IH, preserveAspectRatio: "xMidYMid slice" }, lens.g);
+      }
+      const lift = K.el("circle", { cx: X, cy: Y, r: R, fill: "#fff", style: "mix-blend-mode:screen" }, grp);
+      const blur = K.el("filter", { id: id + "b", x: "-30%", y: "-30%", width: "160%", height: "160%" }, K.defs);
+      K.el("feGaussianBlur", { stdDeviation: IH * 0.008 }, blur);
+      const glow = K.el("circle", { cx: X, cy: Y, r: R, fill: "none", stroke: acc, "stroke-width": IH * 0.014, filter: `url(#${id}b)` }, grp);
+      const ring = K.el("circle", { cx: X, cy: Y, r: R, fill: "none", stroke: acc, "stroke-width": IH * 0.0075 }, grp);
+      draw = t => {
+        const sp = K.step(t, t0, 12, 0.55);
+        const r = R * Math.max(0.01, 0.55 + 0.45 * sp), a = K.eout(K.prog(t, t0, t0 + 0.3)) * (1 - K.ein(K.prog(t, t1 - 0.3, t1)));
+        [hole, ring, glow, lift].forEach(c => c.setAttribute("r", r.toFixed(1)));
+        shade.setAttribute("opacity", (dim * a).toFixed(3));
+        lift.setAttribute("opacity", (0.07 * a).toFixed(3));
+        ring.setAttribute("opacity", a.toFixed(3)); glow.setAttribute("opacity", (0.7 * a).toFixed(3));
+        if (lens) { lens.cc.setAttribute("r", r.toFixed(1)); lens.g.setAttribute("opacity", a.toFixed(3));
+          const z = 1 + (zoom - 1) * sp; lens.g.lastChild.setAttribute("transform", `translate(${X} ${Y}) scale(${z.toFixed(4)}) translate(${-X} ${-Y})`); }
+      };
     } else {
-      (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: panel fx "${e.type}" is not one of rain, snow, beam, flicker, steam`);
+      (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: panel fx "${e.type}" is not one of rain, snow, beam, flicker, steam, highlight`);
       return;
     }
     out.push(t => { const on = t >= t0 - 0.01 && t <= t1 + 0.01; K.show(grp, on); if (on) draw(t); });
@@ -1223,7 +1255,7 @@ B.panel = (s, g) => {
   const flips = d.flips && d.flips.length ? d.flips : [[s.t0, 0]];
   const frameAt = t => { let k = flips[0][1]; for (const [ft, i] of flips) { if (t + 1e-4 >= ft) k = i; else break; } return k; };
   let shown = -1;
-  const fxDraw = panelFx(d.fx, g, IW, IH, s);
+  const fxDraw = panelFx(d.fx, g, IW, IH, s, srcs[0]);
   if (d.flashback) {
     if (!fbVig) {
       const gr = K.el("radialGradient", { id: "fbvig", cx: "50%", cy: "50%", r: "70%" }, K.defs);
