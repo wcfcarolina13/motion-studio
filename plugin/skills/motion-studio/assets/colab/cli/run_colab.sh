@@ -32,6 +32,7 @@ PULL=""; NEWPID=""
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }   # GNU first: on Linux, stat -f means something else
 # Whatever ends the run, the puller gets its last pass while the session is still up, then the session stops.
 cleanup() {
+  [ -n "${SX:-}" ] && kill "$SX" 2>/dev/null
   if [ -n "$PULL" ] && kill -0 "$PULL" 2>/dev/null; then
     touch "$OUT/.pull_stop"; echo "PHASE last pull"
     for _ in $(seq 120); do kill -0 "$PULL" 2>/dev/null || break; sleep 5; done
@@ -145,22 +146,36 @@ fi
 bash "$HERE/pull_live.sh" $S "$OUT" > >(tee -a pull.log) 2>&1 & PULL=$!
 echo "PHASE setup"; T0=$(date +%s)
 # "Connection was lost" here does not stop the remote setup; the render script waits for it, so carry on.
-if ! colab exec -s $S -f "$SETUP" --timeout 0; then
-  echo "setup exec returned an error; checking the setup is alive on the runtime"
-  # A dropped exec once left an L4 billing 25 min with no setup running while the render waited out its 45 min limit
-  # (2026-11-24). A setup script that touches /content/setup_alive first thing must show it within SETUP_SEEN seconds
-  # (180) of starting, or the runtime is dead: exit 4, which retry_colab.sh retries at once (a try, with no 20 min wait).
-  if grep -q setup_alive "$SETUP"; then
-    seen=0
-    while [ $(( $(date +%s) - T0 )) -lt "${SETUP_SEEN:-180}" ]; do
-      timeout 120 colab ls -s $S /content 2>/dev/null | grep -qxE 'setup_alive|paths.txt' && { seen=1; break; }
-      sleep 15
-    done
-    [ $seen = 1 ] || { echo "FAILED: setup never started on the runtime (no /content/setup_alive)"; exit 4; }
-    echo "setup is alive; render will wait for it"
-  else
-    echo "this setup script doesn't touch /content/setup_alive, so a dead setup is caught only by the render's own wait"
+# The exec runs in the background and is watched, because after a drop it may never return: a dropped setup exec printed
+# "RuntimeError: Connection was lost." and then hung 19 min with no setup on the runtime while an L4 billed (2026-11-25;
+# the check after a failed exec, from 2026-11-24, never ran because the exec never failed). A setup script that touches
+# /content/setup_alive first thing must show it within SETUP_SEEN seconds (180) of starting, whether or not the exec has
+# returned, or the runtime is dead: exit 4, which retry_colab.sh retries at once (a try, with no 20 min wait). Once the
+# connection is lost and the setup is seen alive, the hung exec is let go and the render waits for the setup instead.
+live=0; grep -q setup_alive "$SETUP" && live=1
+[ $live = 1 ] || echo "this setup script doesn't touch /content/setup_alive, so a dead setup is caught only by the render's own wait"
+colab exec -s $S -f "$SETUP" --timeout 0 > >(tee setup.out) 2>&1 & SX=$!
+seen=0
+while kill -0 $SX 2>/dev/null; do
+  sleep 15
+  [ $live = 1 ] || continue
+  if [ $seen = 0 ] && timeout 120 colab ls -s $S /content 2>/dev/null | grep -qxE 'setup_alive|paths.txt'; then seen=1; fi
+  if [ $seen = 0 ] && [ $(( $(date +%s) - T0 )) -ge "${SETUP_SEEN:-180}" ]; then
+    kill $SX 2>/dev/null; echo "FAILED: setup never started on the runtime (no /content/setup_alive after ${SETUP_SEEN:-180} s)"; exit 4
   fi
+  if [ $seen = 1 ] && grep -q "Connection was lost" setup.out; then
+    kill $SX 2>/dev/null; echo "setup exec lost its connection; the setup is alive on the runtime, so render will wait for it"; break
+  fi
+done
+wait $SX 2>/dev/null; rc=$?
+if [ $rc -ne 0 ] && [ $seen = 0 ] && [ $live = 1 ]; then      # returned an error before the first probe saw the marker
+  echo "setup exec returned an error; checking the setup is alive on the runtime"
+  while [ $(( $(date +%s) - T0 )) -lt "${SETUP_SEEN:-180}" ]; do
+    timeout 120 colab ls -s $S /content 2>/dev/null | grep -qxE 'setup_alive|paths.txt' && { seen=1; break; }
+    sleep 15
+  done
+  [ $seen = 1 ] || { echo "FAILED: setup never started on the runtime (no /content/setup_alive)"; exit 4; }
+  echo "setup is alive; render will wait for it"
 fi
 echo "setup $(( $(date +%s)-T0 ))s" | tee -a usage.log
 echo "PHASE render"; T0=$(date +%s)
