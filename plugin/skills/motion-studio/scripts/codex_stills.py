@@ -1,9 +1,10 @@
 """Stills from ChatGPT images through the Codex CLI on the Mac: one `codex exec` per shot, no Colab.
     python3 codex_stills.py shots.json <out_dir> --allow-codex [--tries 3] [--only s03 s07] [--sizes script.json]
 
-Every call uses the owner's Codex plan allowance, so nothing runs without --allow-codex (or CODEX_STILLS_OK=1). The
-owner approved it on 2026-11-25 for the hard shots (insides, mechanisms, anatomy, anything the open models drew
-wrong); other shots stay on the open-model route. It won the bake-off on anatomy, scale, night skies and text.
+Every call uses the owner's Codex plan allowance, so nothing runs without --allow-codex (or CODEX_STILLS_OK=1). Since
+2026-11-25 it is the default route for finished stills (the owner: "Chatgpt makes the best images by far"); the
+open-model Colab route is the fallback when the allowance runs short. It won the bake-off on anatomy, scale, night
+skies and text.
 
 shots.json is the stills route's format: {"style", "faceless"?, "sizes"?, "shots": [{"id", "prompt", "style"?,
 "faceless"?, "char_in_frame"?, "props"?}]}. Settings, negative prompts and seeds don't apply here; "model" is ignored.
