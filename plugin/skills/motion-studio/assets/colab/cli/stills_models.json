@@ -1,5 +1,5 @@
 {
- "_doc": "Stills models for remote_stills_*.py, chosen by shots_to_jobs.py --model. Owner's rule (2026-11-25): step-distilled 'turbo' models are for drafts and layout only, never for anything that ships; their stills are stamped draft and render refuses them. 'default' is the model shots_to_jobs.py uses without --model. Every model here has commercially usable weights, with the licence read from its model card on the date given.",
+ "_doc": "Stills models for remote_stills_*.py, chosen by shots_to_jobs.py --model. Owner's rule (2026-11-25): step-distilled 'turbo' models are for drafts and layout only, never for anything that ships; their stills are stamped draft and render refuses them. 'default' is the model shots_to_jobs.py uses without --model. Every model here has commercially usable weights, with the licence read from its model card on the date given. full_gpu_gb, when set, is the card memory at which the whole pipeline goes on the GPU; below it the model loads one component at a time (default 1.5 x min_vram_gb). Excluded for licence: black-forest-labs/FLUX.2-dev (non-commercial).",
  "default": "z-image",
  "default_note": "Provisional until the 2026-11-25 A100 bake-off (Qwen-Image 2512 against full Z-Image) picks the winner.",
  "models": {
@@ -7,7 +7,7 @@
    "repo": "Tongyi-MAI/Z-Image",
    "pipeline": "ZImagePipeline",
    "diffusers": "0.36",
-   "licence": "Apache-2.0 as reported by the bake-off thread (2026-11-25); not yet read from the model card here (the cloud session can't reach Hugging Face). Repo name to confirm against the bake-off's settings.",
+   "licence": "Apache-2.0 (Hugging Face model card cardData.license, read by the Mac 2026-11-25). Full model; Tongyi-MAI/Z-Image-Turbo is the distilled one.",
    "min_vram_gb": 20,
    "w": 1344,
    "h": 768,
@@ -21,7 +21,7 @@
    "repo": "Qwen/Qwen-Image-2512",
    "pipeline": "QwenImagePipeline",
    "diffusers": "0.35",
-   "licence": "Apache-2.0 as reported by the bake-off thread (2026-11-25); not yet read from the model card here (the cloud session can't reach Hugging Face).",
+   "licence": "Apache-2.0 (Hugging Face model card cardData.license, read by the Mac 2026-11-25).",
    "min_vram_gb": 40,
    "w": 1664,
    "h": 928,
@@ -29,7 +29,8 @@
     "num_inference_steps": 40,
     "true_cfg_scale": 4.0
    },
-   "negative": true
+   "negative": true,
+   "full_gpu_gb": 70
   },
   "z-image-turbo": {
    "repo": "Tongyi-MAI/Z-Image-Turbo",

@@ -26,7 +26,7 @@ dt = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 # DiffusionPipeline reads the class from the model's own model_index.json, so a new model needs no code here
 pipe = DiffusionPipeline.from_pretrained(open('/content/model_path.txt').read().strip(), torch_dtype=dt, low_cpu_mem_usage=False)
 # whole model on the card when it fits with room; otherwise one component at a time (slower, same pictures)
-pipe.to('cuda') if vram >= M.get('min_vram_gb', 20) * 1.5 else pipe.enable_model_cpu_offload()
+pipe.to('cuda') if vram >= M.get('full_gpu_gb', M.get('min_vram_gb', 20) * 1.5) else pipe.enable_model_cpu_offload()
 print('pipeline', M.get('name'), type(pipe).__name__, 'on', torch.cuda.get_device_name(0), round(vram), 'GB', dt, flush=True)
 jobs = json.load(open('/content/in/jobs.json'))
 style = open('/content/in/style.txt').read().strip() if os.path.exists('/content/in/style.txt') else ''
