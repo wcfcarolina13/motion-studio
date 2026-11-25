@@ -30,7 +30,7 @@ Colab runtimes drop without warning, GPUs are refused for hours, and units burn 
     - Trade-offs:
       - Each re-roll is another Codex call. Three tries per shot caps the cost at three times the shot count.
       - The face check asks the Claude CLI to look at each faceless still (the owner's Claude plan, about a minute a still at most). A vision judge reads ink-and-gouache faces better than a classic face detector would, but it can be wrong either way; an answer that is neither FACE nor NOFACE keeps the still and lists it for a person.
-      - The 16:9 crop re-encodes the pixels, so the working copy loses OpenAI's C2PA provenance manifest. The original keeps it, and the copy names its original; YouTube's AI disclosure flag stays on regardless.
+      - The 16:9 crop re-encodes the pixels, so the working copy loses OpenAI's C2PA provenance manifest. The original keeps it, and the copy names its original. A rendered video never carries a still's C2PA data anyway, since every frame is drawn anew; that is ordinary rendering, not stripping to hide anything (publish.md, D1_provenance_kept), and the untouched originals stay on file.
       - The crop takes about 1/16 off the top and bottom of a 3:2 picture, so prompts should keep the subject away from those edges.
       - The CLI flags that turn the image tool on are the Mac's to confirm; `CODEX_ARGS` carries whatever the bake-off used.
 

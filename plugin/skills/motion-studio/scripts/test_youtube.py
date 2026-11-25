@@ -2,6 +2,7 @@
 import json
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import youtube
@@ -62,7 +63,7 @@ class PolicyCheck(unittest.TestCase):
     GOOD = {"M1_new": "It follows one roadside crew through a whole night shift for the first time.",
             "M2_same_outcome": False, "M3_unnarrated_slideshow": False, "M4_ai_expert_advice": False,
             "M5_realistic_fake_events": False, "S1_title_thumbnail_deliver": True, "S1_payoff_at": "0:04",
-            "S2_schemes_or_payouts": False, "D1_ai_disclosure": True, "D1_provenance_kept": True}
+            "S2_schemes_or_payouts": False, "D1_realistic": False, "D1_ai_disclosure": False, "D1_provenance_kept": True}
 
     def test_all_good_passes(self):
         import policycheck
@@ -81,12 +82,25 @@ class PolicyCheck(unittest.TestCase):
         found = policycheck.problems(self.GOOD, siblings=[{"M1_new": self.GOOD["M1_new"].upper()}])
         self.assertTrue(found and found[0].startswith("M1_new"))
 
-    def test_disclosure_may_be_not_needed_with_a_reason(self):
+    def test_flag_follows_whether_anything_looks_real(self):
         import policycheck
-        ok = dict(self.GOOD, D1_ai_disclosure="not needed: flat cartoon animals, nothing looks real")
-        self.assertEqual(policycheck.problems(ok), [])
-        for bad in ("not needed", "not needed: cartoon", False, None):
-            self.assertTrue(policycheck.problems(dict(self.GOOD, D1_ai_disclosure=bad)), bad)
+        self.assertEqual(policycheck.problems(dict(self.GOOD, D1_realistic=True, D1_ai_disclosure=True)), [])
+        self.assertTrue(policycheck.problems(dict(self.GOOD, D1_realistic=True, D1_ai_disclosure=False)))
+        self.assertTrue(policycheck.problems(dict(self.GOOD, D1_ai_disclosure=True)))      # animated work marked as AI
+        self.assertTrue(policycheck.problems(dict(self.GOOD, D1_realistic=None)))          # the question must be answered
+        self.assertEqual(policycheck.problems(dict(self.GOOD, D1_ai_disclosure="not needed: cartoon, nothing real")), [])
+
+    def test_upload_flag_comes_from_the_package(self):
+        import json, tempfile, types
+        import policycheck, youtube
+        with tempfile.TemporaryDirectory() as d:
+            a = types.SimpleNamespace(synthetic=False, package=d)
+            self.assertFalse(youtube.synthetic_for(a, {}))
+            Path(d, "policy.json").write_text(json.dumps(dict(self.GOOD, D1_realistic=True, D1_ai_disclosure=True)))
+            self.assertTrue(youtube.synthetic_for(a, {"synthetic": False}))     # realistic content always sets it
+            Path(d, "policy.json").write_text(json.dumps(self.GOOD))
+            self.assertFalse(youtube.synthetic_for(a, {}))
+            self.assertTrue(youtube.synthetic_for(types.SimpleNamespace(synthetic=True, package=d), {}))
 
     def test_a_misspelt_key_is_reported(self):
         import policycheck
@@ -172,7 +186,7 @@ class PreUploadCheck(unittest.TestCase):
         good = {"M1_new": "It follows one roadside crew through a whole night shift for the first time.",
                 "M2_same_outcome": False, "M3_unnarrated_slideshow": False, "M4_ai_expert_advice": False,
                 "M5_realistic_fake_events": False, "S1_title_thumbnail_deliver": True, "S1_payoff_at": "0:04",
-                "S2_schemes_or_payouts": False, "D1_ai_disclosure": True, "D1_provenance_kept": True}
+                "S2_schemes_or_payouts": False, "D1_realistic": False, "D1_ai_disclosure": False, "D1_provenance_kept": True}
         (pkg / "policy.json").write_text(json.dumps(good))
         with self.assertRaises(Stop):
             upload(self.tmp, package=str(pkg), cfg={"pre_upload_check": [check]})
