@@ -1272,6 +1272,16 @@ B.panel = (s, g) => {
   const srcs = d.frames && d.frames.length ? d.frames.map(f => typeof f === "string" ? f : f.image) : [d.image];
   srcs.slice(1).forEach(x => PANEL_IMAGES.push(x));
   const imgs = srcs.map(src => K.el("image", { href: src, x: 0, y: 0, width: IW, height: IH, preserveAspectRatio: "xMidYMid slice", filter: `url(#${id})` }, g));
+  // a clip panel (data.clip; timeline extracted its frames and wrote clip_sched, one [a, b, w] per video frame): two
+  // images over the still, frame b laid over frame a at opacity w, their hrefs swapped as the frame changes. Each swap's
+  // decode goes on K.pending, so seek waits for it and no frame is taken with a stale or blank picture
+  const CF = d.clip_frames, CS = d.clip_sched;
+  const clip = CF && CS && CS.length ? ["a", "b"].map(() => ({ el: K.el("image", { x: 0, y: 0, width: IW, height: IH, preserveAspectRatio: "xMidYMid slice", filter: `url(#${id})` }, g), i: -1 })) : null;
+  const clipSrc = i => `${CF.dir}/${String(i).padStart(4, "0")}.jpg`;
+  const clipSet = (c, i) => { if (c.i === i) return; c.i = i; c.el.setAttribute("href", clipSrc(i));
+    if (c.el.decode) K.pending.push(c.el.decode().catch(() => { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: clip frame missing: ${clipSrc(i)}`); })); };
+  const clipAt = t => CS[Math.min(CS.length - 1, Math.max(0, Math.round(t * 30) - Math.round(s.t0 * 30)))];   // 30: the render's fps
+  if (clip) (window.STUDIO.panelClip = window.STUDIO.panelClip || {})[s.id] = { dir: CF.dir, n: CF.n };
   const flips = d.flips && d.flips.length ? d.flips : [[s.t0, 0]];
   const frameAt = t => { let k = flips[0][1]; for (const [ft, i] of flips) { if (t + 1e-4 >= ft) k = i; else break; } return k; };
   let shown = -1;
@@ -1321,6 +1331,8 @@ B.panel = (s, g) => {
     const { z, cx, cy } = camAt(t);
     g.__cam = { z, cx, cy };
     if (imgs.length > 1) { const k = frameAt(t); if (k !== shown) { imgs.forEach((im, i) => K.show(im, i === k)); shown = k; } }
+    if (clip) { const [ia, ib, w] = clipAt(t); clipSet(clip[0], ia);
+      if (w > 0.001) { clipSet(clip[1], ib); clip[1].el.setAttribute("opacity", w); K.show(clip[1].el, true); } else K.show(clip[1].el, false); }
     fxDraw(t);
     if (fz != null) K.set(sat, { values: (d.flashback ? 0.55 : 1) * K.lerp(1, 0.3, K.eout(K.prog(t, fz, fz + 0.25))) });
     const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;

@@ -930,6 +930,11 @@ def cmd_timeline(a):
                 seg["data"] = dict(seg["data"], image=cap["file"], iw=iw, ih=ih, url=cap.get("url", ""))
                 seg.setdefault("source", cap.get("credit") or re.sub(r"^https?://(www\.)?([^/]+).*", r"\2", cap.get("url", "")))
         resolve_cues(seg.get("data", {}), seg.get("words"), seg, problems, cues)
+        if seg.get("type") == "panel" and (seg.get("data") or {}).get("clip"):
+            if (seg["data"].get("frames") or []):
+                problems.append(f"{s['id']}: a panel takes a clip or flipbook frames, not both")
+            else:
+                clip_prepare(film, seg, sc.get("format", "16x9"), problems)
         if seg.get("type") == "panel" and len((seg.get("data") or {}).get("frames") or []) > 1:
             flips, fp = panel_flips(seg)
             problems += fp
@@ -1435,7 +1440,7 @@ def partial_problems(film, tl, parts, only, scale, ranges):
         probs.append("film-wide timeline settings changed (captions, chapters, cues, grade, map)")
     named = json.dumps([sg for sg in tl["segments"] if sg["id"] in only])
     for k in sorted(set(files) | set(old["files"])):
-        if files.get(k) != old["files"].get(k) and k not in named and k not in map_files:
+        if files.get(k) != old["files"].get(k) and k not in named and not (k.startswith(CLIP_DIR + "/") and k.rsplit("/", 1)[0] in named) and k not in map_files:
             probs.append(f"{k} changed and is not used by the named segments")
     missing = [Path(f"p{i0:07d}-{i1:07d}.mp4") for i0, i1 in ranges if not (parts / f"p{i0:07d}-{i1:07d}.mp4").exists()]
     if missing:
@@ -2305,6 +2310,106 @@ def panel_images(d):
     return [x for x in fr if x] or ([d["image"]] if (d or {}).get("image") else [])
 
 
+CLIP_DIR = "clips/frames"     # a panel clip's frames, extracted once by `timeline` (clip_prepare)
+CLIP_MODES, CLIP_RETIME = ("hold_last", "loop", "pingpong"), ("blend", "hold", "interp")
+
+
+def clip_prepare(film, seg, fmt, problems):
+    """A panel's video clip (data.clip, an mp4 in the film) as numbered JPEG frames at the panel's own size, plus the
+    frame schedule the page draws from: data.clip_frames {dir, n, fps} and data.clip_sched, one [frame a, frame b, weight
+    of b] per video frame of the segment. Frames, not a <video> element: a video seeks to the nearest keyframe and decodes
+    asynchronously, so a render frame can catch the wrong picture or none; a numbered still is exact and the same on
+    every machine. The frames are cut to cover the panel (Lanczos), so the camera and fx work on them as on a still.
+      "clip_mode": hold_last (default; plays once, then holds its last frame while the camera keeps moving), loop (the
+                   seam dissolves over 0.3 s, never a jump) or pingpong (plays back and forth; reversed motion can look odd
+                   on people walking)
+      "clip_retime": blend (default; each 30 fps frame mixes the two nearest clip frames), hold (each clip frame held,
+                   16 fps cadence 2-2-2-1, the steps allowed by the pop check) or interp (ffmpeg motion interpolation to
+                   30 fps; smoother, can warp edges)
+      "clip_speed": 1 (0.5 plays at half speed, stretching a short clip); "clip_start": seconds into the clip.
+    The extraction is cached under clips/frames/<name>-<hash of the clip and settings>/."""
+    d = seg["data"]
+    src = film / d["clip"]
+    mode, retime = d.get("clip_mode", "hold_last"), d.get("clip_retime", "blend")
+    if mode not in CLIP_MODES or retime not in CLIP_RETIME:
+        problems.append(f"{seg['id']}: clip_mode is one of {', '.join(CLIP_MODES)} and clip_retime one of {', '.join(CLIP_RETIME)}")
+        return
+    if not src.exists():
+        problems.append(f"{seg['id']}: clip {d['clip']} not found; the panel shows its still" + ("" if d.get("image") else ", and it has none"))
+        return
+    iw, ih = (1920, 1080) if fmt != "9x16" else (3414, 1920)      # the panel's composition size (longform.html B.panel)
+    st = src.stat()
+    key = hashlib.sha256(f"{d['clip']} {st.st_size} {st.st_mtime_ns} {retime == 'interp'} {iw}x{ih}".encode()).hexdigest()[:10]
+    out = film / CLIP_DIR / f"{src.stem}-{key}"
+    meta = out / "meta.json"
+    if not meta.exists():
+        fps_in = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
+                                 "-of", "csv=p=0", str(src)], capture_output=True, text=True, check=True).stdout.strip()
+        num, den = (fps_in.split("/") + ["1"])[:2]
+        fps = 30.0 if retime == "interp" else float(num) / float(den)
+        tmp = out.with_name(out.name + ".part")
+        shutil.rmtree(tmp, ignore_errors=True); tmp.mkdir(parents=True)
+        vf = (["minterpolate=fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"] if retime == "interp" else []) + \
+             [f"scale={iw}:{ih}:force_original_aspect_ratio=increase:flags=lanczos", f"crop={iw}:{ih}"]
+        r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-vf", ",".join(vf), "-q:v", "2", "-start_number", "0",
+                            str(tmp / "%04d.jpg")], capture_output=True, text=True)
+        n = len(list(tmp.glob("*.jpg")))
+        if r.returncode or n < 2:
+            problems.append(f"{seg['id']}: couldn't read frames from {d['clip']}: {(r.stderr or 'under 2 frames').strip()[:200]}")
+            shutil.rmtree(tmp, ignore_errors=True)
+            return
+        (tmp / "meta.json").write_text(json.dumps({"n": n, "fps": fps}) + "\n")
+        shutil.rmtree(out, ignore_errors=True); tmp.rename(out)
+    m = json.loads(meta.read_text())
+    d["clip_frames"] = {"dir": str(out.relative_to(film)), "n": m["n"], "fps": m["fps"]}
+    d["clip_sched"] = clip_schedule(seg, m["n"], m["fps"])
+    d.setdefault("image", f"{d['clip_frames']['dir']}/0000.jpg")     # no still given: the clip's first frame is the poster
+
+
+def clip_schedule(seg, n, fps, vfps=FPS):
+    """[[a, b, w], ...]: for each video frame from the segment's first to its last, the clip frames to draw (b over a at
+    opacity w), following the segment's clip_mode, clip_retime, clip_speed and clip_start."""
+    d = seg["data"]
+    mode, retime = d.get("clip_mode", "hold_last"), d.get("clip_retime", "blend")
+    speed, start = float(d.get("clip_speed", 1)), float(d.get("clip_start", 0))
+    X = max(1, round(0.3 * fps))                    # loop seam: the clip's last X frames dissolve into its first X
+    L = n - X
+    out = []
+    jr = lambda x: int(math.floor(x + 0.5))         # JavaScript's Math.round, which the page uses (Python's round goes to even)
+    for k in range(jr(seg["t0"] * vfps), jr(seg["t1"] * vfps) + 1):
+        p = max(0.0, (k / vfps - seg["t0"]) * speed + start) * fps
+        if retime == "hold":
+            p = math.floor(p + 1e-6)
+        if mode == "hold_last" or (mode == "loop" and L < 2):
+            p = min(p, n - 1)
+        elif mode == "pingpong":
+            per = 2 * (n - 1); p = p % per; p = per - p if p > n - 1 else p
+        else:
+            while p >= n - 1:
+                p -= L
+            if p >= L:                              # in the seam: frame p dissolving into the loop's next start, p - L
+                a, w = min(n - 1, round(p)), (p - L) / X
+                out.append([a, min(n - 1, round(p - L)), round(w, 3)])
+                continue
+        a = min(n - 1, int(math.floor(p + 1e-6)))
+        out.append([a, min(n - 1, a + 1), round(p - a, 3) if retime == "blend" else 0])
+    return out
+
+
+def clip_steps(segs, fps=FPS):
+    """Video frames where a held-frame clip (clip_retime "hold") steps to its next frame, for verify's allow_frames, like
+    a flipbook's flips: a clip at 16 fps holds each frame for 2 or 1 video frames, so its motion comes in steps that
+    the pop check would read as pops. Blended and interpolated clips change every frame and need no allowance."""
+    out = set()
+    for sg in segs:
+        d = sg.get("data") or {}
+        if sg["type"] != "panel" or not d.get("clip_sched") or d.get("clip_retime", "blend") != "hold":
+            continue
+        k0 = int(math.floor(sg["t0"] * fps + 0.5))
+        out.update(k0 + i for i in range(1, len(d["clip_sched"])) if d["clip_sched"][i][0] != d["clip_sched"][i - 1][0])
+    return out
+
+
 def panel_flips(seg, fps=FPS):
     """A flipbook panel's schedule, [[t, frame index], ...] in absolute seconds, every t on a whole video frame. With
     any "at" cue on a frame, every frame after the first needs one and shows from its word (hold-on-cue). Otherwise the
@@ -2420,7 +2525,7 @@ def _final(a):
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
-    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")) | flip_frames(tl["segments"]) | stat_ticks(tl["segments"]), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
+    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")) | flip_frames(tl["segments"]) | stat_ticks(tl["segments"]) | clip_steps(tl["segments"]), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
     # the channel logo in its own colours wherever it appears: a style pack or grade must never recolour it
     import brand
     rep, probs = brand.brand_problems(film, load_script(film))
@@ -2623,8 +2728,20 @@ def panel_motion(film, segs):
             if not pc or not img.exists():
                 continue
             ow, oh = max(2, int(pc["w"]) // 4 // 2 * 2), max(2, int(pc["h"]) // 4 // 2 * 2)
-            still = _still_gray(img, int(pc["iw"]) // 4, int(pc["ih"]) // 4)
-            frames = [np.round(_sample(still, c, pc["iw"], pc["ih"], pc["w"], pc["h"], ow, oh)) for c in pc["cams"]]
+            gw, gh = int(pc["iw"]) // 4, int(pc["ih"]) // 4
+            cf, cs = s["data"].get("clip_frames"), s["data"].get("clip_sched")
+            if cf and cs:               # a clip panel: the clip's own frames, mixed as the page mixes them, under the camera
+                cache = {}
+                g = lambda i: cache[i] if i in cache else cache.setdefault(i, _still_gray(film / cf["dir"] / f"{i:04d}.jpg", gw, gh))
+                k0 = int(math.floor(s["t0"] * FPS + 0.5))
+
+                def pic(t):
+                    a_, b_, w_ = cs[min(len(cs) - 1, max(0, int(math.floor(t * FPS + 0.5)) - k0))]
+                    return g(a_) * (1 - w_) + g(b_) * w_ if w_ else g(a_)
+                frames = [np.round(_sample(pic(t), c, pc["iw"], pc["ih"], pc["w"], pc["h"], ow, oh)) for t, c in zip(ts, pc["cams"])]
+            else:
+                still = _still_gray(img, gw, gh)
+                frames = [np.round(_sample(still, c, pc["iw"], pc["ih"], pc["w"], pc["h"], ow, oh)) for c in pc["cams"]]
             d = [float(np.abs(frames[i + 1] - frames[i]).mean()) for i in range(len(frames) - 1)]
             per = max(1, int(round(motioncheck.FPS * motioncheck.WINDOW)))
             out[s["id"]] = [float(np.mean(d[i:i + per])) for i in range(0, len(d) - per + 1, per)]
@@ -3494,7 +3611,9 @@ def _check(a, film):
             how = "to move too little" if m < mfloor else "to move barely above it"
             flags.append(f"{sid}: panel predicted {how} (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it a "
                          f"stronger camera (\"camera\": {{\"from\": {{\"x\", \"y\", \"z\"}}, \"to\": {{...}}}}, a zoom change of 10% or more, "
-                         f"or a pan with z at least 1.12) or cut it shorter")
+                         f"or a pan with z at least 1.12) or cut it shorter"
+                         + ("; its clip ends before the segment does, so also try \"clip_mode\": \"loop\" or \"pingpong\", "
+                            "or \"clip_speed\" under 1" if (next((x for x in segs if x["id"] == sid), {}).get("data") or {}).get("clip") else ""))
     video = film / "out" / "silent.mp4"
     if not video.exists():
         report.append("no render yet: run `render` for dead-air, cue and flash checks")

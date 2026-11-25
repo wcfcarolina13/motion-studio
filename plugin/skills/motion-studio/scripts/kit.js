@@ -143,7 +143,11 @@
 
   // ── run: wire render(t) to window.seek; captions update after the scene ──
   K.run = render => {
-    const seek = t => { const tt = Math.min(Math.max(t, 0), K.DUR - 1e-6); render(tt); K._caps.forEach(c => c(tt)); return true; };
+    // a scene that swaps a picture mid-film (a panel clip's frames) pushes the picture's decode onto K.pending; seek then
+    // returns a promise, which page.evaluate waits on, so no frame is taken before its picture is drawn
+    K.pending = [];
+    const seek = t => { const tt = Math.min(Math.max(t, 0), K.DUR - 1e-6); K.pending = []; render(tt); K._caps.forEach(c => c(tt));
+      return K.pending.length ? Promise.all(K.pending).then(() => true) : true; };
     window.seek = seek;
     window.DUR = K.DUR;
     window.STUDIO.text.sort((a, b) => a.t0 - b.t0);

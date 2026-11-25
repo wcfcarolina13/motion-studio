@@ -1,6 +1,8 @@
 """Anatomy gate for stills: a vision judge (the Claude CLI on the owner's plan by default) looks at every still with
 people in it for anatomy horror, and a failed still is drawn again.
     python3 anatomy.py <stills_dir> --jobs <in_dir>/jobs.json [--fix] [--tries 3] [--faceless]
+A folder of Wan clips (.mp4) works the same way: each clip's last frame is judged against its first, for anatomy and for
+people or faces the source still didn't have (picture-truth.md rule 13).
 
 The owner, after a head twisted far over a man's shoulder got through (v32b, 2026-11-25): "Be sure anatomy horror is
 nipped in the process from now on." codex_stills.py calls judge() after each still and re-rolls a FAIL within --tries.
@@ -30,6 +32,32 @@ DEFAULT = ('claude -p "Read the image file at {path}. Judge only the anatomy of 
            'for any of: ' + CRITERIA.replace('"', "'") + ' {faceless_rule} Answer on the last line with PASS, or FAIL: '
            'followed by the reason in a few words." --allowedTools Read')
 FACELESS_RULE = "8) any visible human face (this hero must be faceless)."
+# a Wan image-to-video clip is judged on its last frame against its first (the source still): Wan invents people with
+# faces at desks, doors, gates and in close-ups, and grows extra boots (picture-truth.md rule 13, 2026-11-25)
+CLIP = ('claude -p "Read two image files. The first, {first}, is the still a video clip started from; the second, {path}, is the '
+        'clip\'s last frame. Judge only the people and bodies in the last frame, never the style. Fail it for any of: 0) a person, '
+        'face, ghostly face or body part in the last frame that is not in the first (count the people in each), or a doubled '
+        'object such as a third boot; ' + CRITERIA.replace('"', "'") + ' {faceless_rule} Answer on the last line with PASS, or '
+        'FAIL: followed by the reason in a few words." --allowedTools Read')
+
+
+def clip_frames(mp4, work):
+    """(first frame png, last frame png) of a clip, written under work/."""
+    os.makedirs(work, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(mp4))[0]
+    first, last = os.path.join(work, stem + "_first.png"), os.path.join(work, stem + "_last.png")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", mp4, "-frames:v", "1", first], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-sseof", "-0.25", "-i", mp4, "-update", "1", last], check=True)
+    return first, last
+
+
+def judge_clip(mp4, faceless=False, cmd=None):
+    """judge() for a video clip: its last frame against its first."""
+    cmd = cmd or os.environ.get("ANATOMY_CLIP_CMD", os.environ.get("ANATOMY_CHECK_CMD", CLIP))
+    if cmd == "off":
+        return "PASS", "judge off"
+    first, last = clip_frames(mp4, os.path.join(os.path.dirname(mp4), ".judge"))
+    return judge(last, faceless, cmd.replace("{first}", shlex.quote(first)))
 
 
 def needs_check(shot):
@@ -81,16 +109,17 @@ def main():
     by_id = {j["id"]: j for j in jobs}
     hist, fails, review = history(a.stills), [], []
     for name in sorted(os.listdir(a.stills)):
-        if not name.endswith(".png"):
+        clip = name.endswith(".mp4")
+        if not (name.endswith(".png") or clip):
             continue
         sid = name[:-4]
         j = by_id.get(sid, {})
-        if jobs and not needs_check(j):
+        if jobs and not clip and not needs_check(j):      # a clip is always judged: Wan invents people in empty frames
             continue
         past = hist.get(sid, [])
         if past and past[-1] in ("PASS", "KEPT"):
             continue
-        v, why = judge(os.path.join(a.stills, name), a.faceless or j.get("faceless", False))
+        v, why = (judge_clip if clip else judge)(os.path.join(a.stills, name), a.faceless or j.get("faceless", False))
         tri = len(past) + 1
         print(f"{sid}: {v}{': ' + why if why else ''}")
         if v == "FAIL" and a.fix and tri < a.tries and sid in by_id:
