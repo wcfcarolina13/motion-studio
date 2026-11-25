@@ -216,6 +216,15 @@ class PanelMotion(unittest.TestCase):
         floor, low = longform.motion_flags(est, floor=0.07)
         self.assertEqual([x[0] for x in low], ["still"])
 
+    def test_floor_has_a_ceiling(self):
+        import motioncheck
+        busy = [1.7] * 40 + [0.25] * 4             # a busy film: a quarter of its median would be 0.425
+        floor, faults = motioncheck.check(busy, first=0)
+        self.assertEqual(floor, 0.2)
+        self.assertEqual(faults, [])
+        self.assertEqual(motioncheck.floor_of([0.3] * 9), 0.075)
+        self.assertEqual(motioncheck.check([1.7] * 40 + [0.1] * 4, first=0)[1][0].split(":")[0], "20.0-22.0 s")
+
 
 class StillsRoute(unittest.TestCase):
     """Owner's rule (2026-11-25): turbo stills are drafts; full-quality models ship."""

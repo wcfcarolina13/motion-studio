@@ -2495,14 +2495,14 @@ def map_motion(film, segs):
 
 def motion_flags(est, floor=None, stretch=2.0, margin=1.2):
     """(floor, [(panel id, quietest 2 s mean)]) for panels predicted to sit under final's motion floor. Without a floor
-    given, final's own rule is applied to the panels' estimates (the larger of 0.02 and a quarter of the median window),
+    given, final's own rule is applied to the panels' estimates (a quarter of the median window, from 0.02 to 0.2),
     and a panel within 20% of it is flagged too, since the estimate leaves out fades, cards and grain."""
     import motioncheck
     import numpy as np
     allw = [v for w in est.values() for v in w]
     if not allw:
         return 0.0, []
-    floor = floor if floor is not None else max(0.02, 0.25 * float(np.median(allw)))
+    floor = floor if floor is not None else motioncheck.floor_of(allw)
     n, low = max(1, int(round(stretch / motioncheck.WINDOW))), []
     for sid, w in est.items():
         if len(w) < n:
@@ -3185,7 +3185,7 @@ def _check(a, film):
         mest = map_motion(film, segs)
         if floor0 is None and est and mest:     # no render yet: the floor comes from panels and maps together
             import numpy as np
-            floor0 = max(0.02, 0.25 * float(np.median([v for w in list(est.values()) + list(mest.values()) for v in w])))
+            floor0 = motioncheck.floor_of([v for w in list(est.values()) + list(mest.values()) for v in w])
         mfloor, low = motion_flags(est, floor=floor0)
         mfloor2, mlow = motion_flags(mest, floor=floor0 if floor0 is not None else (mfloor if est else None))
         report.append(f"panel motion (predicted from each still and its camera; it reads low, so near the floor usually "

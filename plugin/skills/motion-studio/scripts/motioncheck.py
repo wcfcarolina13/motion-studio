@@ -4,13 +4,16 @@ Mean absolute frame-to-frame difference (grayscale levels 0-255, frames scaled t
   - any window in the first `first` seconds, or
   - the mean of any `stretch`-second run of windows
 falls under the floor. Defaults: 0.5 s windows at 10 fps, first 3 s, 2 s stretches, and
-floor = max(0.02, 0.25 x the film's median window) unless `floor` is given.
+floor = the film's median window x 0.25, kept between 0.02 and 0.2, unless `floor` is given. The cap: a floor tied only
+to the film's own median rose with every round of stronger camera moves (0.197 -> 0.433 over five cuts of one film,
+2026-11-25), so shots that passed one cut failed the next and adding motion could never settle it. 0.2 is the level
+those cuts passed at; a stretch moving that much is visibly moving, whatever the rest of the film does.
 A loop frame may be still only AT the seam: ramp motion up from 0 there instead of holding the frame.
 Deliberate holds are excused with `stills` [(t0, t1), ...] (seconds), e.g. from the board's "stills" list.
 `mask` [(y0, y1), ...] in source pixels blanks rows before measuring, e.g. a caption band, so changing captions
 don't count as motion.
 
-  python3 motioncheck.py <video.mp4> [--floor X] [--ratio 0.25] [--first 3] [--stretch 2] [--still 57.6-58.2] [--mask 1380-1545] [--report]
+  python3 motioncheck.py <video.mp4> [--floor X] [--ratio 0.25] [--max-floor 0.2] [--first 3] [--stretch 2] [--still 57.6-58.2] [--mask 1380-1545] [--report]
 """
 import subprocess
 import sys
@@ -18,6 +21,13 @@ import sys
 import numpy as np
 
 WINDOW, FPS = 0.5, 10
+MIN_FLOOR, MAX_FLOOR, RATIO = 0.02, 0.2, 0.25
+
+
+def floor_of(win, ratio=RATIO, cap=MAX_FLOOR):
+    """The motion floor for a film whose windows are `win`: a quarter of their median, between 0.02 and `cap`."""
+    med = float(np.median(win)) if len(win) else 0.0
+    return min(cap, max(MIN_FLOOR, ratio * med))
 
 
 def windows(video, mask=(), fps=FPS, window=WINDOW):
@@ -36,10 +46,9 @@ def windows(video, mask=(), fps=FPS, window=WINDOW):
     return [float(d[i:i + per].mean()) for i in range(0, len(d) - per + 1, per)]
 
 
-def check(win, floor=None, ratio=0.25, first=3.0, stretch=2.0, stills=(), window=WINDOW):
+def check(win, floor=None, ratio=RATIO, first=3.0, stretch=2.0, stills=(), window=WINDOW, cap=MAX_FLOOR):
     """(floor, faults) for per-window motion values."""
-    med = float(np.median(win)) if win else 0.0
-    floor = floor if floor is not None else max(0.02, ratio * med)
+    floor = floor if floor is not None else floor_of(win, ratio, cap)
     excused = lambda t0, t1: any(a <= t0 + 1e-6 and t1 <= b + 1e-6 for a, b in stills)
     faults = []
     for i, v in enumerate(win[:int(round(first / window))]):
@@ -62,8 +71,8 @@ def main(argv):
     video = argv[0]
     val = lambda k, d: float(argv[argv.index(k) + 1]) if k in argv else d
     win = windows(video, mask=_spans(argv, "--mask"))
-    floor, faults = check(win, floor=val("--floor", None), ratio=val("--ratio", 0.25), first=val("--first", 3.0),
-                          stretch=val("--stretch", 2.0), stills=_spans(argv, "--still"))
+    floor, faults = check(win, floor=val("--floor", None), ratio=val("--ratio", RATIO), first=val("--first", 3.0),
+                          stretch=val("--stretch", 2.0), stills=_spans(argv, "--still"), cap=val("--max-floor", MAX_FLOOR))
     if "--report" in argv:
         for i, v in enumerate(win):
             print(f"{i * WINDOW:6.1f} s {v:8.3f}")
