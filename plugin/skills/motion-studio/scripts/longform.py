@@ -1995,6 +1995,14 @@ def _final(a):
     # map pieces slap in (scale 1.1, 0.98, 1.0 on twos) and ransom letters land one by one: hits on purpose
     allow += [(x["t"] - 0.1, x["t"] + 0.6) for sg in tl["segments"] if sg["type"] == "map"
               for x in (sg.get("data") or {}).get("pieces", []) if x.get("t") is not None]
+    # paint sweeps (16 frames) and ink strokes (12) are revealed on twos too, each step a held pair of frames: allow the
+    # reveal (a US-states film flagged four steps of a paint sweep, 2026-11-25). Uncued ones start 0.2 s / 0.3 s in.
+    for sg in tl["segments"]:
+        if sg["type"] == "map":
+            for key, lead, n in (("paint", 0.2, 16), ("ink", 0.3, 12)):
+                for x in (sg.get("data") or {}).get(key) or []:
+                    t = x.get("t", sg["t0"] + lead)
+                    allow.append((t - 0.1, t + x.get("frames", n) / 30 + 0.1))
     # the map camera moves on twos, so each step of a move is a held pair of frames: allow the move (at most 26 frames)
     for sg in tl["segments"]:
         if sg["type"] == "map":
