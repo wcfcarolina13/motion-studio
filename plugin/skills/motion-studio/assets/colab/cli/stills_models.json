@@ -1,7 +1,7 @@
 {
  "_doc": "Stills models for remote_stills_*.py, chosen by shots_to_jobs.py --model. Owner's rule (2026-11-25): step-distilled 'turbo' models are for drafts and layout only, never for anything that ships; their stills are stamped draft and render refuses them. 'default' is the model shots_to_jobs.py uses without --model. Every model here has commercially usable weights, with the licence read from its model card on the date given. full_gpu_gb, when set, is the card memory at which the whole pipeline goes on the GPU; below it the model loads one component at a time (default 1.5 x min_vram_gb). Excluded for licence: black-forest-labs/FLUX.2-dev (non-commercial). offload 'sequential' moves one layer at a time onto the card when the pipeline doesn't fit whole (slowest, least memory). route 'codex' is not a Colab model: scripts/codex_stills.py makes its stills on the Mac.",
  "default": "z-image",
- "default_note": "Provisional. The 2026-11-25 bake-off winner is chatgpt-image-codex, which waits on the owner's yes (it spends his Codex allowance); Qwen-Image 2512's sequential-offload retry is pending.",
+ "default_note": "Finished stills come from chatgpt-image-codex (scripts/codex_stills.py on the Mac), the owner's default since 2026-11-25. 'default' here is only the Colab route's fallback model when the Codex allowance runs short; the open-model bake-off (Qwen-Image 2512 sequential offload, MOSS-Image, Krea 2, FLUX 3 Klein) decides it.",
  "models": {
   "z-image": {
    "repo": "Tongyi-MAI/Z-Image",
@@ -57,7 +57,7 @@
    "licence": "OpenAI terms: the user owns the output and may use it commercially; files carry OpenAI's C2PA provenance, kept in the untouched originals.",
    "bakeoff": "2026-11-25 winner on anatomy, scale, night skies and no garbled text: 9 stills in about 6 min via codex exec. Faults: a face in 3 of 5 hero shots, 2 of 9 at an odd aspect (both now re-rolled by codex_stills.py).",
    "first_run": "2026-11-25 on the Mac: 4 hard shots in 4 Codex calls, no re-rolls, anatomy right on all, hero faceless; one cutaway drew a booth 1.1x the man's height against 1.3x asked, so sized shots now go to the scale marking page.",
-   "note": "Owner approved 2026-11-25 for the hard shots (an object's insides, mechanisms, anatomy, anything the open models drew wrong): 'We can get better illustrations of things like that for openai'. Spends his Codex allowance, so each run still passes --allow-codex; other shots stay on the open-model route."
+   "note": "Default for finished stills (owner, 2026-11-25: 'Chatgpt makes the best images by far and it's obvious', then 'Yeah let's do it' to redrawing every Survive Year 1 still). Open models are the fallback when the Codex allowance runs short or Codex is down. About 120 images an episode is roughly 10 to 15% of a week's allowance. Each run still passes --allow-codex."
   },
   "moss-image-sft": {
    "repo": "OpenMOSS-Team/MOSS-Image-SFT",
