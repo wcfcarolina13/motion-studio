@@ -19,7 +19,7 @@ else:
 # A released diffusers is pinned when it has the model's pipeline; the source build is only the fallback, because an
 # unpinned source install can change under a run.
 pip = lambda *a: subprocess.run([sys.executable, '-m', 'pip', '-q', 'install', *a], check=True)
-pip(f"diffusers>={M.get('diffusers', '0.36')}", 'transformers', 'accelerate')
+pip(f"diffusers>={M.get('diffusers', '0.36')}", 'transformers', 'accelerate', *M.get('pip', []))     # "pip": the card's own pins
 probe = subprocess.run([sys.executable, '-c', f"from diffusers import {M.get('pipeline', 'DiffusionPipeline')}"], capture_output=True)
 if probe.returncode:
     print('released diffusers lacks', M.get('pipeline'), '; installing from source', flush=True)
