@@ -1,0 +1,49 @@
+{
+ "_doc": "Stills models for remote_stills_*.py, chosen by shots_to_jobs.py --model. Owner's rule (2026-11-25): step-distilled 'turbo' models are for drafts and layout only, never for anything that ships; their stills are stamped draft and render refuses them. 'default' is the model shots_to_jobs.py uses without --model. Every model here has commercially usable weights, with the licence read from its model card on the date given.",
+ "default": "z-image",
+ "default_note": "Provisional until the 2026-11-25 A100 bake-off (Qwen-Image 2512 against full Z-Image) picks the winner.",
+ "models": {
+  "z-image": {
+   "repo": "Tongyi-MAI/Z-Image",
+   "pipeline": "ZImagePipeline",
+   "diffusers": "0.36",
+   "licence": "Apache-2.0 as reported by the bake-off thread (2026-11-25); not yet read from the model card here (the cloud session can't reach Hugging Face). Repo name to confirm against the bake-off's settings.",
+   "min_vram_gb": 20,
+   "w": 1344,
+   "h": 768,
+   "call": {
+    "num_inference_steps": 40,
+    "guidance_scale": 4.0
+   },
+   "negative": true
+  },
+  "qwen-image-2512": {
+   "repo": "Qwen/Qwen-Image-2512",
+   "pipeline": "QwenImagePipeline",
+   "diffusers": "0.35",
+   "licence": "Apache-2.0 as reported by the bake-off thread (2026-11-25); not yet read from the model card here (the cloud session can't reach Hugging Face).",
+   "min_vram_gb": 40,
+   "w": 1664,
+   "h": 928,
+   "call": {
+    "num_inference_steps": 40,
+    "true_cfg_scale": 4.0
+   },
+   "negative": true
+  },
+  "z-image-turbo": {
+   "repo": "Tongyi-MAI/Z-Image-Turbo",
+   "pipeline": "ZImagePipeline",
+   "diffusers": "0.36",
+   "licence": "Apache-2.0 (model card, 2026-11-24)",
+   "min_vram_gb": 20,
+   "w": 1344,
+   "h": 768,
+   "call": {
+    "num_inference_steps": 9,
+    "guidance_scale": 0.0
+   },
+   "draft": true
+  }
+ }
+}

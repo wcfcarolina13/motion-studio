@@ -140,6 +140,45 @@ def real_asset_problems(film, segs):
     return missing
 
 
+def png_text(path):
+    """A PNG's tEXt entries as a dict ({} for anything else or a damaged file)."""
+    import struct
+    out = {}
+    try:
+        with open(path, "rb") as f:
+            if f.read(8) != b"\x89PNG\r\n\x1a\n":
+                return out
+            while True:
+                head = f.read(8)
+                if len(head) < 8:
+                    break
+                n, kind = struct.unpack(">I4s", head)
+                if kind == b"IDAT" or kind == b"IEND":
+                    break
+                data = f.read(n); f.read(4)
+                if kind == b"tEXt" and b"\0" in data:
+                    k, v = data.split(b"\0", 1); out[k.decode("latin-1")] = v.decode("latin-1")
+    except OSError:
+        pass
+    return out
+
+
+def draft_stills(film, segs):
+    """Panel stills stamped as drafts by the stills route (a step-distilled 'turbo' model): layout only, never shipped
+    (owner's rule, 2026-11-25). An upscaled copy loses the stamp, so its source is read too."""
+    out = []
+    for sg in segs:
+        img = (sg.get("data") or {}).get("image")
+        if sg["type"] != "panel" or not img:
+            continue
+        cands = [film / img] + ([film / img.split("panels-hd/", 1)[1]] if "panels-hd/" in img else [])
+        hit = next((png_text(p) for p in cands if png_text(p).get("motion-studio-draft") == "1"), None)
+        if hit is not None:
+            out.append(f'{sg["id"]}: {img} is a draft still ({hit.get("motion-studio-model", "draft model")}, layout only); '
+                       f'redraw it with a full-quality model before render')
+    return out
+
+
 def gate_real_assets(film, segs, step):
     missing = real_asset_problems(film, segs)
     if missing:
@@ -1413,6 +1452,9 @@ def _render(a, film, st):
     tl = load_timeline(film)
     gate_real_assets(film, tl["segments"], "render")
     gate_scale(film, load_script(film), "render")
+    drafts = draft_stills(film, tl["segments"])
+    if drafts:
+        raise SystemExit("render stopped: draft stills can't ship:\n" + "\n".join(drafts))
     # a render is only started on a version of the film that a check passed (its page ran clean), and on a page that
     # is clean now: a JavaScript error never heals on a retry, and a render is the most expensive place to find one
     passed = film / "review" / "check-gate.json"
@@ -3025,6 +3067,7 @@ def _check(a, film):
         write_gate(film, False, len(problems))
         (film / "review" / "check.txt").write_text(f"page: {len(problems)} problem(s)\n" + "\n".join(problems) + "\n")
         raise SystemExit(f"check stopped: the page is not clean ({len(problems)} problem(s)):\n" + "\n".join(problems))
+    flags += draft_stills(film, segs)
     drift, drift_warn = engine_drift(film, segs)
     if drift:
         write_gate(film, False, len(drift))

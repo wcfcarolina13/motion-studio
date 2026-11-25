@@ -191,5 +191,41 @@ class PanelMotion(unittest.TestCase):
         self.assertEqual([x[0] for x in low], ["still"])
 
 
+class StillsRoute(unittest.TestCase):
+    """Owner's rule (2026-11-25): turbo stills are drafts; full-quality models ship."""
+    CLI = Path(__file__).resolve().parent.parent / "assets" / "colab" / "cli"
+
+    def run_jobs(self, d, *extra):
+        Path(d, "shots.json").write_text('{"style": "ink", "shots": [{"id": "a", "prompt": "a yard"}]}')
+        return subprocess.run(["python3", str(self.CLI / "shots_to_jobs.py"), str(Path(d, "shots.json")), str(Path(d, "in")), *extra],
+                              capture_output=True, text=True)
+
+    def test_default_is_full_quality_and_turbo_needs_draft(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_jobs(d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            m = json.loads(Path(d, "in", "model.json").read_text())
+            self.assertFalse(m.get("draft"))
+            self.assertGreater(m["call"]["num_inference_steps"], 20)
+            self.assertNotEqual(self.run_jobs(d, "--model", "z-image-turbo").returncode, 0)
+            self.assertEqual(self.run_jobs(d, "--model", "z-image-turbo", "--draft").returncode, 0)
+            self.assertEqual(self.run_jobs(d, "--model", "qwen-image-2512").returncode, 0)
+            self.assertEqual(Path(d, "in", "min_vram_gb").read_text(), "40")
+
+    def test_render_refuses_draft_stills(self):
+        import longform
+        try:
+            from PIL import Image
+            from PIL.PngImagePlugin import PngInfo
+        except ImportError:
+            self.skipTest("PIL not installed")
+        with tempfile.TemporaryDirectory() as d:
+            i = PngInfo(); i.add_text("motion-studio-model", "z-image-turbo"); i.add_text("motion-studio-draft", "1")
+            Image.new("RGB", (8, 8)).save(Path(d, "a.png"), pnginfo=i); Image.new("RGB", (8, 8)).save(Path(d, "b.png"))
+            segs = [{"id": "s1", "type": "panel", "data": {"image": "a.png"}}, {"id": "s2", "type": "panel", "data": {"image": "b.png"}}]
+            self.assertEqual([x.split(":")[0] for x in longform.draft_stills(Path(d), segs)], ["s1"])
+
+
 if __name__ == "__main__":
     unittest.main()
