@@ -7,7 +7,7 @@
 #   Settings (env): COLAB_SESSION name (default ms-<out dir>-<pid>, unique per run; a name already live is refused), COLAB_GPUS order, STALL_ALERT / STALL_STOP seconds, COLAB_ALERT notifier
 #   command, UNIT_BUDGET units per run, COLAB_DRIVE_DIR for an attended run's second copy on Drive, HF_TOKEN_FILE for a read-only Hugging Face token. The rules behind
 #   them are in references/colab.md.
-#   Exit 1 means no GPU or a dead runtime: retry_colab.sh retries those every 20 min. Exit 3 means every card asked
+#   Exit 1 means no GPU, a dead runtime or a setup that failed: retry_colab.sh retries those every 20 min. Exit 3 means every card asked
 #   for is already in use on the account (another lane or project); retry_colab.sh waits on it without using a try.
 #   Exit 4 means the runtime came up but setup never started on it; retry_colab.sh retries that at once. Exit 2 means the render started
 #   but didn't finish, or an output didn't come down whole (what came down is kept); that is not retried, since a retry
@@ -32,7 +32,6 @@ PULL=""; NEWPID=""
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }   # GNU first: on Linux, stat -f means something else
 # Whatever ends the run, the puller gets its last pass while the session is still up, then the session stops.
 cleanup() {
-  [ -n "${SX:-}" ] && kill "$SX" 2>/dev/null
   if [ -n "$PULL" ] && kill -0 "$PULL" 2>/dev/null; then
     touch "$OUT/.pull_stop"; echo "PHASE last pull"
     for _ in $(seq 120); do kill -0 "$PULL" 2>/dev/null || break; sleep 5; done
@@ -148,38 +147,79 @@ if [ -n "${COLAB_DRIVE_DIR:-}" ]; then
 fi
 bash "$HERE/pull_live.sh" $S "$OUT" > >(tee -a pull.log) 2>&1 & PULL=$!
 echo "PHASE setup"; T0=$(date +%s)
-# "Connection was lost" here does not stop the remote setup; the render script waits for it, so carry on.
-# The exec runs in the background and is watched, because after a drop it may never return: a dropped setup exec printed
-# "RuntimeError: Connection was lost." and then hung 19 min with no setup on the runtime while an L4 billed (2026-11-25;
-# the check after a failed exec, from 2026-11-24, never ran because the exec never failed). A setup script that touches
-# /content/setup_alive first thing must show it within SETUP_SEEN seconds (180) of starting, whether or not the exec has
-# returned, or the runtime is dead: exit 4, which retry_colab.sh retries at once (a try, with no 20 min wait). Once the
-# connection is lost and the setup is seen alive, the hung exec is let go and the render waits for the setup instead.
-live=0; grep -q setup_alive "$SETUP" && live=1
-[ $live = 1 ] || echo "this setup script doesn't touch /content/setup_alive, so a dead setup is caught only by the render's own wait"
-colab exec -s $S -f "$SETUP" --timeout 0 > >(tee setup.out) 2>&1 & SX=$!
-seen=0
-while kill -0 $SX 2>/dev/null; do
-  sleep 15
-  [ $live = 1 ] || continue
-  if [ $seen = 0 ] && timeout 120 colab ls -s $S /content 2>/dev/null | grep -qxE 'setup_alive|paths.txt'; then seen=1; fi
-  if [ $seen = 0 ] && [ $(( $(date +%s) - T0 )) -ge "${SETUP_SEEN:-180}" ]; then
-    kill $SX 2>/dev/null; echo "FAILED: setup never started on the runtime (no /content/setup_alive after ${SETUP_SEEN:-180} s)"; exit 4
+# Setup runs detached on the runtime, not inside a long `colab exec`. Run inside the exec, a dropped connection right
+# after "PHASE setup" left no setup at all (no setup_alive, three times on 2026-11-25 with custom setups doing a pip
+# upgrade and a 20-40 GB download) or an exec that hung while the card billed (19 min, 2026-11-25). Now:
+#   1. the script goes up with `colab upload` and is checked by size on the runtime;
+#   2. a short exec starts it as its own process (nohup-style, output to /content/setup.log, exit code to
+#      /content/setup_rc) and returns at once. It is idempotent: it won't start a second copy if one is running or
+#      finished, so a start exec that dropped after starting is simply sent again (up to SETUP_SEEN s, 180; then exit 4);
+#   3. short probes every 15 s read the log, the exit code and whether the process is alive. A probe that drops is
+#      just the next probe. SETUP_PROBE_FAILS (8) misses in a row means the runtime stopped answering: exit 4.
+# A setup that exits non-zero fails the run at once with its log (exit 1, retried after a wait, since a pip or download
+# blip can pass) instead of the render waiting 45 min for it. No log growth and no setup_alive touch for SETUP_WAIT
+# (2700 s) is a stuck setup: exit 1. Setup scripts need no change, and the render still finds its files as before.
+: > setup.out
+SZ=$(wc -c < "$SETUP" | tr -d ' ')
+start_py() { cat <<PY
+import os, subprocess, sys
+s = '/content/setup.py'; p = '/content/setup_pid'
+if not os.path.exists(s) or os.path.getsize(s) != $SZ:
+    print('SETUP_BADUPLOAD', os.path.getsize(s) if os.path.exists(s) else -1)
+else:
+    pid = open(p).read().strip() if os.path.exists(p) else ''
+    if not (pid and os.path.exists('/proc/' + pid)) and not os.path.exists('/content/setup_rc'):
+        sh = sys.executable + ' -u ' + s + '; echo \$? > /content/setup_rc.part && mv /content/setup_rc.part /content/setup_rc'
+        pr = subprocess.Popen(['/bin/bash', '-c', sh], cwd='/content', stdout=open('/content/setup.log', 'ab'),
+                              stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        open(p + '.part', 'w').write(str(pr.pid)); os.replace(p + '.part', p)
+    print('SETUP_STARTED', open(p).read().strip())
+PY
+}
+probe_py() { cat <<PY
+import os, time
+L = '/content/setup.log'; n = os.path.getsize(L) if os.path.exists(L) else 0
+rc = open('/content/setup_rc').read().strip() if os.path.exists('/content/setup_rc') else '-'
+pid = open('/content/setup_pid').read().strip() if os.path.exists('/content/setup_pid') else ''
+last = max([os.path.getmtime(f) for f in (L, '/content/setup_alive') if os.path.exists(f)] or [time.time()])
+print('SETUP_STATE', n, rc or '?', int(bool(pid) and os.path.exists('/proc/' + pid)), int(time.time() - last))
+if n > $1:
+    f = open(L, 'rb'); f.seek(max($1, n - 4096)); print(f.read().decode('utf-8', 'replace').replace('\r', '\n'))
+PY
+}
+started=0; uploaded=0
+while [ $(( $(date +%s) - T0 )) -lt "${SETUP_SEEN:-180}" ]; do
+  if [ $uploaded = 0 ]; then
+    up=$(timeout 600 colab upload -s $S "$SETUP" /content/setup.py 2>&1); rc=$?
+    { [ $rc -ne 0 ] || grep -q "Upload failed" <<< "$up"; } && { echo "setup upload failed; retrying"; sleep 10; continue; }
+    uploaded=1
   fi
-  if [ $seen = 1 ] && grep -q "Connection was lost" setup.out; then
-    kill $SX 2>/dev/null; echo "setup exec lost its connection; the setup is alive on the runtime, so render will wait for it"; break
-  fi
+  r=$(start_py | timeout 120 colab exec -s $S --timeout 90 2>&1)
+  if grep -q '^SETUP_STARTED ' <<< "$r"; then started=1; echo "setup started on the runtime as process $(sed -n 's/^SETUP_STARTED //p' <<< "$r" | head -1)"; break; fi
+  grep -q '^SETUP_BADUPLOAD' <<< "$r" && { echo "setup script arrived damaged ($(grep '^SETUP_BADUPLOAD' <<< "$r")); uploading again"; uploaded=0; }
+  echo "setup start not confirmed (${r:0:160}); sending it again"; sleep 10
 done
-wait $SX 2>/dev/null; rc=$?
-if [ $rc -ne 0 ] && [ $seen = 0 ] && [ $live = 1 ]; then      # returned an error before the first probe saw the marker
-  echo "setup exec returned an error; checking the setup is alive on the runtime"
-  while [ $(( $(date +%s) - T0 )) -lt "${SETUP_SEEN:-180}" ]; do
-    timeout 120 colab ls -s $S /content 2>/dev/null | grep -qxE 'setup_alive|paths.txt' && { seen=1; break; }
-    sleep 15
-  done
-  [ $seen = 1 ] || { echo "FAILED: setup never started on the runtime (no /content/setup_alive)"; exit 4; }
-  echo "setup is alive; render will wait for it"
-fi
+[ $started = 1 ] || { echo "FAILED: setup never started on the runtime (no confirmed start in ${SETUP_SEEN:-180} s)"; exit 4; }
+off=0; miss=0
+while :; do
+  sleep "${SETUP_POLL:-15}"
+  r=$(probe_py $off | timeout 90 colab exec -s $S --timeout 60 2>&1)
+  st=$(grep -m1 '^SETUP_STATE ' <<< "$r")
+  if [ -z "$st" ]; then
+    miss=$((miss + 1))
+    [ $miss -ge "${SETUP_PROBE_FAILS:-8}" ] && { echo "FAILED: the runtime stopped answering during setup ($miss probes in a row)"; exit 4; }
+    continue
+  fi
+  miss=0; read -r _ n rc up idle <<< "$st"
+  awk 'f; /^SETUP_STATE /{f=1}' <<< "$r" | tee -a setup.out
+  off=$n
+  if [ "$rc" != - ]; then
+    [ "$rc" = 0 ] && break
+    echo "FAILED: setup exited with code $rc; the end of its log:"; tail -20 setup.out; exit 1
+  fi
+  [ "$up" = 0 ] && { echo "FAILED: the setup process is gone without an exit code (killed, likely out of memory); the end of its log:"; tail -20 setup.out; exit 1; }
+  [ "$idle" -ge "${SETUP_WAIT:-2700}" ] && { echo "FAILED: setup silent for $idle s (no log output, no setup_alive)"; exit 1; }
+done
 echo "setup $(( $(date +%s)-T0 ))s" | tee -a usage.log
 echo "PHASE render"; T0=$(date +%s)
 : > render.out
