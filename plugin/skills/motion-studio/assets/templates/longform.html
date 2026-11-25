@@ -1086,7 +1086,10 @@ function panelCam(d) {
   const [fx, fy] = d.focus || [0.5, 0.45], [def, z0, z1] = SHOT_CAM[d.shot] || ["push", 1.02, 1.08];
   let mv = d.camera || def;
   if (mv === "pan") mv = fx < 0.5 ? "pan-left" : "pan-right";
-  const zp = Math.max(z0, z1, 1.08), dx = 0.05, c = { x: 0.5, y: 0.5 }, f = { x: fx, y: fy };
+  // a pan or tilt travels dx either side of centre, so the zoom must leave that much picture outside the frame:
+  // z >= 1 / (1 - 2 dx) = 1.11. At 1.08 the camera sat against the still's edge for the first and last 40% of the move
+  // (a WIDE yard shot held still for over 2 s and failed final's motion check, 2026-11-25)
+  const dx = 0.05, zp = Math.max(z0, z1, 1 / (1 - 2 * dx) + 0.01), c = { x: 0.5, y: 0.5 }, f = { x: fx, y: fy };
   switch (mv) {
     case "pull":      return { from: { ...f, z: Math.max(z0, z1) }, to: { ...c, z: Math.min(z0, z1) } };
     case "pan-left":  return { from: { x: 0.5 + dx, y: fy, z: zp }, to: { x: 0.5 - dx, y: fy, z: zp } };
@@ -1133,7 +1136,9 @@ B.panel = (s, g) => {
   const cam = panelCam(d);
   const fz = d.freeze ? (d.freeze === true ? s.t1 - 0.6 : cueT(d.freeze, s.t1 - 0.6)) : null;
   const sh = d.shake ? { t: cueT(d.shake, s.t0), a: d.shake.amp || 14 } : null;
-  return t => {
+  // the camera as a pure function of t, also handed to check (STUDIO.panelCam), which predicts from it and the still how
+  // much the picture will move before anything is rendered
+  const camAt = t => {
     const end = fz != null ? Math.min(fz, s.t1) : s.t1;
     const p = K.eio(K.prog(Math.min(t, end), s.t0, end));
     let z = Math.exp(K.lerp(Math.log(cam.from.z), Math.log(cam.to.z), p));
@@ -1146,6 +1151,11 @@ B.panel = (s, g) => {
     // keep the frame covered: the camera can't look past the still's edge
     const hw = W / (2 * z), hh = H / (2 * z);
     cx = Math.min(Math.max(cx, hw), IW - hw); cy = Math.min(Math.max(cy, hh), IH - hh);
+    return { z, cx, cy };
+  };
+  (window.STUDIO.panelCam = window.STUDIO.panelCam || {})[s.id] = { at: camAt, iw: IW, ih: IH, w: W, h: H };
+  return t => {
+    const { z, cx, cy } = camAt(t);
     g.__cam = { z, cx, cy };
     if (fz != null) K.set(sat, { values: (d.flashback ? 0.55 : 1) * K.lerp(1, 0.3, K.eout(K.prog(t, fz, fz + 0.25))) });
     const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;

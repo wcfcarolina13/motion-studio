@@ -161,5 +161,35 @@ class MapBoil(unittest.TestCase):
             self.assertIn("run `longform.py mix", str(e.exception.code))
 
 
+class PartialRender(unittest.TestCase):
+    TL = {"duration": 40.0, "segments": [{"id": "a", "type": "panel", "t0": 0.3, "t1": 10.0},
+                                         {"id": "b", "type": "map", "t0": 10.0, "t1": 12.0},
+                                         {"id": "c", "type": "map", "t0": 12.0, "t1": 14.0},
+                                         {"id": "d", "type": "stat", "t0": 14.0, "t1": 40.0}]}
+
+    def test_parts_cut_at_segments_and_heads(self):
+        import longform
+        r = longform.part_ranges(self.TL, 1200)
+        self.assertEqual(r[0], (0, 9))                      # before the first segment
+        self.assertIn((300, 318), r)                        # b's head (0.6 s), then the rest of b
+        self.assertTrue(all(b - a <= longform.CHUNK for a, b in r))
+        self.assertEqual([x for p in r for x in p][1:-1:2], [x for p in r for x in p][2::2])   # contiguous
+
+    def test_map_brings_its_run_and_ranges_check(self):
+        import longform
+        self.assertEqual(longform.segment_pick(self.TL, "c", None, None), ["b", "c"])
+        self.assertEqual(longform.segment_pick(self.TL, None, "a", "a"), ["a"])
+        with self.assertRaises(SystemExit):
+            longform.segment_pick(self.TL, "zz", None, None)
+
+
+class PanelMotion(unittest.TestCase):
+    def test_flags_only_quiet_panels(self):
+        import longform
+        est = {"still": [0.003] * 8, "busy": [0.5] * 8, "short": [0.0] * 3}
+        floor, low = longform.motion_flags(est, floor=0.07)
+        self.assertEqual([x[0] for x in low], ["still"])
+
+
 if __name__ == "__main__":
     unittest.main()

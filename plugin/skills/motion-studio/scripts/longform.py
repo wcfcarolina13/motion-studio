@@ -1147,6 +1147,122 @@ def _render_chunk(args):
         return dest
 
 
+HEAD = 0.6            # seconds at a segment's start kept as their own part: the frames the scene before can still draw on
+                      # (its outgoing wipe, WIPE = 0.45 s in the template), so a partial render redoes them with it
+
+
+def _frame(t):
+    return math.ceil(t * FPS - 1e-6)
+
+
+def part_ranges(tl, n):
+    """Frame ranges the render is split into: cut at every segment's start and HEAD seconds after it, and no part longer
+    than CHUNK, so a partial render redoes whole parts and nothing else."""
+    cuts = {0, n}
+    for sg in tl["segments"]:
+        cuts.update(c for c in (_frame(sg["t0"]), _frame(sg["t0"] + HEAD)) if 0 < c < n)
+    cuts, out = sorted(cuts), []
+    for a, b in zip(cuts, cuts[1:]):
+        out += [(k, min(b, k + CHUNK)) for k in range(a, b, CHUNK)]
+    return out
+
+
+def segment_pick(tl, only, seg_from, seg_to):
+    """Segment ids named by --only (comma-separated) and/or --from/--to (inclusive), in film order. A map segment brings
+    its whole run: the run shares one camera and its pieces can stay on across segments."""
+    ids = [sg["id"] for sg in tl["segments"]]
+    want = set(x.strip() for x in (only or "").split(",") if x.strip())
+    if seg_from or seg_to:
+        for x in (seg_from, seg_to):
+            if x and x not in ids:
+                raise SystemExit(f"render: no segment {x}")
+        i0, i1 = ids.index(seg_from or ids[0]), ids.index(seg_to or ids[-1])
+        want.update(ids[min(i0, i1):max(i0, i1) + 1])
+    if not want:
+        return []
+    bad = sorted(want - set(ids))
+    if bad:
+        raise SystemExit(f"render: no segment {', '.join(bad)}")
+    segs = tl["segments"]
+    for i, sg in enumerate(segs):
+        if sg["id"] in want and sg["type"] == "map":
+            j = i
+            while j > 0 and segs[j - 1]["type"] == "map":
+                j -= 1
+            while j < len(segs) and segs[j]["type"] == "map":
+                want.add(segs[j]["id"]); j += 1
+    return [i for i in ids if i in want]
+
+
+def _code_and_files(film):
+    """The page's own code by content, and every other file it can load by size and time (the stamp's rules)."""
+    code, files = {}, {}
+    for p in sorted(film.rglob("*")):
+        rel = p.relative_to(film)
+        if not p.is_file() or rel.parts[0] in STAMP_SKIP_DIRS or p.name.startswith(".") or p.suffix.lower() in STAMP_SKIP_TYPES \
+                or p.name.endswith("~"):
+            continue
+        if p.suffix in (".html", ".js", ".css", ".json") and len(rel.parts) == 1:
+            if rel.name not in ("timeline.js", "script.json"):
+                code[str(rel)] = hashlib.sha256(p.read_bytes()).hexdigest()
+        else:
+            st = p.stat(); files[str(rel)] = f"{st.st_size} {st.st_mtime_ns}"
+    return code, files
+
+
+def write_manifest(film, tl, parts, scale):
+    """out/parts/manifest.json: what the kept parts were rendered from, which a partial render compares against."""
+    code, files = _code_and_files(film)
+    (parts / "manifest.json").write_text(json.dumps({"scale": scale, "fps": FPS, "timeline": tl, "code": code,
+                                                      "files": files}) + "\n")
+
+
+def partial_problems(film, tl, parts, only, scale, ranges):
+    """The frame ranges to redo for --only, after making sure nothing outside the named segments can have changed: the
+    same page code, the same timing, the same other segments and film settings, and every changed file used only by the
+    named segments. Anything else stops with what differs, since a spliced film would mix two versions."""
+    mf = parts / "manifest.json"
+    if not mf.exists():
+        raise SystemExit("render --only needs a finished render of this film to splice into (out/parts/manifest.json); "
+                         "render the whole film once first")
+    old = json.loads(mf.read_text())
+    probs = []
+    if old.get("scale") != scale or old.get("fps") != FPS:
+        probs.append(f"render settings changed (scale {old.get('scale')} -> {scale})")
+    code, files = _code_and_files(film)
+    probs += [f"page code changed: {k}" for k in sorted(set(code) | set(old["code"])) if code.get(k) != old["code"].get(k)]
+    ot = old["timeline"]
+    if [(s["id"], round(s["t0"], 4), round(s["t1"], 4)) for s in ot["segments"]] != \
+            [(s["id"], round(s["t0"], 4), round(s["t1"], 4)) for s in tl["segments"]] or ot["duration"] != tl["duration"]:
+        probs.append("segment timing changed (a re-voice, a new segment or a moved cut)")
+    else:
+        for so, sn in zip(ot["segments"], tl["segments"]):
+            if sn["id"] not in only and so != sn:
+                probs.append(f"{sn['id']} changed but is not named")
+            elif sn["id"] in only and {k: v for k, v in so.items() if k != "data"} != {k: v for k, v in sn.items() if k != "data"}:
+                probs.append(f"{sn['id']} changed outside its data (a counter, tag or caption carries into later segments)")
+    rest = lambda t: {k: v for k, v in t.items() if k != "segments"}
+    if rest(ot) != rest(tl):
+        probs.append("film-wide timeline settings changed (captions, chapters, cues, grade, map)")
+    named = json.dumps([sg for sg in tl["segments"] if sg["id"] in only])
+    for k in sorted(set(files) | set(old["files"])):
+        if files.get(k) != old["files"].get(k) and k not in named:
+            probs.append(f"{k} changed and is not used by the named segments")
+    missing = [Path(f"p{i0:07d}-{i1:07d}.mp4") for i0, i1 in ranges if not (parts / f"p{i0:07d}-{i1:07d}.mp4").exists()]
+    if missing:
+        probs.append(f"{len(missing)} part(s) of the last render are missing ({missing[0]} ...)")
+    if probs:
+        raise SystemExit("render --only stopped: the rest of the film may not match the last render, so a splice would "
+                         "mix two versions. Render the whole film instead (or fix these):\n  " + "\n  ".join(probs[:12]))
+    segs, dirty = tl["segments"], []
+    for i, sg in enumerate(segs):
+        if sg["id"] in only:
+            dirty.append((_frame(sg["t0"]), _frame(sg["t1"])))
+            if i + 1 < len(segs):         # the next scene's first moments carry this one's outgoing wipe
+                dirty.append((_frame(segs[i + 1]["t0"]), _frame(segs[i + 1]["t0"] + HEAD)))
+    return [(i0, i1) for i0, i1 in ranges if any(i0 < b and a < i1 for a, b in dirty)]
+
+
 class ChunkStopped(RuntimeError):
     """A chunk that gave up because another chunk's page error stopped the render."""
 
@@ -1178,7 +1294,7 @@ def render_stamp(film, scale):
     """What the frames depend on: the page, its scripts and timeline (by content), every other file the page can load
     (by size and time; see _stamp for what is left out) and the render settings. Kept chunks are reused only while
     this is unchanged."""
-    return _stamp(film, hashlib.sha256(f"{scale} {FPS} {CHUNK}".encode()))
+    return _stamp(film, hashlib.sha256(f"{scale} {FPS} {CHUNK} {HEAD} segment-parts".encode()))
 
 
 def film_stamp(film):
@@ -1288,17 +1404,26 @@ def _render(a, film, st):
                              "review/stills-segments.png (or stills-every.png); it must be newer than timeline.js")
     n = math.ceil(tl["duration"] * FPS)
     # finished chunks survive a failed or interrupted render and are reused while the film is unchanged (render_stamp);
-    # --fresh, or any change to the page, timeline, assets or settings, starts over
+    # --fresh, or any change to the page, timeline, assets or settings, starts over, unless --only names what changed
     parts, stamp = film / "out" / "parts", render_stamp(film, a.scale)
-    if a.fresh or not (parts / "stamp.txt").exists() or (parts / "stamp.txt").read_text() != stamp:
+    ranges = part_ranges(tl, n)
+    jobs = [(str(film), i0, i1, str(parts / f"p{i0:07d}-{i1:07d}.mp4"), a.scale) for i0, i1 in ranges]
+    only = segment_pick(tl, a.only, a.seg_from, a.seg_to)
+    if only:
+        dirty = partial_problems(film, tl, parts, only, a.scale, ranges)
+        print(f"render --only: {', '.join(only)}; re-rendering {sum(i1 - i0 for i0, i1 in dirty)} of {n} frames "
+              f"and keeping the rest from the last render")
+        st.note(f"partial render: {', '.join(only)}; other frames kept from the previous render")
+        for i0, i1 in dirty:
+            (parts / f"p{i0:07d}-{i1:07d}.mp4").unlink(missing_ok=True)
+    elif a.fresh or not (parts / "stamp.txt").exists() or (parts / "stamp.txt").read_text() != stamp:
         shutil.rmtree(parts, ignore_errors=True)
     parts.mkdir(parents=True, exist_ok=True)
     (parts / "stamp.txt").write_text(stamp)
     for stale in parts.glob("*.part.mp4"):
         stale.unlink()
-    jobs = [(str(film), k, min(n, k + CHUNK), str(parts / f"p{k:07d}-{min(n, k + CHUNK):07d}.mp4"), a.scale) for k in range(0, n, CHUNK)]
     todo = [j for j in jobs if not Path(j[3]).exists()]
-    if len(todo) < len(jobs):
+    if len(todo) < len(jobs) and not only:
         print(f"resuming: {len(jobs) - len(todo)} of {len(jobs)} chunks already rendered")
     # each worker is a browser page: more than memory allows and the system starts killing them mid-chunk
     workers, gb = a.workers, available_gb()
@@ -1350,6 +1475,7 @@ def _render(a, film, st):
     lst = parts / "list.txt"
     lst.write_text("".join(f"file '{Path(j[3]).name}'\n" for j in jobs))
     run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(film / "out" / "silent.mp4")])
+    write_manifest(film, tl, parts, a.scale)
     print(f"{n} frames -> {film / 'out' / 'silent.mp4'}")
 
 
@@ -2171,6 +2297,79 @@ PICTURE = """() => {
 }"""
 
 
+def _still_gray(path, w, h):
+    """A still as the panel draws it (covering w x h, centred: SVG's xMidYMid slice), in gray, as floats."""
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf",
+                          f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=gray",
+                          "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(h, w).astype(np.float32)
+
+
+def _sample(img, cam, iw, ih, fw, fh, ow, oh):
+    """What the frame shows of the still under camera {z, cx, cy}, at ow x oh, bilinear (the browser's own scaling)."""
+    import numpy as np
+    k = img.shape[1] / iw                                   # still pixels per scene pixel
+    u = (np.arange(ow) + 0.5) * fw / ow - fw / 2
+    v = (np.arange(oh) + 0.5) * fh / oh - fh / 2
+    x = np.clip((cam["cx"] + u / cam["z"]) * k - 0.5, 0, img.shape[1] - 1.001)
+    y = np.clip((cam["cy"] + v / cam["z"]) * k - 0.5, 0, img.shape[0] - 1.001)
+    x0, y0 = x.astype(int), y.astype(int)
+    ax, ay = (x - x0)[None, :], (y - y0)[:, None]
+    a, b = img[y0][:, x0], img[y0][:, x0 + 1]
+    c, d = img[y0 + 1][:, x0], img[y0 + 1][:, x0 + 1]
+    return (a * (1 - ax) + b * ax) * (1 - ay) + (c * (1 - ax) + d * ax) * ay
+
+
+def panel_motion(film, segs):
+    """{panel id: per-window motion} predicted before any render: the panel's camera path from the page
+    (STUDIO.panelCam) applied to its still, measured the way final's motion check measures the video (motioncheck: frames
+    at a quarter size, 10 a second, mean change per half-second window). It leaves out what the still doesn't show
+    (fades, caption cards, grain), so it reads a little low, which errs toward flagging."""
+    import motioncheck
+    import numpy as np
+    import render
+    pan = [s for s in segs if s["type"] == "panel" and (s.get("data") or {}).get("image")]
+    if not pan:
+        return {}
+    out, step = {}, 1 / motioncheck.FPS
+    with render.Film(film) as f:
+        for s in pan:
+            ts = [s["t0"] + i * step for i in range(int((s["t1"] - s["t0"]) / step) + 1)]
+            pc = f.page.evaluate("([id, ts]) => { const c = (window.STUDIO.panelCam || {})[id]; "
+                                 "return c && { iw: c.iw, ih: c.ih, w: c.w, h: c.h, cams: ts.map(c.at) }; }", [s["id"], ts])
+            img = film / s["data"]["image"]
+            if not pc or not img.exists():
+                continue
+            ow, oh = max(2, int(pc["w"]) // 4 // 2 * 2), max(2, int(pc["h"]) // 4 // 2 * 2)
+            still = _still_gray(img, int(pc["iw"]) // 4, int(pc["ih"]) // 4)
+            frames = [np.round(_sample(still, c, pc["iw"], pc["ih"], pc["w"], pc["h"], ow, oh)) for c in pc["cams"]]
+            d = [float(np.abs(frames[i + 1] - frames[i]).mean()) for i in range(len(frames) - 1)]
+            per = max(1, int(round(motioncheck.FPS * motioncheck.WINDOW)))
+            out[s["id"]] = [float(np.mean(d[i:i + per])) for i in range(0, len(d) - per + 1, per)]
+    return out
+
+
+def motion_flags(est, floor=None, stretch=2.0, margin=1.2):
+    """(floor, [(panel id, quietest 2 s mean)]) for panels predicted to sit under final's motion floor. Without a floor
+    given, final's own rule is applied to the panels' estimates (the larger of 0.02 and a quarter of the median window),
+    and a panel within 20% of it is flagged too, since the estimate leaves out fades, cards and grain."""
+    import motioncheck
+    import numpy as np
+    allw = [v for w in est.values() for v in w]
+    if not allw:
+        return 0.0, []
+    floor = floor if floor is not None else max(0.02, 0.25 * float(np.median(allw)))
+    n, low = max(1, int(round(stretch / motioncheck.WINDOW))), []
+    for sid, w in est.items():
+        if len(w) < n:
+            continue                    # under 2 s: the cuts either side carry the motion check
+        worst = min(sum(w[i:i + n]) / n for i in range(len(w) - n + 1))
+        if worst < floor * margin:
+            low.append((sid, worst))
+    return floor, low
+
+
 def picture_share(film, segs):
     """{segment id: the largest share of the frame drawn as picture} for the text-only scene types, sampled at 30% and
     60% through each and once it has settled, so a kit pattern that builds its picture up over the scene is seen."""
@@ -2826,6 +3025,21 @@ def _check(a, film):
     repeats = [(types[i], segs[i]["id"]) for i in range(2, len(types)) if types[i] == types[i - 1] == types[i - 2] and types[i] != "map"]
     for ty, sid in repeats:
         flags.append(f"three {ty} scenes in a row ending at {sid}")
+    # 1b. motion, predicted: a panel whose camera barely moves over a plain still fails final's motion check, and finding
+    # out there costs a whole render (a padlock close-up and a dark room under the default push, Shoestring, 2026-11-25)
+    if a.motion_estimate:
+        floor0 = a.motion_floor
+        if floor0 is None and (film / "out" / "silent.mp4").exists():    # final's floor rides on the whole film's median,
+            import motioncheck                                            # which the last render gives far better than the
+            floor0 = motioncheck.check(motioncheck.windows(film / "out" / "silent.mp4"))[0]   # panels alone
+        mfloor, low = motion_flags(panel_motion(film, segs), floor=floor0)
+        report.append(f"panel motion (predicted from each still and its camera; it reads low, so near the floor usually "
+                      f"passes): floor {mfloor:.3f}, {len(low)} panel(s) at or near it")
+        for sid, m in low:
+            how = "to move too little" if m < mfloor else "to move barely above it"
+            flags.append(f"{sid}: panel predicted {how} (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it a "
+                         f"stronger camera (\"camera\": {{\"from\": {{\"x\", \"y\", \"z\"}}, \"to\": {{...}}}}, a zoom change of 10% or more, "
+                         f"or a pan with z at least 1.12) or cut it shorter")
     video = film / "out" / "silent.mp4"
     if not video.exists():
         report.append("no render yet: run `render` for dead-air, cue and flash checks")
@@ -3125,6 +3339,9 @@ def main():
     p.add_argument("--retries", type=int, default=2, help="re-runs of a failed chunk before render stops (finished chunks are kept)")
     p.add_argument("--skip-gate", action="store_true", help="render without a passing check on this version of the film (noted in out/render.status.json)")
     p.add_argument("--fresh", action="store_true", help="discard finished chunks and render every frame again")
+    p.add_argument("--only", help="re-render only these segments (comma-separated ids) and splice them into the last render")
+    p.add_argument("--from", dest="seg_from", help="with --to: re-render this run of segments only (inclusive)")
+    p.add_argument("--to", dest="seg_to", help="last segment of the --from run")
     p.set_defaults(fn=cmd_render)
     p = sp.add_parser("music"); p.add_argument("film"); p.add_argument("--default", default="serious"); p.add_argument("--fit", type=float, default=0.6)
     p.set_defaults(fn=cmd_music)
@@ -3161,6 +3378,9 @@ def main():
     p.add_argument("--overlap-step", type=float, default=0.25,
                    help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
     p.add_argument("--repeat", type=int, default=8, help="moments rendered twice to check frames are repeatable (0 skips)")
+    p.add_argument("--no-motion-estimate", dest="motion_estimate", action="store_false",
+                   help="skip predicting each panel's motion from its still and camera")
+    p.add_argument("--motion-floor", type=float, help="motion floor for the panel prediction (default: final's rule on the last render, else on the panels)")
     p.add_argument("--text-step", type=float, default=0.1, help="seconds between on-screen samples for the text sheet, hold test and pacing tests (0 skips them all)")
     p.add_argument("--contrast", type=float, default=3.0, help="lowest glyph contrast against the pixels behind it, WCAG ratio (0 skips)")
     p.add_argument("--no-flash-rate", action="store_true", help="skip the WCAG 2.3.1 flash-rate test on the render")
