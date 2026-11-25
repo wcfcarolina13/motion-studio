@@ -262,6 +262,21 @@ class StillsRoute(unittest.TestCase):
             self.assertEqual([x.split(":")[0] for x in longform.draft_stills(Path(d), segs)], ["s1"])
 
 
+class PaceProfile(unittest.TestCase):
+    def test_numbers(self):
+        import longform
+        # new things at 0, 0.2 (merges into 0), 1, 3; shots at 0 and 4; 20 words over 5 s of voice; 4 sounds in 10 s
+        p = longform.pace_profile([0, 0.2, 1, 3], 9, 10, 20, 5.0, [1, 2, 3, 4, 11], 0, 10, [0, 4])
+        self.assertAlmostEqual(p["moving"], 0.9)
+        self.assertEqual(p["new_every"], 2)            # gaps 1, 2, 7
+        self.assertEqual(p["new_every_p90"], 7)
+        self.assertEqual(p["shot_every"], 5.0)          # gaps 4, 6
+        self.assertEqual(p["wps"], 4.0)
+        self.assertEqual(p["sfx_10s"], 4.0)
+        q = longform.pace_profile([], 0, 0, 0, 0, None, 0, 10)
+        self.assertIsNone(q["sfx_10s"]); self.assertIsNone(q["wps"]); self.assertIn("run mix first", longform.pace_line(q))
+
+
 class CodexStills(unittest.TestCase):
     """The ChatGPT-image route through the Codex CLI, against a fake codex: aspect and face re-rolls, crop, provenance."""
     FAKE = r"""

@@ -1905,6 +1905,8 @@ def build_sfx(film, tl, sr=48000, drawn_ok=False):
     with wave.open(str(dest), "wb") as w:
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
         w.writeframes((np.clip(out, -1, 1) * 32767).astype("<i2").tobytes())
+    (film / "out").mkdir(exist_ok=True)
+    (film / "out" / "sfx_events.json").write_text(json.dumps([[round(t, 3), k] for t, k in events]))     # check's pace profile
     print(f"sfx: {len(events)} sounds ({', '.join(f'{k} {used[k]}' for k in kinds)})" + (f", {dropped} too close to the last one dropped" if dropped else ""))
     if muted:
         print(f"  {muted} cues off by script.json ui_sounds: {', '.join(sorted(off))}")
@@ -2881,6 +2883,49 @@ def spoken(spans, a, b):
     return sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans)
 
 
+# A fast-cut benchmark (an X article on 2.5D stickman channels, 2026-11-24, the author's own count of about 33,000 frames
+# from 20 videos of one channel; unverified): something moves in 96.6% of frames, the picture changes about every 2.1 s,
+# something new starts about every 1 s, narration runs about 3.67 words a second, and about 8 sound effects land in
+# every 10 s. It is reported beside each film's numbers for comparison, not enforced: that format is short and fast, and
+# our long-form explainers hold pictures longer on purpose (picture-truth.md: something new every 5-8 s).
+PACE_BENCH = {"moving": 0.966, "shot_every": 2.1, "new_every": 1.0, "wps": 3.67, "sfx_10s": 8.0}
+PACE_MERGE = 0.5    # new things starting within 0.5 s of the last counted one read as one event (a typed word, a burst)
+
+
+def pace_profile(beat_starts, moving, n_samples, words, talk_s, sfx_times, t_in, t_out, shot_starts=()):
+    """The film's pace in the benchmark's terms: share of samples with something moving, median seconds between shots
+    (segments), median and 90th-percentile seconds between new things (starts within PACE_MERGE of the last counted
+    one merge into it), narration words a second over the time the voice runs, sound effects per 10 s (None until
+    `mix` has written out/sfx_events.json)."""
+    import statistics
+    ev = []
+    for t in sorted(beat_starts):
+        if not ev or t - ev[-1] >= PACE_MERGE:
+            ev.append(t)
+    gaps = [b - a for a, b in zip(ev, ev[1:] + [t_out])]
+    q = sorted(gaps)
+    shots = sorted(shot_starts)
+    sg = [b - a for a, b in zip(shots, shots[1:] + [t_out])]
+    dur = max(1e-6, t_out - t_in)
+    return {"moving": moving / n_samples if n_samples else None,
+            "shot_every": statistics.median(sg) if sg else None,
+            "new_every": statistics.median(gaps) if gaps else None,
+            "new_every_p90": q[min(len(q) - 1, int(0.9 * len(q)))] if q else None,
+            "wps": words / talk_s if talk_s > 0 else None,
+            "sfx_10s": None if sfx_times is None else 10 * sum(1 for t in sfx_times if t_in <= t < t_out) / dur}
+
+
+def pace_line(p):
+    f = lambda v, fmt: "?" if v is None else fmt.format(v)
+    b = PACE_BENCH
+    return (f"pace profile: something moving {f(p['moving'], '{:.0%}')} of the time (fast-cut benchmark {b['moving']:.0%}); "
+            f"a new shot every {f(p['shot_every'], '{:.1f}')} s median (benchmark {b['shot_every']} s); "
+            f"something new every {f(p['new_every'], '{:.1f}')} s median, {f(p['new_every_p90'], '{:.1f}')} s at the 90th "
+            f"percentile (benchmark ~{b['new_every']:.0f} s); narration {f(p['wps'], '{:.2f}')} words/s (benchmark "
+            f"{b['wps']}); sound effects {f(p['sfx_10s'], '{:.1f}')} per 10 s (benchmark {b['sfx_10s']:.0f}"
+            + ("" if p["sfx_10s"] is not None else "; run mix first") + "). For comparison only (critic.md, pace profile)")
+
+
 def pacing(samples, keys, segs, sc, step, a):
     """Three pacing tests from one sample_film pass, each a flag for judgement rather than a failure.
     Dead air: the voice pauses (no word within 0.05 s before to 0.15 s after) while at most 3 words of reading text are
@@ -2972,6 +3017,14 @@ def pacing(samples, keys, segs, sc, step, a):
     long = [(t0, t1, spoken(talk, t0, t1)) for t0, t1, held in beats if not held]
     long = [r for r in long if r[2] > a.beat] if a.beat > 0 else []
     report.append(f"beat length: {len(beats)} beat(s); {len(long)} with the voice running over {a.beat:.0f} s and nothing new moving or entering")
+    ev = Path(a.film) / "out" / "sfx_events.json"
+    try:
+        sfx_t = [e[0] for e in json.loads(ev.read_text())] if ev.exists() else None
+    except (ValueError, IndexError, TypeError):
+        sfx_t = None
+    nw = sum(len(s.get("words") or []) for s in segs)
+    report.append(pace_line(pace_profile([b[0] for b in beats], sum(1 for r in per if r[1]), len(per), nw,
+                                         sum(y - x for x, y in talk), sfx_t, t_in, t_out, [s["t0"] for s in segs])))
     for t0, t1, sp in long:
         flags.append(f"{seg_at(t0)}: one beat from {t0:.1f} to {t1:.1f} s with {sp:.1f} s of voice and nothing new "
                      f"moving or entering: add a beat, or mark it data-hold (segment \"steady\": true) if it is meant to hold")
