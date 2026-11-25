@@ -78,3 +78,5 @@ Colab runtimes drop without warning, GPUs are refused for hours, and units burn 
 
 **Wan lint and clip judge.** `run_colab.sh` and `run_lanes.sh` run `wan_lint.py` on a Wan jobs.json before starting a runtime (picture-truth.md rule 13): close-ups, interiors and desks, doors, gates, fences, folders, boots and porta-potties are refused unless a job sets `"wan_ok"`, and each still needs 3 seeds. `WAN_LINT=off` skips it. After pulling, `python3 scripts/anatomy.py <out_dir> --jobs <in_dir>/jobs.json --fix` judges each clip's last frame against its first, then a rerun redraws only the failed ones. Cost: 3 seeds a shot is about 7.5 minutes of L4 time (about 0.3 units) per shot.
 
+**Parked, not built: render chunks split between the Mac and a Colab CPU VM.** For when the owner says the Mac is overworked. Render already cuts a film into 30 s chunks, so a second machine could take some of them. Splice rule: render a whole film on one machine (set3d.md, "same machine for a whole render"), since software and GPU drawing can differ by a few pixel values; that would have to be measured first for non-WebGL scenes.
+
