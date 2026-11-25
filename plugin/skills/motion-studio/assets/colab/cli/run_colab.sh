@@ -1,7 +1,8 @@
 #!/bin/bash
 # Full-quality Wan 2.2 14B clips on Colab via the official CLI. Always stops the session at the end.
 #   run_colab.sh <in_dir> [out_dir]    in_dir holds the images and jobs.json; out_dir defaults to <in_dir>/../out
-#   SETUP=x.py RENDER=y.py swap in other remote scripts. A render script must move each finished file into /content/out
+#   SETUP=x.py RENDER=y.py swap in other remote scripts. Both run detached, as their own python -u process on the
+#   runtime, not inside the kernel, so a dropped connection costs a probe, not the job. A render script must move each finished file into /content/out
 #   whole (write elsewhere, then os.replace), print "OUTFILE <name>" for it, and write /content/out/RENDER_DONE last.
 #   pull_live.sh downloads each file as it appears, so a session that drops mid-render keeps everything finished.
 #   Settings (env): COLAB_SESSION name (default ms-<out dir>-<pid>, unique per run; a name already live is refused), COLAB_GPUS order, STALL_ALERT / STALL_STOP seconds, COLAB_ALERT notifier
@@ -166,59 +167,72 @@ echo "PHASE setup"; T0=$(date +%s)
 # blip can pass) instead of the render waiting 45 min for it. No log growth and no setup_alive touch for SETUP_WAIT
 # (2700 s) is a stuck setup: exit 1. Setup scripts need no change, and the render still finds its files as before.
 : > setup.out
-SZ=$(wc -c < "$SETUP" | tr -d ' ')
-start_py() { cat <<PY
+# start_py NAME SIZE / probe_py NAME OFFSET: the detached start and the probe, shared by setup and render. NAME is
+# "setup" or "render": /content/NAME.py runs as its own process (python -u), output to /content/NAME.log, its pid in
+# /content/NAME_pid and its exit code in /content/NAME_rc. The probe prints "NAME_STATE size rc alive idle end", then
+# the log from OFFSET up to end (at most 64 KB a probe, so a busy log comes down whole over a few probes).
+start_py() { local U; U=$(tr a-z A-Z <<< "$1"); cat <<PY
 import os, subprocess, sys
-s = '/content/setup.py'; p = '/content/setup_pid'
-if not os.path.exists(s) or os.path.getsize(s) != $SZ:
-    print('SETUP_BADUPLOAD', os.path.getsize(s) if os.path.exists(s) else -1)
+s = '/content/$1.py'; p = '/content/$1_pid'
+if not os.path.exists(s) or os.path.getsize(s) != $2:
+    print('${U}_BADUPLOAD', os.path.getsize(s) if os.path.exists(s) else -1)
 else:
     pid = open(p).read().strip() if os.path.exists(p) else ''
-    if not (pid and os.path.exists('/proc/' + pid)) and not os.path.exists('/content/setup_rc'):
-        sh = sys.executable + ' -u ' + s + '; echo \$? > /content/setup_rc.part && mv /content/setup_rc.part /content/setup_rc'
-        pr = subprocess.Popen(['/bin/bash', '-c', sh], cwd='/content', stdout=open('/content/setup.log', 'ab'),
+    if not (pid and os.path.exists('/proc/' + pid)) and not os.path.exists('/content/$1_rc'):
+        sh = sys.executable + ' -u ' + s + '; echo \$? > /content/$1_rc.part && mv /content/$1_rc.part /content/$1_rc'
+        pr = subprocess.Popen(['/bin/bash', '-c', sh], cwd='/content', stdout=open('/content/$1.log', 'ab'),
                               stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
         open(p + '.part', 'w').write(str(pr.pid)); os.replace(p + '.part', p)
-    print('SETUP_STARTED', open(p).read().strip())
+    print('${U}_STARTED', open(p).read().strip())
 PY
 }
-probe_py() { cat <<PY
-import os, time
-L = '/content/setup.log'; n = os.path.getsize(L) if os.path.exists(L) else 0
-rc = open('/content/setup_rc').read().strip() if os.path.exists('/content/setup_rc') else '-'
-pid = open('/content/setup_pid').read().strip() if os.path.exists('/content/setup_pid') else ''
-last = max([os.path.getmtime(f) for f in (L, '/content/setup_alive') if os.path.exists(f)] or [time.time()])
-print('SETUP_STATE', n, rc or '?', int(bool(pid) and os.path.exists('/proc/' + pid)), int(time.time() - last))
-if n > $1:
-    f = open(L, 'rb'); f.seek(max($1, n - 4096)); print(f.read().decode('utf-8', 'replace').replace('\r', '\n'))
+probe_py() { local U; U=$(tr a-z A-Z <<< "$1"); cat <<PY
+import os, sys, time
+L = '/content/$1.log'; n = os.path.getsize(L) if os.path.exists(L) else 0
+rc = open('/content/$1_rc').read().strip() if os.path.exists('/content/$1_rc') else '-'
+pid = open('/content/$1_pid').read().strip() if os.path.exists('/content/$1_pid') else ''
+last = max([os.path.getmtime(f) for f in (L, '/content/$1_alive') if os.path.exists(f)] or [time.time()])
+data = b''
+if n > $2:
+    f = open(L, 'rb'); f.seek($2); data = f.read(min(n, $2 + 65536) - $2)
+    if b'\n' in data and not data.endswith(b'\n'):
+        data = data[:data.rindex(b'\n') + 1]      # whole lines only; the rest comes with the next probe
+print('${U}_STATE', n, rc or '?', int(bool(pid) and os.path.exists('/proc/' + pid)), int(time.time() - last), $2 + len(data))
+sys.stdout.write(data.decode('utf-8', 'replace').replace('\r', '\n'))
 PY
 }
-started=0; uploaded=0
-while [ $(( $(date +%s) - T0 )) -lt "${SETUP_SEEN:-180}" ]; do
-  if [ $uploaded = 0 ]; then
-    up=$(timeout 600 colab upload -s $S "$SETUP" /content/setup.py 2>&1); rc=$?
-    { [ $rc -ne 0 ] || grep -q "Upload failed" <<< "$up"; } && { echo "setup upload failed; retrying"; sleep 10; continue; }
-    uploaded=1
-  fi
-  r=$(start_py | timeout 120 colab exec -s $S --timeout 90 2>&1)
-  if grep -q '^SETUP_STARTED ' <<< "$r"; then started=1; echo "setup started on the runtime as process $(sed -n 's/^SETUP_STARTED //p' <<< "$r" | head -1)"; break; fi
-  grep -q '^SETUP_BADUPLOAD' <<< "$r" && { echo "setup script arrived damaged ($(grep '^SETUP_BADUPLOAD' <<< "$r")); uploading again"; uploaded=0; }
-  echo "setup start not confirmed (${r:0:160}); sending it again"; sleep 10
-done
-[ $started = 1 ] || { echo "FAILED: setup never started on the runtime (no confirmed start in ${SETUP_SEEN:-180} s)"; exit 4; }
+# start_detached NAME FILE: upload FILE as /content/NAME.py (checked by size) and start it, re-sending the start until
+# it is confirmed or ${NAME}_SEEN s pass. Returns 0 once started, 1 if never confirmed.
+start_detached() {
+  local name=$1 file=$2 U sz t0 up rc r uploaded=0; U=$(tr a-z A-Z <<< "$1"); sz=$(wc -c < "$file" | tr -d ' '); t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -lt "${SETUP_SEEN:-180}" ]; do
+    if [ $uploaded = 0 ]; then
+      up=$(timeout 600 colab upload -s $S "$file" /content/$name.py 2>&1); rc=$?
+      { [ $rc -ne 0 ] || grep -q "Upload failed" <<< "$up"; } && { echo "$name upload failed; retrying"; sleep 10; continue; }
+      uploaded=1
+    fi
+    r=$(start_py $name $sz | timeout 120 colab exec -s $S --timeout 90 2>&1)
+    if grep -q "^${U}_STARTED " <<< "$r"; then echo "$name started on the runtime as process $(sed -n "s/^${U}_STARTED //p" <<< "$r" | head -1)"; return 0; fi
+    grep -q "^${U}_BADUPLOAD" <<< "$r" && { echo "$name script arrived damaged ($(grep "^${U}_BADUPLOAD" <<< "$r")); uploading again"; uploaded=0; }
+    echo "$name start not confirmed (${r:0:160}); sending it again"; sleep 10
+  done
+  return 1
+}
+start_detached setup "$SETUP" || { echo "FAILED: setup never started on the runtime (no confirmed start in ${SETUP_SEEN:-180} s)"; exit 4; }
 off=0; miss=0
 while :; do
   sleep "${SETUP_POLL:-15}"
-  r=$(probe_py $off | timeout 90 colab exec -s $S --timeout 60 2>&1)
+  r=$(probe_py setup $off | timeout 90 colab exec -s $S --timeout 60 2>&1)
   st=$(grep -m1 '^SETUP_STATE ' <<< "$r")
   if [ -z "$st" ]; then
     miss=$((miss + 1))
     [ $miss -ge "${SETUP_PROBE_FAILS:-8}" ] && { echo "FAILED: the runtime stopped answering during setup ($miss probes in a row)"; exit 4; }
     continue
   fi
-  miss=0; read -r _ n rc up idle <<< "$st"
+  miss=0; read -r _ n rc up idle end <<< "$st"
   awk 'f; /^SETUP_STATE /{f=1}' <<< "$r" | tee -a setup.out
-  off=$n
+  off=$end
+  [ "$end" -lt "$n" ] && continue      # more log to read before judging the exit code
   if [ "$rc" != - ]; then
     [ "$rc" = 0 ] && break
     echo "FAILED: setup exited with code $rc; the end of its log:"; tail -20 setup.out; exit 1
@@ -255,30 +269,37 @@ stalled() {
   fi
   return 1
 }
-colab exec -s $S -f "$RENDER" --timeout 0 > >(tee -a render.out) 2>&1 & EX=$!
-while kill -0 $EX 2>/dev/null; do
-  stalled && { kill $EX 2>/dev/null; touch .stalled; break; }
-  sleep 10
+# The render runs detached like setup (2026-11-25). Inside one long `colab exec`, the exec's websocket dropped
+# ("RuntimeError: Connection was lost", colab_cli runtime.py) on every render over a minute or two that day, and the
+# render went with it: Krea 2 loaded in 26 s, the exec dropped at 194 s, 0 files came down. Now the render is its own
+# process on the runtime, so a dropped connection costs one probe, not the render. Probes every RENDER_POLL s (15)
+# copy its log into render.out (all of it, in order, so OUTFILE lines and tracebacks are kept), and the puller keeps
+# fetching files by MANIFEST as before. The render ends when its exit code appears; a process gone without one was
+# killed (most often out of memory). RENDER_PROBE_FAILS (40, about 10 min) missed probes in a row means the runtime
+# is gone. The stall watch and unit budget apply as before. A render script needs no change: it already runs as a
+# plain script (python -u), and setup has been a separate process since #121, so no render could lean on kernel state.
+start_detached render "$RENDER" || { echo "FAILED: the render never started on the runtime" | tee -a render.out; touch .stalled; }
+off=0; miss=0
+while [ ! -e .stalled ]; do
+  stalled && { touch .stalled; break; }
+  sleep "${RENDER_POLL:-15}"
+  r=$(probe_py render $off | timeout 90 colab exec -s $S --timeout 60 2>&1)
+  st=$(grep -m1 '^RENDER_STATE ' <<< "$r")
+  if [ -z "$st" ]; then
+    miss=$((miss + 1))
+    [ $miss -ge "${RENDER_PROBE_FAILS:-40}" ] && { echo "FAILED: the runtime stopped answering during the render ($miss probes in a row)" | tee -a render.out usage.log; break; }
+    continue
+  fi
+  miss=0; read -r _ n rc up idle end <<< "$st"
+  awk 'f; /^RENDER_STATE /{f=1}' <<< "$r" | tee -a render.out
+  off=$end
+  [ "$end" -lt "$n" ] && continue
+  if [ "$rc" != - ]; then
+    [ "$rc" = 0 ] || echo "FAILED: the render exited with code $rc$( [ "$rc" = 137 ] && echo " (killed: most often out of memory)")" | tee -a render.out usage.log
+    break
+  fi
+  [ "$up" = 0 ] && { echo "FAILED: the render process is gone without an exit code (killed, likely out of memory)" | tee -a render.out usage.log; break; }
 done
-wait $EX 2>/dev/null; sleep 1      # let tee flush
-# The exec can return while the kernel still renders ("Connection was lost"). Unless the render visibly crashed or
-# stalled, keep the session while the puller still gets new files, under the same stall watch.
-# A crash in the kernel prints IPython's traceback ("OutOfMemoryError   Traceback (most recent call last)"), which
-# doesn't start a line with "Traceback": match the word anywhere (a T4 OOM sat 10 min as "detached", 2026-11-25).
-# A detached render is also probed: a kernel that answers a one-line exec at once is idle, so the render is dead.
-kernel_idle() { timeout 90 colab exec -s $S --timeout 45 <<< "print('KERNEL' + '_IDLE')" 2>/dev/null | grep -q KERNEL_IDLE; }
-if [ ! -e .stalled ] && ! grep -q "RENDER DONE" render.out && ! grep -qE "Traceback|FAILED" render.out; then
-  echo "PHASE render detached: the exec returned early; waiting on the puller for RENDER_DONE"
-  n=0
-  while kill -0 "$PULL" 2>/dev/null; do
-    stalled && break
-    if [ $((n % 30)) = 3 ] && ! timeout 120 colab ls -s $S /content/out 2>/dev/null | grep -qx RENDER_DONE && kernel_idle; then
-      echo "FAILED: the render is no longer running on the runtime (kernel idle, no RENDER_DONE)" | tee -a render.out usage.log
-      break
-    fi
-    n=$((n + 1)); sleep 10
-  done
-fi
 rm -f .stalled
 touch "$OUT/.pull_stop"; wait "$PULL"; PR=$?; PULL=""; rm -f "$OUT/.pull_stop"
 # The Drive copy runs in the kernel, which `colab stop` ends: give it up to 5 min to catch up after a finished render.

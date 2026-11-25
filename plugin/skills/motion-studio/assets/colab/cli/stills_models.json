@@ -73,6 +73,7 @@
    },
    "negative": true,
    "negative_prompt": "",
+   "status": "broken 2026-11-25: render failed with 'module diffusers has no attribute MOSSImagePipeline'. The latest release, diffusers 0.43.0, has no MOSS pipeline (checked in its wheel), so the card's '0.38' is not enough. Setup now stops on this with a clear message; the Mac should read the card's loading code and set custom_pipeline, trust_remote_code or the package it names.",
    "note": "5B; settings from the model card and community, not yet measured on our L4 (size, seconds per still, peak memory). The card's negative-branch skip at layer 22 is not passed: its argument name is unverified. The 8-step DMD LoRA (lodestones/Kromoss, CFG 1) would be a draft model and is not added."
   }
  },
