@@ -608,13 +608,15 @@ class ClipPanel(unittest.TestCase):
         self.assertTrue(all(w == 0 for _, _, w in hold))
         steps = longform.clip_steps([dict(self.seg(clip_retime="hold"), data=dict(self.seg(clip_retime="hold")["data"], clip_sched=hold))])
         self.assertEqual(len(steps), 48)                                             # every frame step, then the hold
-        pp = [a + w for a, _, w in sch(clip_mode="pingpong")]
-        self.assertGreater(pp[95], pp[110])                                          # past the end it runs backwards
-        lp = sch(clip_mode="loop")
-        seam = [x for x in lp if x[1] < x[0] - 1]
-        self.assertTrue(seam and all(0 < w <= 1 for _, _, w in seam))               # the seam dissolves, never jumps
-        jumps = [i for i in range(1, len(lp)) if lp[i][0] < lp[i - 1][0] and lp[i - 1][2] < 0.5]
-        self.assertEqual(jumps, [])
+        self.assertTrue(all(b[0] >= a_[0] for a_, b in zip(h, h[1:])))             # never steps back
+        self.assertEqual(longform.clip_backwards([dict(self.seg(), data=dict(self.seg()["data"], clip_sched=h))]), [])
+        # the owner's rule: no ping-pong, no loop, no reversed speed; and a timeline made before it is still caught
+        for kw in ({"clip_mode": "pingpong"}, {"clip_mode": "loop"}, {"clip_speed": -1}):
+            probs = []
+            longform.clip_prepare(Path("/nonexistent"), self.seg(**kw), "16x9", probs)
+            self.assertTrue(probs and "forbids" in probs[0], (kw, probs))
+        old = [[0, 1, 0], [5, 6, 0], [48, 48, 0], [40, 41, 0]]
+        self.assertEqual(longform.clip_backwards([dict(self.seg(), data=dict(self.seg()["data"], clip_sched=old))]), ["p"])
 
     def test_wan_lint(self):
         sys_path = str(Path(__file__).resolve().parent.parent / "assets" / "colab" / "cli")
@@ -643,7 +645,7 @@ class ClipPanel(unittest.TestCase):
             shutil.copy(longform.TEMPLATE, film / "film.html")
             for f in longform.ENGINE_FILES:
                 shutil.copy(longform.HERE / f, film / f)
-            for kw in ({}, {"clip_mode": "loop"}):
+            for kw in ({}, {"clip_retime": "hold"}):
                 seg, probs = self.seg(**kw), []
                 longform.clip_prepare(film, seg, "16x9", probs)
                 self.assertEqual(probs, [])

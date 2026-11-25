@@ -11,6 +11,7 @@
 
 ## Checklist, every round
 
+- **No ping-pong, no looped clips** (owner's rule, 2026-11-22). A video clip plays once, forward, and holds its last frame: never forward then reversed, never restarted. `timeline` refuses both modes and `check`/`final` refuse any clip that steps back to an earlier frame. Also watch for it in clips that arrive already ping-ponged from a video tool.
 - The chain reads in order; each scene is made from the previous one.
 - Something moves on every beat; no hold over ~1 s except the final card.
 - Text is never covered, crossed or clipped (descenders included); no caption lint on the render.

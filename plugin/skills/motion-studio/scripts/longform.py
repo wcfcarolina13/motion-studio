@@ -2311,7 +2311,11 @@ def panel_images(d):
 
 
 CLIP_DIR = "clips/frames"     # a panel clip's frames, extracted once by `timeline` (clip_prepare)
-CLIP_MODES, CLIP_RETIME = ("hold_last", "loop", "pingpong"), ("blend", "hold", "interp")
+CLIP_RETIME = ("blend", "hold", "interp")
+# a clip plays once, forward, and holds its last frame. Never ping-pong (forward then reversed) and never loop (a visible
+# restart): the owner's rule since 2026-11-22, which lived only in a notes file, so an episode shipped with "pingpong" on
+# 2026-11-25 and he caught it. Both are refused by timeline; cyclic ambient motion (rain, steam, flicker) is panel fx.
+CLIP_REFUSED = {"pingpong": "plays the clip forward and then reversed", "loop": "restarts the clip, a visible jump back"}
 
 
 def clip_prepare(film, seg, fmt, problems):
@@ -2320,9 +2324,8 @@ def clip_prepare(film, seg, fmt, problems):
     of b] per video frame of the segment. Frames, not a <video> element: a video seeks to the nearest keyframe and decodes
     asynchronously, so a render frame can catch the wrong picture or none; a numbered still is exact and the same on
     every machine. The frames are cut to cover the panel (Lanczos), so the camera and fx work on them as on a still.
-      "clip_mode": hold_last (default; plays once, then holds its last frame while the camera keeps moving), loop (the
-                   seam dissolves over 0.3 s, never a jump) or pingpong (plays back and forth; reversed motion can look odd
-                   on people walking)
+      The clip plays once, forward, then holds its last frame while the camera keeps moving. "clip_mode" "pingpong" and
+                   "loop" are refused (owner's rule: no forward-reverse, no visible restart; CLIP_REFUSED).
       "clip_retime": blend (default; each 30 fps frame mixes the two nearest clip frames), hold (each clip frame held,
                    16 fps cadence 2-2-2-1, the steps allowed by the pop check) or interp (ffmpeg motion interpolation to
                    30 fps; smoother, can warp edges)
@@ -2331,8 +2334,16 @@ def clip_prepare(film, seg, fmt, problems):
     d = seg["data"]
     src = film / d["clip"]
     mode, retime = d.get("clip_mode", "hold_last"), d.get("clip_retime", "blend")
-    if mode not in CLIP_MODES or retime not in CLIP_RETIME:
-        problems.append(f"{seg['id']}: clip_mode is one of {', '.join(CLIP_MODES)} and clip_retime one of {', '.join(CLIP_RETIME)}")
+    if mode in CLIP_REFUSED:
+        problems.append(f"{seg['id']}: clip_mode \"{mode}\" {CLIP_REFUSED[mode]}, which the owner's rule forbids: a clip plays "
+                        f"once, forward, and holds its last frame. For a clip shorter than its segment, give the panel a camera "
+                        f"move, slow it with \"clip_speed\", or shorten the segment")
+        return
+    if float(d.get("clip_speed", 1)) <= 0:
+        problems.append(f"{seg['id']}: clip_speed must be above 0 (a negative speed plays the clip reversed, which the owner's rule forbids)")
+        return
+    if mode != "hold_last" or retime not in CLIP_RETIME:
+        problems.append(f"{seg['id']}: clip_mode is hold_last (or left out) and clip_retime one of {', '.join(CLIP_RETIME)}")
         return
     if not src.exists():
         problems.append(f"{seg['id']}: clip {d['clip']} not found; the panel shows its still" + ("" if d.get("image") else ", and it has none"))
@@ -2368,32 +2379,28 @@ def clip_prepare(film, seg, fmt, problems):
 
 def clip_schedule(seg, n, fps, vfps=FPS):
     """[[a, b, w], ...]: for each video frame from the segment's first to its last, the clip frames to draw (b over a at
-    opacity w), following the segment's clip_mode, clip_retime, clip_speed and clip_start."""
+    opacity w): the clip once, forward, then its last frame, following clip_retime, clip_speed and clip_start."""
     d = seg["data"]
-    mode, retime = d.get("clip_mode", "hold_last"), d.get("clip_retime", "blend")
+    retime = d.get("clip_retime", "blend")
     speed, start = float(d.get("clip_speed", 1)), float(d.get("clip_start", 0))
-    X = max(1, round(0.3 * fps))                    # loop seam: the clip's last X frames dissolve into its first X
-    L = n - X
     out = []
     jr = lambda x: int(math.floor(x + 0.5))         # JavaScript's Math.round, which the page uses (Python's round goes to even)
     for k in range(jr(seg["t0"] * vfps), jr(seg["t1"] * vfps) + 1):
         p = max(0.0, (k / vfps - seg["t0"]) * speed + start) * fps
         if retime == "hold":
             p = math.floor(p + 1e-6)
-        if mode == "hold_last" or (mode == "loop" and L < 2):
-            p = min(p, n - 1)
-        elif mode == "pingpong":
-            per = 2 * (n - 1); p = p % per; p = per - p if p > n - 1 else p
-        else:
-            while p >= n - 1:
-                p -= L
-            if p >= L:                              # in the seam: frame p dissolving into the loop's next start, p - L
-                a, w = min(n - 1, round(p)), (p - L) / X
-                out.append([a, min(n - 1, round(p - L)), round(w, 3)])
-                continue
+        p = min(p, n - 1)                           # once, forward, then the last frame holds
         a = min(n - 1, int(math.floor(p + 1e-6)))
         out.append([a, min(n - 1, a + 1), round(p - a, 3) if retime == "blend" else 0])
     return out
+
+
+def clip_backwards(segs):
+    """Panels whose clip schedule ever steps back to an earlier frame: a clip played reversed or restarted, which the
+    owner's rule forbids (CLIP_REFUSED). Read from the timeline itself, so a film timed before the rule was enforced is
+    caught by check and final too, whatever its clip_mode says."""
+    return [sg["id"] for sg in segs if sg["type"] == "panel" and (sg.get("data") or {}).get("clip_sched")
+            and any(b[0] < a[0] for a, b in zip(sg["data"]["clip_sched"], sg["data"]["clip_sched"][1:]))]
 
 
 def clip_steps(segs, fps=FPS):
@@ -2501,6 +2508,10 @@ def _final(a):
     out = render.mux(film / "out" / "silent.mp4", film / "out" / "mix.wav", film / "out" / f"{film.name}.mp4")
     # scene wipes, stamps and drama panels' hard cuts are meant to hit: don't call them pops
     tl = load_timeline(film)
+    back = clip_backwards(tl["segments"])
+    if back:
+        raise SystemExit(f"final stopped: {', '.join(back)} play a clip backwards or restart it (ping-pong or loop), which the "
+                         "owner's rule forbids: set the clip to play once and hold its last frame, run timeline, and render again")
     allow = [(sg["t0"], sg["t0"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
     allow += [(sg["t1"], sg["t1"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
     allow += [(t, t + 0.1) for sg in tl["segments"] if sg["type"] in ("panel", "map") for t in (sg["t0"], sg["t1"])]
@@ -3541,6 +3552,8 @@ def _check(a, film):
         (film / "review" / "check.txt").write_text(f"page: {len(problems)} problem(s)\n" + "\n".join(problems) + "\n")
         raise SystemExit(f"check stopped: the page is not clean ({len(problems)} problem(s)):\n" + "\n".join(problems))
     flags += draft_stills(film, segs)
+    flags += [f"{sid}: its clip plays backwards or restarts (ping-pong or loop), which the owner's rule forbids; run timeline "
+              "again (it now plays clips once and holds the last frame) and fix the panel" for sid in clip_backwards(segs)]
     drift, drift_warn = engine_drift(film, segs)
     if drift:
         write_gate(film, False, len(drift))
@@ -3612,8 +3625,8 @@ def _check(a, film):
             flags.append(f"{sid}: panel predicted {how} (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it a "
                          f"stronger camera (\"camera\": {{\"from\": {{\"x\", \"y\", \"z\"}}, \"to\": {{...}}}}, a zoom change of 10% or more, "
                          f"or a pan with z at least 1.12) or cut it shorter"
-                         + ("; its clip ends before the segment does, so also try \"clip_mode\": \"loop\" or \"pingpong\", "
-                            "or \"clip_speed\" under 1" if (next((x for x in segs if x["id"] == sid), {}).get("data") or {}).get("clip") else ""))
+                         + ("; its clip ends before the segment does and holds its last frame: give it a camera move, "
+                            "slow the clip with \"clip_speed\" under 1, or shorten the segment (never loop or reverse a clip)" if (next((x for x in segs if x["id"] == sid), {}).get("data") or {}).get("clip") else ""))
     video = film / "out" / "silent.mp4"
     if not video.exists():
         report.append("no render yet: run `render` for dead-air, cue and flash checks")
