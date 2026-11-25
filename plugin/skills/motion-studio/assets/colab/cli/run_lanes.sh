@@ -19,6 +19,11 @@ MAX=${COLAB_MAX_LANES:-2}
 [ "$N" -gt "$MAX" ] && { echo "$N lanes asked, plan allows $MAX at once (COLAB_MAX_LANES); using $MAX"; N=$MAX; }
 SETUP=${SETUP:-$HERE/remote_setup.py}; RENDER=${RENDER:-$HERE/remote_render.py}
 [[ $SETUP = /* ]] || SETUP=$HERE/$SETUP; [[ $RENDER = /* ]] || RENDER=$HERE/$RENDER
+# the Wan lint runs here on the whole batch, since dealing takes round-robin splits a still's seeds across lanes
+if [ "$(basename "$RENDER")" = remote_render.py ] && [ "${WAN_LINT:-on}" != off ]; then
+  python3 "$HERE/wan_lint.py" "$IN/jobs.json" || { echo "run_lanes: Wan jobs refused (above); fix them or WAN_LINT=off"; exit 2; }
+fi
+export WAN_LINT=off
 need=$(grep -o 'MIN_VRAM_GB: *[0-9]*' "$SETUP" 2>/dev/null | grep -o '[0-9]*$' | head -1)     # same rules as run_colab.sh
 inneed=$(cat "$IN/min_vram_gb" 2>/dev/null | tr -dc 0-9); [ "${inneed:-0}" -gt "${need:-0}" ] && need=$inneed
 if [ "${need:-0}" -gt 24 ]; then CARDS=(${COLAB_GPUS:-A100})

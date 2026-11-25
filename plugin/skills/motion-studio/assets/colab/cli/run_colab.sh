@@ -35,6 +35,11 @@ b=$(printf %s "$b" | tr -c 'A-Za-z0-9' '-' | sed 's/^-*//' | cut -c1-24)
 S=${COLAB_SESSION:-ms-${b:-run}$lane-$$}
 SETUP=${SETUP:-$HERE/remote_setup.py}; RENDER=${RENDER:-$HERE/remote_render.py}
 [[ $SETUP = /* ]] || SETUP=$HERE/$SETUP; [[ $RENDER = /* ]] || RENDER=$HERE/$RENDER
+# Wan jobs are linted before any GPU time (wan_lint.py, picture-truth.md rule 13): close-ups, interiors and props Wan fills
+# with invented people are refused, and every still needs 3 seeds. WAN_LINT=off runs anyway.
+if [ "$(basename "$RENDER")" = remote_render.py ] && [ "${WAN_LINT:-on}" != off ]; then
+  python3 "$HERE/wan_lint.py" "$IN/jobs.json" || { echo "run_colab: Wan jobs refused (above); fix them or WAN_LINT=off"; exit 2; }
+fi
 PULL=""; NEWPID=""
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }   # GNU first: on Linux, stat -f means something else
 # Whatever ends the run, the puller gets its last pass while the session is still up, then the session stops.

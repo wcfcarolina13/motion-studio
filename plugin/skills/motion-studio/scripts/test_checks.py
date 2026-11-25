@@ -591,6 +591,78 @@ class StatScene(unittest.TestCase):
                     self.assertEqual(changed, {k for k in longform.stat_ticks([self.SEG]) if 21 <= k < 100})
 
 
+class ClipPanel(unittest.TestCase):
+    """A video clip in a panel: frames drawn exactly per render frame (Survive Year 1 intro, Wan clips, 2026-11-25)."""
+    def seg(self, **kw):
+        return {"id": "p", "type": "panel", "t0": 0.0, "t1": 4.0, "data": dict({"clip": "clips/c1.mp4", "camera": "hold"}, **kw)}
+
+    def test_schedule(self):
+        import longform
+        sch = lambda **kw: longform.clip_schedule(self.seg(**kw), 49, 16.0)
+        h = sch()
+        self.assertEqual(len(h), 121)
+        self.assertEqual(h[0], [0, 1, 0]); self.assertEqual(h[-1][0], 48)           # plays once and holds the last frame
+        self.assertEqual(h[15], [8, 9, 0])                                           # 0.5 s at 16 fps: frame 8 exactly
+        self.assertAlmostEqual(h[1][2], 16 / 30, places=3)                           # blended between frames
+        hold = sch(clip_retime="hold")
+        self.assertTrue(all(w == 0 for _, _, w in hold))
+        steps = longform.clip_steps([dict(self.seg(clip_retime="hold"), data=dict(self.seg(clip_retime="hold")["data"], clip_sched=hold))])
+        self.assertEqual(len(steps), 48)                                             # every frame step, then the hold
+        pp = [a + w for a, _, w in sch(clip_mode="pingpong")]
+        self.assertGreater(pp[95], pp[110])                                          # past the end it runs backwards
+        lp = sch(clip_mode="loop")
+        seam = [x for x in lp if x[1] < x[0] - 1]
+        self.assertTrue(seam and all(0 < w <= 1 for _, _, w in seam))               # the seam dissolves, never jumps
+        jumps = [i for i in range(1, len(lp)) if lp[i][0] < lp[i - 1][0] and lp[i - 1][2] < 0.5]
+        self.assertEqual(jumps, [])
+
+    def test_wan_lint(self):
+        sys_path = str(Path(__file__).resolve().parent.parent / "assets" / "colab" / "cli")
+        import sys
+        sys.path.insert(0, sys_path)
+        import wan_lint
+        jobs = [{"id": f"a_s{k}", "image": "a.png", "motion": "Wide shot, the hero walks across the yard"} for k in (1, 2, 3)]
+        self.assertEqual(wan_lint.problems(jobs), [])
+        bad = [{"id": "b_s1", "image": "b.png", "motion": "Close-up of a laptop on a desk"},
+               {"id": "c_s1", "image": "c.png", "motion": "A padlock on the gate", "wan_ok": "wide exterior"}]
+        p = wan_lint.problems(bad)
+        self.assertTrue(any("b_s1" in x and "close-up" in x for x in p))
+        self.assertFalse(any("c_s1" in x for x in p))
+        self.assertTrue(any("b.png: 1 take" in x for x in p))
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_every_frame_shows_its_clip_frame(self):
+        import io, json, longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "clips").mkdir()
+            # each clip frame a different flat grey, so a frame drawn stale or blank shows in its mean level
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:size=832x480:rate=16,format=yuv444p,"
+                            "geq=lum='20+N*4':cb=128:cr=128", "-frames:v", "49", "-pix_fmt", "yuv420p", "-crf", "1",
+                            str(film / "clips" / "c1.mp4")], check=True)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            for kw in ({}, {"clip_mode": "loop"}):
+                seg, probs = self.seg(**kw), []
+                longform.clip_prepare(film, seg, "16x9", probs)
+                self.assertEqual(probs, [])
+                cf, cs = seg["data"]["clip_frames"], seg["data"]["clip_sched"]
+                self.assertEqual((cf["n"], cf["fps"]), (49, 16.0))
+                lv = [float(np.asarray(Image.open(film / cf["dir"] / f"{i:04d}.jpg").convert("L")).mean()) for i in range(cf["n"])]
+                (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4.0, "segments": [seg], "grade": {"vignette": 0}}) + ";\n")
+                bad = []
+                with render.Film(film) as f:
+                    for k in range(0, 120, 3):
+                        f.seek(k / 30)
+                        got = float(np.asarray(Image.open(io.BytesIO(f.page.screenshot(type="jpeg", quality=95))).convert("L")).mean())
+                        a_, b_, w = cs[k]
+                        if abs(got - (lv[a_] * (1 - w) + lv[b_] * w)) > 1.5:
+                            bad.append((k, round(got, 1)))
+                    self.assertFalse(f.errors)
+                self.assertEqual(bad, [], kw)
+
+
 class StillReviewRules(unittest.TestCase):
     """The owner's review of the first 85 ChatGPT stills (picture-truth.md, rule 12), as lint and prompt defaults."""
     def lint(self, p, shot="MED"):
@@ -665,5 +737,25 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["ANAT_SAYS"].sp
             self.assertFalse((st / "s1.png").exists()); self.assertTrue((st / "s3.png").exists())
             self.assertEqual([j["seed"] for j in json.loads(jobs.read_text())], [1007, 7, 9])
             self.assertEqual(Path(d, "an").read_text(), "2")              # the truck has no people
+
+    def test_wan_clips_judged_on_their_last_frame(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "anat.py").write_text(self.ANAT); st = Path(d, "clips"); st.mkdir()
+            for i in ("w1", "w2"):
+                subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=16", "-frames:v", "8",
+                                "-pix_fmt", "yuv420p", str(st / f"{i}.mp4")], check=True)
+            jobs = Path(d, "jobs.json")
+            jobs.write_text(json.dumps([{"id": "w1", "image": "a.png", "motion": "an empty yard", "seed": 1},
+                                        {"id": "w2", "image": "a.png", "motion": "an empty yard", "seed": 2}]))
+            env = dict(os.environ, ANATOMY_CLIP_CMD=f"python3 {d}/anat.py {{first}} {{path}}", ANAT_STATE=f"{d}/an",
+                       ANAT_SAYS="FAIL: a face behind the fence|PASS")
+            r = subprocess.run(["python3", str(Path(__file__).with_name("anatomy.py")), str(st), "--jobs", str(jobs), "--fix"],
+                               capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertFalse((st / "w1.mp4").exists()); self.assertTrue((st / "w2.mp4").exists())
+            self.assertTrue((st / ".judge" / "w2_last.png").exists())
+            self.assertEqual([j["seed"] for j in json.loads(jobs.read_text())], [1001, 2])
+            self.assertIn("a face behind the fence", (st / "judge.tsv").read_text())
 
     FAKE, JUDGE = CodexStills.FAKE, CodexStills.JUDGE
