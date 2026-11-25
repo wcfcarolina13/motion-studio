@@ -244,6 +244,81 @@ B.compare = (s, g) => {
   };
 };
 
+// data: { subject: "<sizes key>", person?: "<sizes key>", view?: "side"|"front", outline?: "<path in metres>",
+//         parts: [{label, at?, fill?, rect: [x, y, w, h]} | {label, at?, path: "M 0 0 L …"} | {label, at?, circle: [cx, cy, r]}],
+//         dims?: true }
+// A to-scale cutaway of a real object, drawn from the film's "sizes" sheet (picture-truth.md, rules 1 and 3): the shell
+// is the subject's real height by its depth (side view) or width (front view), the person stands beside it at their real
+// height, and each part is drawn in metres from the subject's bottom-left corner, y up. Parts land one at a time on their
+// cue words, each with its label in a real font and a leader line; the newest is in ACCENT and earlier ones settle to
+// grey. It exists because image models draw the inside of a thing from their prior, not from the prompt (Z-Image put a
+// household toilet inside a portable one in 6 of 6 shots, 2026-11-25); this is accurate by construction.
+B.cutaway = (s, g) => {
+  const d = s.data, SZ = TL.sizes || {}, sub = SZ[d.subject] || { h: 1, w: 1 }, per = d.person ? SZ[d.person] : null;
+  const sw = (d.view === "front" ? sub.w : (sub.d || sub.w)) || sub.h, sh = sub.h;
+  const pw = per ? per.h * 0.26 : 0, gap = per ? Math.max(0.3, sw * 0.25) : 0;
+  const LS = READ, labW = V(560, SAFE.x1 - SAFE.x0 - 80);
+  // scale: the tallest thing fills ~68% of the frame height; the drawing sits left, labels in a column to its right
+  const mH = Math.max(sh, per ? per.h : 0), areaH = V(H * 0.68, SH * 0.42), areaW = V(W - labW - 260, SAFE.x1 - SAFE.x0 - 120);
+  const k = Math.min(areaH / mH, areaW / (sw + gap + pw)), drawW = (sw + gap + pw) * k;
+  const gy = V(H * 0.84, SAFE.y0 + SH * 0.5), x0 = V((W - labW - 80 - drawW) / 2 + 40, (W - drawW) / 2) + (per ? (pw + gap) * k : 0);
+  const X = m => x0 + m * k, Y = m => gy - m * k;
+  const toPx = path => String(path).replace(/(-?\d*\.?\d+)\s*[, ]\s*(-?\d*\.?\d+)/g, (_, a, b) => `${X(+a).toFixed(1)} ${Y(+b).toFixed(1)}`);
+  const ground = K.el("line", { stroke: C.GREY, "stroke-width": 3 }, g);
+  const shell = K.el("path", { d: d.outline ? toPx(d.outline) : "", fill: "none", stroke: C.INK, "stroke-width": 5, "stroke-linejoin": "round" }, g);
+  if (!d.outline) shell.setAttribute("d", `M ${X(0)} ${Y(0)} L ${X(0)} ${Y(sh * 0.96)} Q ${X(sw / 2)} ${Y(sh * 1.02)} ${X(sw)} ${Y(sh * 0.96)} L ${X(sw)} ${Y(0)} Z`);
+  const shellLen = 2 * (sh + sw) * k;
+  shell.setAttribute("stroke-dasharray", shellLen);
+  // the person: a plain silhouette at their real height (head about 1/7.5 of it), so scale reads at a glance
+  const man = per ? (() => { const gg = K.el("g", {}, g), hh = per.h * k, cx = x0 - gap * k - pw * k / 2;
+    K.el("circle", { cx, cy: gy - hh + hh / 15, r: hh / 15, fill: C.GREY }, gg);
+    const sw2 = pw * k / 2, hip = sw2 * 0.78, leg = sw2 * 0.1;   // shoulders, a narrower hip, and a gap between the legs
+    K.el("path", { d: `M ${cx - hip} ${gy} L ${cx - sw2} ${gy - hh * 0.8} Q ${cx} ${gy - hh * 0.87} ${cx + sw2} ${gy - hh * 0.8} L ${cx + hip} ${gy}`
+      + ` L ${cx + leg} ${gy} L ${cx} ${gy - hh * 0.46} L ${cx - leg} ${gy} Z`, fill: C.GREY }, gg);
+    return gg; })() : null;
+  const dimL = d.dims !== false ? K.el("line", { stroke: C.GREY, "stroke-width": 2 }, g) : null;
+  const dimT = d.dims !== false ? K.text(`${sh.toFixed(2)} m`, { ...AUX, "font-family": SANS, "font-size": 24, fill: C.GREY, "text-anchor": "middle" }, g) : null;
+  const parts = (d.parts || []).map((p, i) => {
+    let el, cx, cy;
+    if (p.rect) { const [x, y, w, h] = p.rect; el = K.el("rect", { x: X(x), y: Y(y + h), width: w * k, height: h * k, rx: 6 }, g); cx = x + w / 2; cy = y + h / 2; }
+    else if (p.circle) { const [x, y, r] = p.circle; el = K.el("circle", { cx: X(x), cy: Y(y), r: r * k }, g); cx = x; cy = y; }
+    else { el = K.el("path", { d: toPx(p.path) }, g); const ns = String(p.path).match(/-?\d*\.?\d+/g).map(Number);
+      cx = ns.filter((_, j) => j % 2 === 0).reduce((a, b) => a + b, 0) / Math.max(1, ns.length / 2); cy = ns.filter((_, j) => j % 2).reduce((a, b) => a + b, 0) / Math.max(1, ns.length / 2); }
+    K.set(el, { stroke: C.INK, "stroke-width": 3 });
+    const lead = K.el("polyline", { fill: "none", stroke: C.ACCENT, "stroke-width": 3 }, g), dot = K.el("circle", { r: 7, fill: C.ACCENT }, g);
+    const lines = wrapWords(p.label, fit(labW - 20, LS, 0.5)).map(l => maskText(l, { "font-family": SANS, "font-size": LS, fill: C.INK }, g));
+    K.label(p.label, s.t0, s.t1, "cutaway label");
+    return { p, el, cx, cy, lead, dot, lines, t: cueT(p, revealAt(s, i + 1, (d.parts || []).length + 1, 0.8, 0.9)) };
+  });
+  // labels: a column right of the drawing, in the order of the parts' heights (top first), so leaders don't cross
+  const order = [...parts].sort((a, b) => b.cy - a.cy), lx = V(x0 + sw * k + 140, SAFE.x0 + 40);
+  // each label sits level with its part where it can (short, near-flat leaders), pushed down only as far as the one above needs
+  const top = V(120, gy + 90), gapL = V(26, 18);
+  let ly = top;
+  order.forEach(q => { q.ly = Math.max(ly, V(Y(q.cy) - LS * 0.45, ly)); ly = q.ly + q.lines.length * pitch(LS) + gapL; });
+  const over = ly - gapL - V(gy + 20, SAFE.y1);   // ran past the ground: lift the stack back up
+  if (over > 0) { let floor = V(gy + 20, SAFE.y1); [...order].reverse().forEach(q => { const hq = q.lines.length * pitch(LS);
+    q.ly = Math.min(q.ly, floor - hq); floor = q.ly - gapL; }); }
+  return t => {
+    const e = env(t, s), o = 1 - e.o, draw = K.eio(K.prog(t, s.t0, s.t0 + 0.9));
+    K.set(ground, { x1: x0 - (per ? (pw + gap) * k + 60 : 60), y1: gy, x2: x0 + sw * k + 60, y2: gy, opacity: o });
+    shell.setAttribute("stroke-dashoffset", shellLen * (1 - draw)); shell.style.opacity = o;
+    if (man) man.style.opacity = K.eout(K.prog(t, s.t0 + 0.4, s.t0 + 0.9)) * o;
+    if (dimL) { const dp = K.eout(K.prog(t, s.t0 + 0.6, s.t0 + 1.1)) * o; const dx = X(sw) + 40;
+      K.set(dimL, { x1: dx, y1: gy, x2: dx, y2: gy - sh * k * dp, opacity: o }); K.set(dimT, { x: dx, y: gy - sh * k - 18, opacity: dp }); }   // the figure sits on top of its line, clear of the label column
+    const live = parts.filter(q => t >= q.t), newest = live[live.length - 1];
+    parts.forEach(q => {
+      const p = K.eout(K.prog(t, q.t, q.t + 0.4)) * o, hot = q === newest;
+      K.set(q.el, { fill: hot ? C.ACCENT : (q.p.fill || C.GREY), "fill-opacity": 0.85 * p, opacity: p > 0 ? 1 : 0 });
+      q.lines.forEach((m, j) => placeMask(m, lx, q.ly + LS * 0.8 + j * pitch(LS), p, "start"));
+      const ax = X(q.cx), ay = Y(q.cy), bx = lx - 20, by = q.ly + LS * 0.45, ex = X(sw) + 70;
+      // leader: level out of the drawing to just past the wall, then to its label; labels run in height order, so no two cross
+      K.set(q.lead, { points: `${ax},${ay} ${ex},${ay} ${ex + (bx - ex) * 0.6},${by} ${bx},${by}`, opacity: p, stroke: hot ? C.ACCENT : C.GREY });
+      K.set(q.dot, { cx: ax, cy: ay, opacity: p, fill: hot ? C.ACCENT : C.GREY });
+    });
+  };
+};
+
 B.stat = (s, g) => {
   const d = s.data;
   const full = (d.prefix || "") + fmtNum(d.value, d.decimals || 0) + (d.suffix || "");
