@@ -73,6 +73,10 @@ for j in jobs:
     if M.get('draft'):
         info.add_text('motion-studio-draft', '1')
     img.save('/content/tmp/' + name, pnginfo=info); publish('/content/tmp/' + name, name)
-    print(f'OUTFILE {name}', flush=True); print(f'STILL {name} {time.time() - t0:.1f}s', flush=True)
+    # peak GPU memory for this still (reset per still), so a model's real need can be read off the log and its
+    # min_vram_gb set from it, not from the card's guess (MOSS on an L4, 2026-11-25, logged no memory)
+    peak = torch.cuda.max_memory_allocated() / 2**30 if torch.cuda.is_available() else 0.0
+    if torch.cuda.is_available(): torch.cuda.reset_peak_memory_stats()
+    print(f'OUTFILE {name}', flush=True); print(f'STILL {name} {time.time() - t0:.1f}s peak {peak:.1f} GB', flush=True)
 open('/content/tmp/RENDER_DONE', 'w').write(f'done, {bad} failed'); os.replace('/content/tmp/RENDER_DONE', '/content/out/RENDER_DONE')
 print('RENDER DONE', flush=True)

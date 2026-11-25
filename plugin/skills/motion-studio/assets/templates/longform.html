@@ -1087,7 +1087,8 @@ B.crowd = (s, g) => {
 //         camera?: "push"|"pull"|"pan-left"|"pan-right"|"tilt-up"|"tilt-down"|"hold" | {from: {x, y, z}, to: {x, y, z}},
 //         flashback?: true, caption_card?: "text" | {text, at?, hold?}, freeze?: true | {at}, shake?: {at, amp?},
 //         enter?: "cut"|"fade", exit?: "cut"|"fade",
-//         frames?: ["a.png", {image: "b.png", at?: "cue word"}, ...], fps?: 4, loop?: true, hold_last?: false }   (flipbook)
+//         frames?: ["a.png", {image: "b.png", at?: "cue word"}, ...], fps?: 4, loop?: true, hold_last?: false,   (flipbook)
+//         fx?: [{type: "rain"|"snow"|"beam"|"flicker"|"steam", ...}] }   (motion over the still: panelFx above)
 // The camera crops and scales the still (z >= 1 keeps the frame covered); each shot type has a default move.
 const SHOT_CAM = { EST: ["pull", 1.16, 1.0], WIDE: ["pan", 1.08, 1.08], MED: ["push", 1.02, 1.08], CU: ["push", 1.04, 1.13],
                    ECU: ["push", 1.08, 1.2], INS: ["push", 1.03, 1.1], OTS: ["pan", 1.1, 1.12], TWO: ["push", 1.0, 1.05] };
@@ -1111,6 +1112,96 @@ function panelCam(d) {
     default:          return { from: { x: K.lerp(0.5, fx, 0.4), y: K.lerp(0.5, fy, 0.4), z: Math.min(z0, z1) }, to: { ...f, z: Math.max(z0, z1) } };
   }
 }
+// ── panel fx: motion drawn over one locked still (rain, snow, a light beam, a flickering glow, steam), all pure functions
+// of t, so the drawing itself never changes. Image edits between frames moved the figure and redrew the texture
+// (likeness 0.71 and 0.82 on a two-edit test, 2026-11-25), which flipped reads as jitter; an overlay can't drift.
+// Every position is 0..1 of the still, so an effect sits on what it belongs to and moves with the panel's camera.
+// Each effect: {type, at?: cue (starts there, fades in over 0.3 s), hold?: seconds it lasts, opacity?, color?}
+//   rain:    {density: 0..1 (0.5), angle: degrees from vertical (12), speed: 1, length: 1, area?: [x, y, w, h]}
+//   snow:    {density (0.4), speed (1), size (1), area?}
+//   beam:    {from: [x, y], aim: [x, y], spread: degrees (16), sweep: degrees either side (6), period: s (4), reach: 0..1}
+//   flicker: {pos: [x, y], radius: 0..1 of width (0.12), amount: 0..1 (0.5), rate: Hz (6)} (no pos: the whole frame dims)
+//   steam:   {pos: [x, y], rise: 0..1 of height (0.25), width: 0..1 (0.06), puffs (6), period: s (3)}
+// A flicker is a smooth noise, never a hard on/off. Its glow is capped at radius 0.2 (under a quarter of the frame) and
+// amount 0.6, and the whole-frame dim at 0.08, so no flicker can reach the flash-rate check's limit (a flash, for
+// photosensitivity, is a 10% luminance swing over a quarter of the screen, more than three times a second).
+let fxN = 0;
+function panelFx(list, g, IW, IH, s) {
+  const out = [];
+  (list || []).forEach((e, k) => {
+    const id = `fx${fxN++}`, rnd = K.rng(1000 + k * 97 + fxN), t0 = cueT(e, s.t0), t1 = e.hold ? t0 + e.hold : s.t1 + 1;
+    const col = e.color || ({ rain: "#dfe8f0", snow: "#ffffff", beam: "#fff2c4", flicker: "#ffd27a", steam: "#f4f1ea" }[e.type] || "#fff");
+    const op = e.opacity ?? ({ rain: 0.55, snow: 0.85, beam: 0.42, flicker: 0.5, steam: 0.4 }[e.type] || 0.5);
+    const ar = e.area || [0, 0, 1, 1], AX = ar[0] * IW, AY = ar[1] * IH, AW = ar[2] * IW, AH = ar[3] * IH;
+    const live = t => K.eout(K.prog(t, t0, t0 + 0.3)) * (1 - K.ein(K.prog(t, t1 - 0.3, t1)));
+    const grp = K.el("g", { "data-fx": e.type }, g);
+    let draw = null;
+    if (e.type === "rain" || e.type === "snow") {
+      const rain = e.type === "rain", n = Math.round((rain ? 420 : 220) * (e.density ?? (rain ? 0.5 : 0.4)) * ar[2] * ar[3]);
+      const ang = (e.angle ?? (rain ? 12 : 0)) * Math.PI / 180, sp = (e.speed ?? 1) * (rain ? IH * 1.6 : IH * 0.12);
+      const len = (e.length ?? 1) * IH * 0.045, sz = (e.size ?? 1) * IH * 0.0042;
+      const drops = Array.from({ length: n }, () => ({ x: rnd(), y: rnd(), v: 0.75 + rnd() * 0.5, ph: rnd() * 6.28, z: 0.5 + rnd() * 0.5 }));
+      const path = K.el("path", rain ? { stroke: col, "stroke-width": Math.max(1.2, IH * 0.0016), "stroke-linecap": "round", fill: "none" } : { fill: col }, grp);
+      const span = AH + len * 2;
+      draw = t => {
+        let d = "";
+        for (const q of drops) {
+          const fall = (q.y * span + t * sp * q.v) % span - len, x0 = AX + ((q.x * AW + fall * Math.tan(ang) + (rain ? 0 : Math.sin(t * 0.9 + q.ph) * IH * 0.012)) % AW + AW) % AW, y0 = AY + fall;
+          if (rain) { const l = len * q.z; d += `M${x0.toFixed(1)} ${y0.toFixed(1)}l${(Math.sin(ang) * l).toFixed(1)} ${(Math.cos(ang) * l).toFixed(1)}`; }
+          else { const r = sz * q.z; d += `M${(x0 - r).toFixed(1)} ${y0.toFixed(1)}a${r.toFixed(1)} ${r.toFixed(1)} 0 1 0 ${(2 * r).toFixed(1)} 0a${r.toFixed(1)} ${r.toFixed(1)} 0 1 0 ${(-2 * r).toFixed(1)} 0`; }
+        }
+        path.setAttribute("d", d);
+        grp.setAttribute("opacity", (op * live(t)).toFixed(3));
+      };
+    } else if (e.type === "beam") {
+      const [fx, fy] = e.from || [0.5, 0.5], [ax, ay] = e.aim || [0.8, 0.6], X = fx * IW, Y = fy * IH;
+      const base = Math.atan2(ay * IH - Y, ax * IW - X), reach = (e.reach ?? 0.6) * IW, half = (e.spread ?? 16) / 2 * Math.PI / 180;
+      const gr = K.el("radialGradient", { id, gradientUnits: "userSpaceOnUse", cx: X, cy: Y, r: reach }, K.defs);
+      K.el("stop", { offset: "0%", "stop-color": col, "stop-opacity": 1 }, gr); K.el("stop", { offset: "100%", "stop-color": col, "stop-opacity": 0 }, gr);
+      const poly = K.el("path", { fill: `url(#${id})`, style: "mix-blend-mode:screen" }, grp);
+      const blur = K.el("filter", { id: id + "b", x: "-20%", y: "-20%", width: "140%", height: "140%" }, K.defs);
+      K.el("feGaussianBlur", { stdDeviation: IH * 0.006 }, blur); poly.setAttribute("filter", `url(#${id}b)`);
+      draw = t => {
+        const a = base + (e.sweep ?? 6) * Math.PI / 180 * Math.sin(2 * Math.PI * (t - t0) / (e.period ?? 4)), r = reach;
+        poly.setAttribute("d", `M${X} ${Y}L${(X + Math.cos(a - half) * r).toFixed(1)} ${(Y + Math.sin(a - half) * r).toFixed(1)}A${r} ${r} 0 0 1 ${(X + Math.cos(a + half) * r).toFixed(1)} ${(Y + Math.sin(a + half) * r).toFixed(1)}Z`);
+        grp.setAttribute("opacity", (op * live(t)).toFixed(3));
+      };
+    } else if (e.type === "flicker") {
+      // a sum of slow sines at unrelated rates: smooth, never repeating within a shot, and the same on every render
+      const rate = e.rate ?? 6, ph = [rnd() * 6.28, rnd() * 6.28, rnd() * 6.28];
+      const noise = t => 0.5 + (Math.sin(t * rate * 1.0 + ph[0]) * 0.5 + Math.sin(t * rate * 2.3 + ph[1]) * 0.3 + Math.sin(t * rate * 0.37 + ph[2]) * 0.2) / 2;
+      let el;
+      if (e.pos) {
+        const gr = K.el("radialGradient", { id }, K.defs);
+        K.el("stop", { offset: "0%", "stop-color": col, "stop-opacity": 0.9 }, gr); K.el("stop", { offset: "100%", "stop-color": col, "stop-opacity": 0 }, gr);
+        const r = Math.min(e.radius ?? 0.12, 0.2) * IW;
+        el = K.el("circle", { cx: e.pos[0] * IW, cy: e.pos[1] * IH, r, fill: `url(#${id})`, style: "mix-blend-mode:screen" }, grp);
+      } else el = K.el("rect", { x: 0, y: 0, width: IW, height: IH, fill: e.color || "#000" }, grp);
+      const amt = Math.min(e.amount ?? 0.5, e.pos ? 0.6 : 0.08);
+      draw = t => grp.setAttribute("opacity", ((e.pos ? op * (1 - amt + amt * noise(t)) : amt * noise(t)) * live(t)).toFixed(3));
+      void el;
+    } else if (e.type === "steam") {
+      const [px, py] = e.pos || [0.5, 0.6], n = e.puffs ?? 6, per = e.period ?? 3, rise = (e.rise ?? 0.25) * IH, w = (e.width ?? 0.06) * IW;
+      const blur = K.el("filter", { id, x: "-50%", y: "-50%", width: "200%", height: "200%" }, K.defs);
+      K.el("feGaussianBlur", { stdDeviation: w * 0.35 }, blur);
+      grp.setAttribute("filter", `url(#${id})`);
+      const puffs = Array.from({ length: n }, (_, i) => ({ off: i / n * per, dx: (rnd() - 0.5) * w, el: K.el("circle", { fill: col }, grp) }));
+      draw = t => {
+        for (const q of puffs) {
+          const u = (((t - t0 + q.off) % per) + per) % per / per;
+          K.set(q.el, { cx: (px * IW + q.dx + Math.sin(u * 3 + q.off) * w * 0.6).toFixed(1), cy: (py * IH - u * rise).toFixed(1), r: (w * (0.35 + u * 0.9)).toFixed(1),
+                        "fill-opacity": (Math.sin(Math.PI * u) * 0.9).toFixed(3) });
+        }
+        grp.setAttribute("opacity", (op * live(t)).toFixed(3));
+      };
+    } else {
+      (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: panel fx "${e.type}" is not one of rain, snow, beam, flicker, steam`);
+      return;
+    }
+    out.push(t => { const on = t >= t0 - 0.01 && t <= t1 + 0.01; K.show(grp, on); if (on) draw(t); });
+  });
+  return t => out.forEach(f => f(t));
+}
 let fbVig = null;
 B.panel = (s, g) => {
   const d = s.data || {}, id = "pf" + s.id.replace(/\W/g, "");
@@ -1132,6 +1223,7 @@ B.panel = (s, g) => {
   const flips = d.flips && d.flips.length ? d.flips : [[s.t0, 0]];
   const frameAt = t => { let k = flips[0][1]; for (const [ft, i] of flips) { if (t + 1e-4 >= ft) k = i; else break; } return k; };
   let shown = -1;
+  const fxDraw = panelFx(d.fx, g, IW, IH, s);
   if (d.flashback) {
     if (!fbVig) {
       const gr = K.el("radialGradient", { id: "fbvig", cx: "50%", cy: "50%", r: "70%" }, K.defs);
@@ -1177,6 +1269,7 @@ B.panel = (s, g) => {
     const { z, cx, cy } = camAt(t);
     g.__cam = { z, cx, cy };
     if (imgs.length > 1) { const k = frameAt(t); if (k !== shown) { imgs.forEach((im, i) => K.show(im, i === k)); shown = k; } }
+    fxDraw(t);
     if (fz != null) K.set(sat, { values: (d.flashback ? 0.55 : 1) * K.lerp(1, 0.3, K.eout(K.prog(t, fz, fz + 0.25))) });
     const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;
     g.setAttribute("opacity", Math.min(fin, fout));
