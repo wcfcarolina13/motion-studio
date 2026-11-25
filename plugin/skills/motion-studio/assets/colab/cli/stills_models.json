@@ -51,12 +51,13 @@
   },
   "chatgpt-image-codex": {
    "route": "codex",
-   "needs_owner_ok": true,
+   "needs_owner_ok": false,
    "w": 1536,
    "h": 1024,
    "licence": "OpenAI terms: the user owns the output and may use it commercially; files carry OpenAI's C2PA provenance, kept in the untouched originals.",
    "bakeoff": "2026-11-25 winner on anatomy, scale, night skies and no garbled text: 9 stills in about 6 min via codex exec. Faults: a face in 3 of 5 hero shots, 2 of 9 at an odd aspect (both now re-rolled by codex_stills.py).",
-   "note": "Spends the owner's Codex allowance; not the default until he says yes."
+   "first_run": "2026-11-25 on the Mac: 4 hard shots in 4 Codex calls, no re-rolls, anatomy right on all, hero faceless; one cutaway drew a booth 1.1x the man's height against 1.3x asked, so sized shots now go to the scale marking page.",
+   "note": "Owner approved 2026-11-25 for the hard shots (an object's insides, mechanisms, anatomy, anything the open models drew wrong): 'We can get better illustrations of things like that for openai'. Spends his Codex allowance, so each run still passes --allow-codex; other shots stay on the open-model route."
   },
   "moss-image-sft": {
    "repo": "OpenMOSS-Team/MOSS-Image-SFT",

@@ -1,12 +1,20 @@
 """Stills from ChatGPT images through the Codex CLI on the Mac: one `codex exec` per shot, no Colab.
-    python3 codex_stills.py shots.json <out_dir> --allow-codex [--tries 3] [--only s03 s07]
+    python3 codex_stills.py shots.json <out_dir> --allow-codex [--tries 3] [--only s03 s07] [--sizes script.json]
 
-Every call uses the owner's Codex plan allowance, so nothing runs without --allow-codex (or CODEX_STILLS_OK=1). This
-route is not the default until the owner says yes (2026-11-25: the bake-off winner on anatomy, scale, night skies and
-text, but it spends his Codex allowance).
+Every call uses the owner's Codex plan allowance, so nothing runs without --allow-codex (or CODEX_STILLS_OK=1). The
+owner approved it on 2026-11-25 for the hard shots (insides, mechanisms, anatomy, anything the open models drew
+wrong); other shots stay on the open-model route. It won the bake-off on anatomy, scale, night skies and text.
 
-shots.json is the stills route's format: {"style", "faceless"?, "shots": [{"id", "prompt", "style"?, "faceless"?}]}.
-Settings, negative prompts and seeds don't apply here; "model" is ignored.
+shots.json is the stills route's format: {"style", "faceless"?, "sizes"?, "shots": [{"id", "prompt", "style"?,
+"faceless"?, "char_in_frame"?, "props"?}]}. Settings, negative prompts and seeds don't apply here; "model" is ignored.
+
+Scale (picture-truth.md, rule 1): "sizes" is the film's size sheet (script.json's, same format), or pass
+--sizes script.json to read it from there. A shot naming two or more sized things in "char_in_frame" and "props" gets
+scalecheck's scale sentence in its prompt, and after the run those shots go on a marking page, <out>/scale/index.html,
+listed in review.tsv. The prompt alone is not enough: in the first real run a booth asked for at 1.3 times the man's
+height came out about 1.1 times. Mark the page, download marks.json, then `python3 scalecheck.py check
+<out>/scale-list.json marks.json`; a failing still is re-rolled with `--only <id>` after deleting it. A bad size sheet
+stops the run before any Codex call.
 
 For each shot without output yet (a rerun redoes only the missing ones):
   1. Runs CODEX_CMD (default `codex exec --skip-git-repo-check`) plus CODEX_ARGS (default `-m gpt-6-luna -c
@@ -25,6 +33,10 @@ or NOFACE; the owner's Claude plan, no extra cost). FACE_CHECK_CMD=off skips it.
 listed in <out>/review.tsv for a person to look at, so an unclear judge never spends another Codex call.
 Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
 import argparse, json, os, shlex, shutil, subprocess, sys, tempfile, time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import scalecheck  # noqa: E402
 
 MODEL_TAG = "chatgpt-image via codex"
 FACE_DEFAULT = ('claude -p "Read the image file at {path}. Does it show any human face, including a partial, distant, '
@@ -48,8 +60,11 @@ def find_new_png(since, roots):
     return best and best[1]
 
 
-def ask(shot, style, faceless, w=1536, h=1024):
-    parts = [shot["prompt"].strip(), (shot.get("style") or style).strip()]
+def ask(shot, style, faceless, scale="", w=1536, h=1024):
+    parts = [shot["prompt"].strip()]
+    if scale:
+        parts.append(scale + " Keep these proportions exactly, even where they look unusual.")
+    parts.append((shot.get("style") or style).strip())
     parts.append(f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
     if faceless:
@@ -94,11 +109,18 @@ def main():
     ap.add_argument("--allow-codex", action="store_true")
     ap.add_argument("--tries", type=int, default=3)
     ap.add_argument("--only", nargs="+")
+    ap.add_argument("--sizes", help="read the size sheet from this script.json (its \"sizes\") instead of shots.json")
     a = ap.parse_args()
     if not (a.allow_codex or os.environ.get("CODEX_STILLS_OK") == "1"):
         raise SystemExit("codex_stills.py spends the owner's Codex allowance: pass --allow-codex once he has said yes")
     cfg = json.load(open(a.shots))
     shots = [s for s in cfg["shots"] if not a.only or s["id"] in a.only]
+    sizes = (json.load(open(a.sizes)).get("sizes") if a.sizes else cfg.get("sizes")) or {}
+    bad = scalecheck.sheet_problems(sizes) + [
+        f'{s["id"]}: props with no entry in "sizes": {", ".join(k for k in s.get("props") or [] if k not in sizes)}'
+        for s in shots if any(k not in sizes for k in s.get("props") or [])]
+    if bad:
+        raise SystemExit("size sheet problems, nothing run:\n  " + "\n  ".join(bad))
     os.makedirs(os.path.join(a.out, "originals"), exist_ok=True)
     cmd = shlex.split(os.environ.get("CODEX_CMD", "codex exec --skip-git-repo-check"))
     cmd += shlex.split(os.environ.get("CODEX_ARGS", '-m gpt-6-luna -c model_reasoning_effort="low"'))
@@ -111,7 +133,7 @@ def main():
         if os.path.exists(dst) and os.path.getsize(dst) > 0:
             print(f"have {s['id']}"); continue
         faceless = s.get("faceless", cfg.get("faceless", False))
-        prompt = ask(s, cfg.get("style", ""), faceless)
+        prompt = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes))
         done = False
         for t in range(1, a.tries + 1):
             work = tempfile.mkdtemp(prefix="codex-still-")
@@ -143,6 +165,16 @@ def main():
             done = True; break
         if not done:
             failed.append(s["id"]); review.append((s["id"], f"no usable image in {a.tries} tries"))
+    to_mark = [s for s in cfg["shots"] if len(scalecheck.sized_items(s, sizes)) >= 2
+               and os.path.exists(os.path.join(a.out, f"{s['id']}.png"))]
+    if to_mark:
+        panels = [{"image": f"{s['id']}.png", "beats": [s["id"]], "char_in_frame": s.get("char_in_frame") or [],
+                   "props": s.get("props") or []} for s in to_mark]
+        with open(os.path.join(a.out, "scale-list.json"), "w") as f:
+            json.dump({"sizes": sizes, "panels": panels}, f, indent=1)
+        page, _ = scalecheck.page(Path(a.out).resolve() / "scale", Path(a.out).resolve(), panels, sizes, "codex stills")
+        review += [(s["id"], f"scale: mark it on {page}, then scalecheck.py check scale-list.json marks.json")
+                   for s in to_mark if not a.only or s["id"] in a.only]
     with open(os.path.join(a.out, "usage.log"), "a") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\tcodex_stills\t{calls} codex calls\t{len(shots)} shots\t{len(failed)} failed\n")
     if review:

@@ -269,6 +269,7 @@ import os, sys, time
 from PIL import Image
 st = os.environ["FAKE_STATE"]; n = int(open(st).read()) if os.path.exists(st) else 0
 open(st, "w").write(str(n + 1))
+open(st + ".prompts", "a").write(sys.argv[-1] + "\n")
 w, h = [tuple(map(int, x.split("x"))) for x in os.environ["FAKE_SIZES"].split()][n]
 d = os.path.join(os.environ["CODEX_IMAGES"], "sess%d" % n); os.makedirs(d, exist_ok=True)
 Image.new("RGB", (w, h), (200, 150, 90)).save(os.path.join(d, "ig_%d.png" % n))
@@ -279,14 +280,14 @@ st = os.environ["JUDGE_STATE"]; n = int(open(st).read()) if os.path.exists(st) e
 open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].split()[n])
 """
 
-    def run_it(self, d, sizes, says, *extra, ok=True):
+    def run_it(self, d, sizes, says, *extra, ok=True, shots=None):
         import json, os
         try:
             import PIL  # noqa: F401
         except ImportError:
             self.skipTest("PIL not installed")
         Path(d, "fake.py").write_text(self.FAKE); Path(d, "judge.py").write_text(self.JUDGE)
-        Path(d, "shots.json").write_text(json.dumps({"style": "ink", "faceless": True, "shots": [
+        Path(d, "shots.json").write_text(json.dumps(shots or {"style": "ink", "faceless": True, "shots": [
             {"id": "a", "prompt": "a yard"}, {"id": "b", "prompt": "a truck", "faceless": False}]}))
         env = dict(os.environ, CODEX_CMD=f"python3 {d}/fake.py", CODEX_ARGS="", CODEX_IMAGES=f"{d}/gen",
                    FAKE_STATE=f"{d}/n", FAKE_SIZES=sizes, JUDGE_STATE=f"{d}/j", JUDGE_SAYS=says,
@@ -314,6 +315,29 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
             # a rerun spends nothing
             self.assertEqual(self.run_it(d, "", "").returncode, 0)
             self.assertEqual(Path(d, "n").read_text(), "4")
+
+    def test_sized_shots_get_the_scale_sentence_and_a_marking_page(self):
+        import json
+        sizes = {"man": {"h": 1.78, "source": "CDC"}, "booth": {"h": 2.31, "source": "spec sheet"}}
+        shots = {"style": "ink.", "sizes": sizes, "shots": [
+            {"id": "a", "prompt": "A man beside a booth.", "char_in_frame": ["man"], "props": ["booth"]},
+            {"id": "b", "prompt": "A truck."}]}
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_it(d, "1536x1024 1536x1024", "", shots=shots)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            asked = Path(d, "n.prompts").read_text().splitlines()
+            self.assertIn("about 1.3 times the man's height", asked[0])
+            self.assertLess(asked[0].index("Scale:"), asked[0].index("ink."))     # before the style ending
+            self.assertNotIn("Scale:", asked[1])
+            lst = json.loads(Path(d, "out", "scale-list.json").read_text())
+            self.assertEqual([p["image"] for p in lst["panels"]], ["a.png"])
+            self.assertTrue(Path(d, "out", "scale", "index.html").exists())
+            self.assertIn("a\tscale: mark it", Path(d, "out", "review.tsv").read_text())
+        with tempfile.TemporaryDirectory() as d:
+            bad = dict(shots, sizes={"man": {"h": 1.78, "source": "CDC"}})     # booth has no size
+            r = self.run_it(d, "1536x1024", "", shots=bad)
+            self.assertNotEqual(r.returncode, 0); self.assertIn("booth", r.stderr)
+            self.assertFalse(Path(d, "n").exists())                                # no Codex call spent
 
     def test_needs_permission_and_reports_give_ups(self):
         with tempfile.TemporaryDirectory() as d:
