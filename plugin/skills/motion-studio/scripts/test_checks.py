@@ -553,6 +553,44 @@ class PanelFx(unittest.TestCase):
             self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])                 # the flickers stay under the flash limit
 
 
+class StatScene(unittest.TestCase):
+    """A stat scene's count-up steps on purpose and its long hold drifts (Survive Year 1, cut 4, 2026-11-25)."""
+    SEG = {"id": "s", "type": "stat", "t0": 0.0, "t1": 7.5, "data": {"prefix": "$", "value": 4.3, "decimals": 1, "suffix": "M",
+                                                                     "label": "a month to rent one unit", "t": 1.0}}
+
+    def test_ticks(self):
+        import longform
+        ticks = sorted(longform.stat_ticks([self.SEG]))
+        self.assertTrue(28 <= ticks[0] <= 31 and ticks[-1] <= 30 + 2.0 * 30 + 1)
+        self.assertGreater(ticks[-1] - ticks[-2], 3)   # the eased tail holds, then steps: the steps final allows
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_ticks_match_the_page_and_drift_clears_the_floor(self):
+        import json, longform, render
+        for drift, want in ((False, False), (True, True)):
+            with tempfile.TemporaryDirectory() as d:
+                film = Path(d)
+                shutil.copy(longform.TEMPLATE, film / "film.html")
+                for f in longform.ENGINE_FILES:
+                    shutil.copy(longform.HERE / f, film / f)
+                (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(
+                    {"duration": 7.5, "segments": [self.SEG], "grade": {"vignette": 0.35}, "stat_drift": drift}) + ";\n")
+                est = longform.stat_motion(film, [self.SEG])
+                _, low = longform.motion_flags(est, floor=0.2)
+                self.assertEqual(not low, want, (drift, est))
+                if drift:                   # the frames final allows are exactly the frames where the page's number changes
+                    shown, changed = None, set()
+                    with render.Film(film) as f:
+                        for k in range(20, 100):
+                            f.seek(k / 30)
+                            v = f.page.evaluate("[...document.querySelectorAll('text')].map(x => x.textContent).find(x => x.startsWith('$'))")
+                            if shown is not None and v != shown:
+                                changed.add(k)
+                            shown = v
+                        self.assertFalse(f.errors)
+                    self.assertEqual(changed, {k for k in longform.stat_ticks([self.SEG]) if 21 <= k < 100})
+
+
 class StillReviewRules(unittest.TestCase):
     """The owner's review of the first 85 ChatGPT stills (picture-truth.md, rule 12), as lint and prompt defaults."""
     def lint(self, p, shot="MED"):
