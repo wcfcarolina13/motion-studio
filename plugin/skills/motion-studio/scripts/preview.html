@@ -65,8 +65,15 @@
   .take img, .take video { display: block; width: 100%; border-radius: 4px; background: #000; }
   .take .bar { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; color: var(--grey); }
   .take .bar button.use { border-color: var(--accent); color: var(--accent); }
+  .tfilters { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-bottom: 12px; color: var(--grey); font-size: 13px; }
+  .tfilters select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; font: inherit; }
+  .tcount { margin-left: auto; }
+  .newb { color: var(--bg); background: var(--accent); border-radius: 3px; padding: 0 5px; font-size: 11px; font-weight: 700; letter-spacing: .5px; }
   .take .tnote { margin-top: 6px; padding: 4px 6px; border-left: 2px solid var(--accent); font-size: 13px; white-space: pre-wrap; }
   .take .tnote.done { border-color: var(--done); color: var(--grey); }
+  .take .tnote.prog { border-color: #4f6d8a; }
+  .take .tans, .note .reply.prog { margin-top: 4px; color: var(--grey); font-size: 12px; }
+  .take .tnote.prog .tans, .note .reply.prog { color: #8fb0d4; }
   .take .tform { display: flex; gap: 6px; margin-top: 6px; align-items: flex-end; }
   .take .tform textarea { flex: 1; min-width: 0; resize: vertical; font: inherit; font-size: 13px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
   .take.chosen .bar button.use { border-color: var(--done); color: var(--done); }
@@ -290,6 +297,7 @@ function renderNotes() {
     d.className = "note" + (n.status === "done" ? " done" : "") + (selected === n.id ? " sel" : "") + (hidden.has(n.id) ? " off" : "");
     d.innerHTML = `<div class="meta">#${n.id} · ${n.take ? n.take.label + " · " : ""}${fmt(n.t)}${n.where ? " · " + n.where : ""}</div><div></div>` + (n.reply ? `<div class="reply"></div>` : "");
     d.children[1].textContent = n.text; if (n.reply) d.children[2].textContent = "↳ " + n.reply;
+    if (n.status === "open" && n.ack) { const r = document.createElement("div"); r.className = "reply prog"; r.textContent = "seen · " + n.ack.text; d.insertBefore(r, d.children[2] || null); }
     if (n.still && /\.(mp4|webm|mov)$/i.test(n.still)) { const v = document.createElement("video"); v.src = `/w/${encodeURIComponent(info.film)}/${n.still}`;
       v.muted = true; v.playsInline = true; v.preload = "metadata"; v.controls = true; v.onclick = ev => ev.stopPropagation(); d.appendChild(v); }
     else if (n.still) { const im = document.createElement("img"); im.src = `/w/${encodeURIComponent(info.film)}/${n.still}?v=${n.id}`; im.alt = "frame " + n.id; im.title = "open the full still";
@@ -388,7 +396,9 @@ async function loadReview() {
   lastRev = j; rev = fresh;
   const wait = rev.groups.filter(g => g.pick == null).length;
   $("takesBtn").hidden = !rev.groups.length;
-  $("takesBtn").textContent = wait ? `takes · ${wait} to pick` : `takes · all picked`;
+  loadTakeView();
+  const fresh_n = rev.groups.reduce((n, g) => n + g.takes.filter(t => t.mtime > seenAt).length, 0);
+  $("takesBtn").textContent = (wait ? `takes · ${wait} to pick` : `takes · all picked`) + (fresh_n ? ` · ${fresh_n} new` : "");
   $("takesBtn").classList.toggle("wait", wait > 0);
   if ($("takes").classList.contains("show")) renderTakes();
   drawTimeline(); renderSection();
@@ -412,19 +422,53 @@ function renderSection() {
     lastRev = ""; loadReview();
   };
 }
+// the takes view's filters, sort and "seen" time live in this browser (localStorage), per film
+const lsKey = k => `ms.${(info && info.film) || "film"}.${k}`;
+const lsGet = (k, d) => { try { const x = localStorage.getItem(lsKey(k)); return x == null ? d : JSON.parse(x); } catch (e) { return d; } };
+const lsSet = (k, x) => { try { localStorage.setItem(lsKey(k), JSON.stringify(x)); } catch (e) {} };
+let takeView = null, seenAt = 0;
+function loadTakeView() { if (takeView) return; takeView = lsGet("takeView", {}); seenAt = lsGet("seenAt", 0); }
+const saveTakeView = () => lsSet("takeView", takeView);
+// "new" means a take file newer than when he last marked them seen (closing the view counts); the time is the newest
+// take file's own mtime, so the Mac's clock and the phone's don't have to agree
+function markSeen() { seenAt = Math.max(seenAt, ...rev.groups.flatMap(g => g.takes.map(t => t.mtime)), 0); lsSet("seenAt", seenAt); }
+const ago = sec => { const m = Math.max(0, (Date.now() / 1000 - sec) / 60);
+  return m < 1 ? "just now" : m < 60 ? `${Math.round(m)} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
 const takeDrafts = {};       // unsent take comments, kept across the 3 s rebuilds of this view
 function renderTakes() {
+  loadTakeView();
   const box = $("takes"), act = document.activeElement, keepFocus = act && act.dataset && act.dataset.tid,
         caret = keepFocus ? act.selectionStart : 0, top = box.scrollTop;
   box.innerHTML = "";
-  const head = document.createElement("div"); head.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:12px";
-  head.innerHTML = `<b style="flex:1">Takes: mark the one to use</b><button id="takesClose">close (T)</button>`;
+  const head = document.createElement("div"); head.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:8px";
+  head.innerHTML = `<b style="flex:1">Takes: mark the one to use</b><button id="takesSeen" title="clear the new badges">mark all seen</button><button id="takesClose">close (T)</button>`;
   box.appendChild(head); head.querySelector("#takesClose").onclick = () => toggleTakes(false);
-  [...rev.groups].sort((a, b) => (a.pick != null) - (b.pick != null) || (a.t0 ?? 0) - (b.t0 ?? 0)).forEach(g => {
+  head.querySelector("#takesSeen").onclick = () => { markSeen(); renderTakes(); };
+  // filters and sort, remembered on this device
+  const framings = [...new Set(rev.groups.map(g => g.framing).filter(Boolean))].sort();
+  const bar = document.createElement("div"); bar.className = "tfilters";
+  const sel = (id, label, opts) => { const l = document.createElement("label"); l.textContent = label + " ";
+    const s = document.createElement("select"); s.id = id;
+    opts.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; s.appendChild(o); });
+    s.value = takeView[id] ?? opts[0][0]; if (s.value === "") s.value = opts[0][0];
+    s.onchange = () => { takeView[id] = s.value; saveTakeView(); renderTakes(); }; l.appendChild(s); bar.appendChild(l); };
+  sel("tkKind", "type", [["all", "all"], ["image", "stills"], ["clip", "clips"]]);
+  if (framings.length) sel("tkShot", "shot", [["all", "all"]].concat(framings.map(f => [f, f])));
+  sel("tkState", "show", [["all", "all"], ["waiting", "waiting for a pick"], ["picked", "picked"], ["notes", "with open comments"], ["new", "with new takes"]]);
+  sel("tkSort", "sort", [["updated", "last updated"], ["film", "film order"]]);
+  box.appendChild(bar);
+  const v = k => takeView[k] || "all", isNew = tk => tk.mtime > seenAt;
+  const shown = rev.groups.filter(g => (v("tkKind") === "all" || g.kind === v("tkKind")) && (v("tkShot") === "all" || g.framing === v("tkShot"))
+    && ({ all: true, waiting: g.pick == null, picked: g.pick != null, notes: g.open_notes > 0, new: g.takes.some(isNew) })[v("tkState")]);
+  shown.sort((takeView.tkSort || "updated") === "film" ? (a, b) => (a.t0 ?? 0) - (b.t0 ?? 0) : (a, b) => (b.updated || 0) - (a.updated || 0) || (a.t0 ?? 0) - (b.t0 ?? 0));
+  const count = document.createElement("div"); count.className = "tcount";
+  count.textContent = `${shown.length} of ${rev.groups.length} shots`; bar.appendChild(count);
+  shown.forEach(g => {
     const d = document.createElement("div"); d.className = "grp" + (g.pick == null ? " waiting" : "");
     const h = document.createElement("h3");
     h.append(g.shot + " "); const sp = document.createElement("span");
-    sp.textContent = `${g.kind === "clip" ? "clip" : "still"} · ${g.takes.length} takes · ${g.segments.join(", ")}` + (g.t0 != null ? ` · ${fmt(g.t0)}` : "") + (g.pick == null ? " · waiting for your pick" : "");
+    sp.textContent = `${g.kind === "clip" ? "clip" : "still"}${g.framing ? " " + g.framing : ""} · ${g.takes.length} takes · ${g.segments.join(", ")}` + (g.t0 != null ? ` · ${fmt(g.t0)}` : "")
+      + (g.updated ? ` · updated ${ago(g.updated)}` : "") + (g.open_notes ? ` · ${g.open_notes} open comment${g.open_notes > 1 ? "s" : ""}` : "") + (g.pick == null ? " · waiting for your pick" : "");
     h.appendChild(sp);
     if (g.t0 != null) { const go = document.createElement("button"); go.textContent = "go to shot"; go.style.marginLeft = "8px";
       go.onclick = () => { toggleTakes(false); pause(); seek(g.t0 + 0.01); }; h.appendChild(go); }
@@ -432,12 +476,14 @@ function renderTakes() {
     const row = document.createElement("div"); row.className = "row3";
     g.takes.forEach(tk => {
       const c = document.createElement("div"); c.className = "take" + (g.pick === tk.seed ? " chosen" : "");
-      const src = `/w/${encodeURIComponent(info.film)}/${tk.path.split("/").map(encodeURIComponent).join("/")}`;
+      // ?v= the file's mtime: a take redrawn under the same name gets a new URL, so no cache can show the old picture
+      const src = `/w/${encodeURIComponent(info.film)}/${tk.path.split("/").map(encodeURIComponent).join("/")}?v=${tk.mtime}`;
       const m = document.createElement(g.kind === "clip" ? "video" : "img");
-      if (g.kind === "clip") { m.controls = true; m.muted = true; m.playsInline = true; m.preload = "metadata"; } else m.loading = "lazy";
+      if (g.kind === "clip") { m.controls = true; m.muted = true; m.playsInline = true; m.preload = "none";
+        m.poster = `/api/poster?p=${encodeURIComponent(tk.path)}&v=${tk.mtime}`; } else m.loading = "lazy";
       m.src = src; c.appendChild(m);
       const bar = document.createElement("div"); bar.className = "bar";
-      bar.innerHTML = `<span>seed ${tk.seed}</span>`;
+      bar.innerHTML = `<span>seed ${tk.seed}${isNew(tk) ? ' <b class="newb">new</b>' : ""}</span>`;
       const use = document.createElement("button"); use.className = "use";
       use.textContent = g.pick === tk.seed ? "✓ chosen (undo)" : "use this";
       use.onclick = async () => {
@@ -448,8 +494,11 @@ function renderTakes() {
       bar.appendChild(use); c.appendChild(bar);
       // notes on this take: the ones already left, then a box to add one (pinned to this take, not the playhead)
       notes.filter(n => n.take && n.take.key === g.key && n.take.seed === tk.seed).forEach(n => {
-        const q = document.createElement("div"); q.className = "tnote" + (n.status === "done" ? " done" : "");
-        q.textContent = (n.status === "done" ? "✓ " : "") + n.text + (n.reply ? "  ↳ " + n.reply : ""); c.appendChild(q);
+        const q = document.createElement("div"); q.className = "tnote" + (n.status === "done" ? " done" : n.ack ? " prog" : "");
+        q.textContent = (n.status === "done" ? "✓ " : "") + n.text;
+        const ans = n.status === "done" && n.reply ? "↳ " + n.reply : n.status === "open" && n.ack ? "seen · " + n.ack.text : "";
+        if (ans) { const r = document.createElement("div"); r.className = "tans"; r.textContent = ans; q.appendChild(r); }
+        c.appendChild(q);
       });
       const f = document.createElement("form"); f.className = "tform";
       const tid = `${g.key}|${tk.seed}`;
@@ -473,7 +522,11 @@ function renderTakes() {
   box.scrollTop = top;
   if (keepFocus) { const el = box.querySelector(`textarea[data-tid="${CSS.escape(keepFocus)}"]`); if (el) { el.focus(); el.setSelectionRange(caret, caret); } }
 }
-function toggleTakes(on) { $("takes").classList.toggle("show", on); if (on) { pause(); renderTakes(); } }
+function toggleTakes(on) {
+  const was = $("takes").classList.contains("show");
+  $("takes").classList.toggle("show", on);
+  if (on) { pause(); renderTakes(); } else if (was) markSeen();
+}
 $("takesBtn").onclick = () => toggleTakes(!$("takes").classList.contains("show"));
 
 // ── controls ─────────────────────────────────────────────

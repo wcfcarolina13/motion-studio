@@ -92,7 +92,8 @@ def apply_picks(film, data, picks, problems, sid):
 
 
 def take_groups(film, script, timeline=None):
-    """[{key, shot, kind, segments, t0, t1, takes: [{seed, path}], pick}] for every take group, in film order."""
+    """[{key, shot, kind, framing, segments, t0, t1, takes: [{seed, path, mtime}], pick}] for every take group, in film
+    order. framing is the panel's shot (EST, WIDE, CU...) when the script gives one."""
     times = {s["id"]: (s["t0"], s["t1"]) for s in (timeline or {}).get("segments", [])}
     picks, groups = load_picks(film), {}
     for s in script.get("segments", []):
@@ -105,14 +106,22 @@ def take_groups(film, script, timeline=None):
             if not g:
                 continue
             key = pick_key(g[0], kind, shots.count(g[0]) > 1)
-            e = groups.setdefault(key, {"key": key, "shot": g[0], "kind": kind, "segments": [], "t0": None, "t1": None,
-                                        "takes": [{"seed": sd, "path": p} for sd, p in g[1]], "pick": picks.get(key)})
+            e = groups.setdefault(key, {"key": key, "shot": g[0], "kind": kind, "framing": (d.get("shot") or "").upper() or None,
+                                        "segments": [], "t0": None, "t1": None, "pick": picks.get(key),
+                                        "takes": [{"seed": sd, "path": p, "mtime": _mtime(film / p)} for sd, p in g[1]]})
             e["segments"].append(s["id"])
             if s["id"] in times:
                 a, b = times[s["id"]]
                 e["t0"] = a if e["t0"] is None else min(e["t0"], a)
                 e["t1"] = b if e["t1"] is None else max(e["t1"], b)
     return list(groups.values())
+
+
+def _mtime(p):
+    try:
+        return round(p.stat().st_mtime, 3)
+    except OSError:
+        return 0
 
 
 def _stamp(segs, picks, keys):
