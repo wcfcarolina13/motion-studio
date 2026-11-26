@@ -665,6 +665,79 @@ class ClipPanel(unittest.TestCase):
                 self.assertEqual(bad, [], kw)
 
 
+class ReviewDashboard(unittest.TestCase):
+    """The owner picks among takes and locks sections in the studio dashboard; agents never do (2026-11-26)."""
+    def film(self, d):
+        import json, longform
+        from PIL import Image
+        film = Path(d) / "ep"; (film / "panels").mkdir(parents=True)
+        for seed, c in ((7, (200, 60, 60)), (19, (60, 200, 60))):
+            Image.new("RGB", (1920, 1080), c).save(film / "panels" / f"m1c_s{seed}.png")
+        Image.new("RGB", (1920, 1080), (90, 90, 90)).save(film / "panels" / "solo.png")
+        segs = [{"id": "a", "type": "panel", "chapter": "Cold open", "data": {"image": "panels/m1c_s7.png", "camera": "hold"}},
+                {"id": "b", "type": "panel", "chapter": "Month one", "data": {"image": "panels/solo.png", "camera": "hold"}}]
+        (film / "script.json").write_text(json.dumps({"title": "t", "segments": segs}))
+        tl = {"duration": 4.0, "grade": {"vignette": 0}, "chapters": [{"title": "Cold open", "t0": 0.0, "t1": 2.0}, {"title": "Month one", "t0": 2.0, "t1": 4.0}],
+              "segments": [dict(segs[0], t0=0.0, t1=2.0), dict(segs[1], t0=2.0, t1=4.0)]}
+        (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+        shutil.copy(longform.TEMPLATE, film / "film.html")
+        for f in longform.ENGINE_FILES:
+            shutil.copy(longform.HERE / f, film / f)
+        return film
+
+    def test_groups_states_picks_and_lock(self):
+        import json, review_state
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            sc = json.loads((film / "script.json").read_text())
+            g = review_state.take_groups(film, sc)
+            self.assertEqual([(x["key"], [t["seed"] for t in x["takes"]], x["pick"]) for x in g], [("m1c", [7, 19], None)])
+            st = {x["title"]: x["state"] for x in review_state.sections(film)}
+            self.assertEqual(st, {"Cold open": "takes", "Month one": "ready"})
+            self.assertEqual(review_state.sections(film, [{"t": 2.5, "status": "open"}])[1]["state"], "review")
+            review_state.save_picks(film, {"m1c": 19})
+            data, probs = dict(sc["segments"][0]["data"]), []
+            review_state.apply_picks(film, data, review_state.load_picks(film), probs, "a")
+            self.assertEqual((data["image"], probs), ("panels/m1c_s19.png", []))
+            self.assertEqual(review_state.sections(film)[0]["state"], "ready")
+            review_state.set_lock(film, "Cold open", True)
+            self.assertEqual(review_state.sections(film)[0]["state"], "locked")
+            review_state.save_picks(film, {"m1c": 7})                    # a change after his lock shows
+            self.assertTrue(review_state.sections(film)[0].get("stale"))
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_dashboard_clicks_and_lan_key(self):
+        import json, threading, urllib.request, urllib.error, preview
+        from http.server import ThreadingHTTPServer
+        from playwright.sync_api import sync_playwright
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), preview.make_handler(film, "sekret"))
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            url = f"http://127.0.0.1:{srv.server_address[1]}"
+            with self.assertRaises(urllib.error.HTTPError) as e:          # no key, no film
+                urllib.request.urlopen(url + "/api/review")
+            self.assertEqual(e.exception.code, 403)
+            self.assertNotIn("sekret", str(e.exception.headers))
+            with sync_playwright() as p:
+                b = p.chromium.launch(executable_path=os.environ["MS_CHROMIUM"])
+                pg = b.new_page(viewport={"width": 1280, "height": 800})
+                pg.goto(url + "/?k=sekret")
+                pg.wait_for_selector("#takesBtn:not([hidden])")
+                self.assertIn("1 to pick", pg.inner_text("#takesBtn"))
+                pg.click("#takesBtn")
+                pg.locator(".take").nth(1).locator("button.use").click()
+                pg.wait_for_function("document.querySelector('#takesBtn').textContent.includes('all picked')")
+                self.assertEqual(json.loads((film / "picks.json").read_text()), {"m1c": 19})
+                pg.click("#takesClose")
+                pg.wait_for_selector("#lockBtn")
+                pg.click("#lockBtn")
+                pg.wait_for_function("document.querySelector('#section .st').textContent.includes('locked')")
+                self.assertIn("Cold open", json.loads((film / "review" / "state.json").read_text())["locked"])
+                b.close()
+            srv.shutdown()
+
+
 class StillReviewRules(unittest.TestCase):
     """The owner's review of the first 85 ChatGPT stills (picture-truth.md, rule 12), as lint and prompt defaults."""
     def lint(self, p, shot="MED"):

@@ -187,7 +187,7 @@ def cmd_serve(a):
         path.write_text(json.dumps(data, indent=2) + "\n")
         print(f"wrote {path}: in the Browser pane, preview_start name=motion-studio (preview_stop first if another film is open)")
         return
-    preview.serve(film, a.port)
+    preview.serve(film, a.port, lan=a.lan)
 
 
 def cmd_notes(a):
@@ -335,7 +335,8 @@ def main():
     p = sp.add_parser("verify"); p.add_argument("target"); p.set_defaults(fn=cmd_verify)
     p = sp.add_parser("blindpack"); p.add_argument("film"); p.add_argument("--redo", action="store_true", help="rebuild the latest round (no reader has seen it)")
     p.set_defaults(fn=cmd_blindpack)
-    p = sp.add_parser("serve"); p.add_argument("film"); p.add_argument("--port", type=int, default=4173); p.add_argument("--launch", action="store_true"); p.set_defaults(fn=cmd_serve)
+    p = sp.add_parser("serve"); p.add_argument("film"); p.add_argument("--port", type=int, default=4173); p.add_argument("--launch", action="store_true")
+    p.add_argument("--lan", action="store_true", help="also open on the home network (the owner's phone), behind a key in the link"); p.set_defaults(fn=cmd_serve)
     p = sp.add_parser("notes"); p.add_argument("film"); p.add_argument("--all", action="store_true"); p.add_argument("--resolve", type=int)
     p.add_argument("--reply"); p.set_defaults(fn=cmd_notes)
     p = sp.add_parser("search"); p.add_argument("kind", choices=["music", "sfx"]); p.add_argument("query"); p.set_defaults(fn=cmd_search)

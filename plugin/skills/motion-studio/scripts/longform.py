@@ -889,6 +889,8 @@ def cmd_timeline(a):
     t, segs, clips, chapters, problems, cues = a.lead, [], [], [], [], []
     moods = sc.get("moods", {})
     holds = transition_holds(film, sc, a.transition_hold, a.pad, allwords)
+    import review_state
+    picks = review_state.load_picks(film)
     for s in sc["segments"]:
         clip = film / "narration" / f"{s['id']}.mp3"
         if s.get("narration"):
@@ -907,6 +909,10 @@ def cmd_timeline(a):
             seg["words"] = [[x["w"], round(t + x["t0"], 3), round(t + x["t1"], 3)] for x in w["words"]]
         elif s.get("narration") and allwords:
             problems.append(f"{s['id']}: narration changed since `align`; run align again")
+        if seg.get("type") == "panel" and seg.get("data"):
+            # the owner's picks among takes (<shot>_s<seed> siblings), made in the studio dashboard: review_state.py
+            seg["data"] = dict(seg["data"])
+            review_state.apply_picks(film, seg["data"], picks, problems, s["id"])
         if seg.get("type") == "panel" and panel_images(seg.get("data")):
             # a flipbook's frames are drawn over one composition, so every frame must be the first one's size, or a flip jumps
             srcs = panel_images(seg["data"])
@@ -1378,7 +1384,7 @@ def _code_and_files(film):
     for p in sorted(film.rglob("*")):
         rel = p.relative_to(film)
         if not p.is_file() or rel.parts[0] in STAMP_SKIP_DIRS or p.name.startswith(".") or p.suffix.lower() in STAMP_SKIP_TYPES \
-                or p.name.endswith("~"):
+                or p.name.endswith("~") or (len(rel.parts) == 1 and p.name in STAMP_SKIP_NAMES):
             continue
         if p.suffix in (".html", ".js", ".css", ".json") and len(rel.parts) == 1:
             if rel.name not in ("timeline.js", "script.json"):
@@ -1502,13 +1508,14 @@ def film_stamp(film):
 # A kit's log appended after each step made every film "changed since check" (Longtok, episode 2, 2026-10-26).
 STAMP_SKIP_DIRS = {"out", "review", "narration", "music", "logs"}
 STAMP_SKIP_TYPES = {".log", ".md", ".txt", ".tsv", ".csv", ".bak", ".tmp", ".swp", ".pid", ".lock"}
+STAMP_SKIP_NAMES = {"notes.json"}      # the owner's review notes never reach a frame, so a new note doesn't make check stale
 
 
 def _stamp(film, h):
     for p in sorted(film.rglob("*")):
         rel = p.relative_to(film)
         if not p.is_file() or rel.parts[0] in STAMP_SKIP_DIRS or p.name.startswith(".") or p.suffix.lower() in STAMP_SKIP_TYPES \
-                or p.name.endswith("~"):
+                or p.name.endswith("~") or (len(rel.parts) == 1 and p.name in STAMP_SKIP_NAMES):
             continue
         h.update(str(rel).encode())
         if p.suffix in (".html", ".js", ".css", ".json") and len(rel.parts) == 1:
@@ -3552,6 +3559,19 @@ def _check(a, film):
         (film / "review" / "check.txt").write_text(f"page: {len(problems)} problem(s)\n" + "\n".join(problems) + "\n")
         raise SystemExit(f"check stopped: the page is not clean ({len(problems)} problem(s)):\n" + "\n".join(problems))
     flags += draft_stills(film, segs)
+    pk, tj = film / "picks.json", film / "timeline.js"
+    if pk.exists() and pk.stat().st_mtime > tj.stat().st_mtime:
+        write_gate(film, False, 1)
+        raise SystemExit("check stopped: the owner picked takes after the last timeline; run `timeline` so his picks are in the film")
+    import review_state
+    _notes = json.loads((film / "notes.json").read_text()).get("notes", []) if (film / "notes.json").exists() else []
+    for sec in review_state.sections(film, _notes):
+        if sec.get("stale"):
+            flags.append(f"section \"{sec['title']}\" was locked by the owner and has changed since: tell him what changed and "
+                         "ask him to re-lock it in the dashboard (agents never lock or pick)")
+    waiting = [g["key"] for g in review_state.take_groups(film, load_script(film), load_timeline(film)) if g["pick"] is None]
+    if waiting:
+        report.append(f"takes waiting for the owner's pick in the dashboard: {', '.join(waiting)}")
     flags += [f"{sid}: its clip plays backwards or restarts (ping-pong or loop), which the owner's rule forbids; run timeline "
               "again (it now plays clips once and holds the last frame) and fix the panel" for sid in clip_backwards(segs)]
     drift, drift_warn = engine_drift(film, segs)
