@@ -663,6 +663,26 @@ else:
             self.assertNotIn("motion-studio-draft", t)
             self.assertEqual(panelqa.draft_repairs(film), {})
 
+    def test_codex_gets_no_stdin_from_an_open_pipe(self):
+        # codex exec reads stdin when it is a pipe: from an agent's background shell every call hung to the timeout
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "fake.py").write_text("import sys\nsys.stdin.read()\nfrom PIL import Image\nImage.new('RGB', (64, 64)).save('image.png')\n")
+            Path(d, "base.png").write_bytes(b"")
+            child = ("import sys; sys.path.insert(0, %r); import codex_stills; "
+                     "print(codex_stills.edit_image('p', [], %r))") % (str(Path(__file__).parent), f"{d}/out.png")
+            env = dict(os.environ, CODEX_CMD=f"python3 {d}/fake.py", CODEX_ARGS="", CODEX_IMAGES=f"{d}/none", CODEX_TIMEOUT="5")
+            p = subprocess.Popen(["python3", "-c", child], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
+            try:
+                out = p.stdout.readline()          # the pipe into the child stays open, as in a background shell
+                p.wait(timeout=20)
+            finally:
+                p.stdin.close(); p.kill()
+            self.assertEqual(out.strip(), "None")
+            self.assertTrue(Path(d, "out.png").exists())
+        for f in ("codex_stills.py", "anatomy.py"):     # every agent CLI call closes stdin
+            calls = [x for x in Path(__file__).with_name(f).read_text().split("subprocess.run(")[1:] if not x.startswith('["ffmpeg"')]
+            self.assertTrue(calls and all("stdin=subprocess.DEVNULL" in x.split("\n", 2)[0] + x.split("\n", 2)[1] for x in calls), f)
+
     def test_local_models_are_drafts_only_and_render_refuses_them(self):
         import panelqa, longform
         with tempfile.TemporaryDirectory() as d:

@@ -72,7 +72,7 @@ def judge(path, faceless=False, cmd=None):
     c = (cmd.replace("{faceless_rule}", FACELESS_RULE if faceless else "")
             .replace("{faceless}", "yes" if faceless else "no").replace("{path}", shlex.quote(path)))
     try:
-        r = subprocess.run(c, shell=True, capture_output=True, text=True, timeout=int(os.environ.get("ANATOMY_TIMEOUT", 180)))
+        r = subprocess.run(c, shell=True, capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=int(os.environ.get("ANATOMY_TIMEOUT", 180)))
     except subprocess.TimeoutExpired:
         return "UNCLEAR", "judge timed out"
     lines = [ln.strip().strip("*") for ln in r.stdout.strip().splitlines() if ln.strip()]
