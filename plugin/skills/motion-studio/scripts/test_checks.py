@@ -613,6 +613,49 @@ class ReviewNotes1126(unittest.TestCase):
         self.assertNotEqual(boxes["fill"].lower(), "#969691")
 
 
+class ChartScene(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_lines_draw_on_cue_labels_fit_and_no_flash(self):
+        import io, longform, render
+        from PIL import Image
+        yrs = [0, 1, 2, 3, 4, 5]
+        ys = {"Baseline": [-25e3, -12e3, 4e3, 22e3, 41e3, 62e3], "Dense town": [-25e3, -6e3, 21e3, 55e3, 96e3, 140e3],
+              "Heavy competition": [-25e3, -18e3, -9e3, 1e3, 9e3, 16e3], "More on ads": [-32e3, -15e3, 8e3, 36e3, 70e3, 108e3]}
+        series = [{"label": k, "points": [list(p) for p in zip(yrs, v)], "t": 0.8 + 1.8 * i} for i, (k, v) in enumerate(ys.items())]
+        seg = {"id": "c", "type": "chart", "t0": 0.0, "t1": 10.0, "data": {"title": "Five years, four ways it can go", "series": series,
+               "x": {"label": "Years in business", "ticks": [[0, "Start"]] + [[k, f"Yr {k}"] for k in range(1, 6)]},
+               "y": {"label": "Cash position", "format": "money"}, "zero_line": True, "note": "our model, illustrative"}}
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 10.0, "segments": [seg]}) + ";\n")
+            with render.Film(film) as f:
+                f.seek(1.0)
+                drawn = f.page.evaluate("[...document.querySelectorAll('path[stroke-linecap=round]')].map(p => +p.getAttribute('opacity'))")
+                self.assertEqual(drawn, [1, 0, 0, 0])                       # only the first line has reached its cue
+                frames = []
+                for i in range(60):
+                    f.seek(i / 30)
+                    frames.append(np.asarray(Image.open(io.BytesIO(f.page.locator("#stage").screenshot())).convert("RGB").resize((320, 180))))
+                f.seek(9.99)
+                boxes = f.page.evaluate("""() => { const st = document.querySelector('#stage').getBoundingClientRect();
+                  return [...document.querySelectorAll('rect[rx="6"]')].map(r => { const b = r.getBoundingClientRect();
+                    return [b.left - st.left, b.top - st.top, b.right - st.left, b.bottom - st.top, st.width, st.height]; }); }""")
+                ticks = f.page.evaluate("[...document.querySelectorAll('text')].filter(x => /\\$/.test(x.textContent)).map(x => [x.textContent, x.getAttribute('fill')])")
+                self.assertFalse(f.errors)
+        self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
+        self.assertEqual(len(boxes), 4)
+        for b in boxes:                                                       # every label plate inside the frame at the deepest zoom
+            self.assertTrue(b[0] >= 0 and b[1] >= 0 and b[2] <= b[4] and b[3] <= b[5], b)
+        for i, a in enumerate(boxes):                                         # and no two plates touch
+            for b2 in boxes[i + 1:]:
+                self.assertFalse(a[0] < b2[2] and b2[0] < a[2] and a[1] < b2[3] and b2[1] < a[3])
+        cols = dict(ticks)
+        self.assertNotEqual(cols["−$50k"], cols["$100k"])                    # red below zero, green above
+
+
 class StatScene(unittest.TestCase):
     """A stat scene's count-up steps on purpose and its long hold drifts (Survive Year 1, cut 4, 2026-11-25)."""
     SEG = {"id": "s", "type": "stat", "t0": 0.0, "t1": 7.5, "data": {"prefix": "$", "value": 4.3, "decimals": 1, "suffix": "M",
