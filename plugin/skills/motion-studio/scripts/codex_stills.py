@@ -92,6 +92,9 @@ def find_new_png(since, roots):
 
 def codex_cmd():
     """The codex command every ChatGPT image call uses ($CODEX_CMD and $CODEX_ARGS override it, as the tests do)."""
+    # every call to codex (and to the face and anatomy judges) passes stdin=DEVNULL: `codex exec` reads stdin when it is
+    # a pipe, so from an agent's background shell (stdin an open pipe) each call hung until CODEX_TIMEOUT without
+    # starting a session (six timeouts, 2026-11-26); from longjob, or with < /dev/null, the same calls worked
     cmd = shlex.split(os.environ.get("CODEX_CMD", "codex exec --skip-git-repo-check"))
     return cmd + shlex.split(os.environ.get("CODEX_ARGS", '-m gpt-6-luna -c model_reasoning_effort="low"'))
 
@@ -108,7 +111,7 @@ def edit_image(prompt, images, dest, timeout=None):
     note = ""
     try:
         r = subprocess.run(codex_cmd() + [f"--image={os.path.abspath(x)}" for x in images] + [prompt], cwd=work,
-                           capture_output=True, text=True, timeout=timeout or int(os.environ.get("CODEX_TIMEOUT", 600)))
+                           capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=timeout or int(os.environ.get("CODEX_TIMEOUT", 600)))
         note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
     except subprocess.TimeoutExpired:
         note = "codex timed out"
@@ -170,7 +173,7 @@ def face_verdict(path, cmd):
     if cmd == "off":
         return "NOFACE"
     try:
-        r = subprocess.run(cmd.replace("{path}", shlex.quote(path)), shell=True, capture_output=True, text=True,
+        r = subprocess.run(cmd.replace("{path}", shlex.quote(path)), shell=True, capture_output=True, stdin=subprocess.DEVNULL, text=True,
                            timeout=int(os.environ.get("FACE_CHECK_TIMEOUT", 180)))
     except subprocess.TimeoutExpired:
         return "UNCLEAR"
@@ -272,7 +275,7 @@ def main():
             since = time.time() - 1
             calls += 1; t0 = time.time()
             try:
-                r = subprocess.run(cmd + extra + [prompt], cwd=work, capture_output=True, text=True, timeout=timeout)
+                r = subprocess.run(cmd + extra + [prompt], cwd=work, capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=timeout)
                 note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
             except subprocess.TimeoutExpired:
                 note = f"codex timed out after {timeout} s"
