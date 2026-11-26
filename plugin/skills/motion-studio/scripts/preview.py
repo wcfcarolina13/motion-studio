@@ -9,12 +9,20 @@ and a small API:
   POST /api/notes           {"t": 12.3, "text": "hard cut here", "region"?: {"x","y","w","h"} in film pixels}
                             -> appends an open note, then saves a still of that exact frame (the region circled on it)
                             to review/notes/note-<id>.png in the background and records it as the note's "still"
+  GET  /api/review          a long-form film's take groups (review_state.take_groups) and section states
+  POST /api/picks           {"key": "m1c", "seed": 7 | null}: the owner's pick among a shot's takes, saved to picks.json
+  POST /api/lock            {"title": "<chapter>", "locked": true | false}: the owner locks a section (review/state.json)
+Picks and locks are the owner's clicks; agents never post them (review_state.py).
+With --lan the server listens on the local network (for the owner's phone on home wifi) and every request needs the
+link's key (?k=..., then a cookie), since anyone on that network could otherwise read and write the film.
 Files are served with byte ranges, so the audio element can seek (python's http.server cannot).
 """
 import json
 import mimetypes
 import os
 import re
+import secrets
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -91,13 +99,45 @@ def _region(body):
     return r if r["w"] >= 4 and r["h"] >= 4 else None
 
 
-def make_handler(film: Path):
+def review(film: Path):
+    """Take groups and section states for the dashboard ({} parts for a film that isn't long-form)."""
+    import review_state
+    try:
+        script = json.loads((film / "script.json").read_text())
+    except (OSError, ValueError):
+        return {"groups": [], "sections": []}
+    try:
+        tl = json.loads((film / "timeline.js").read_text().split("=", 1)[1].rstrip().rstrip(";"))
+    except (OSError, ValueError, IndexError):
+        tl = None
+    notes = load_notes(film)["notes"]
+    return {"groups": review_state.take_groups(film, script, tl), "sections": review_state.sections(film, notes)}
+
+
+def make_handler(film: Path, key=None):
     root = film.parent            # films may reference siblings (e.g. ../sources/), so serve the parent tree
     base = f"/w/{film.name}/"
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
+
+        def _allowed(self):
+            """With a key (--lan), a request carries it in ?k= (the link) or the cookie set from it."""
+            if not key:
+                return True
+            q = re.search(r"[?&]k=([^&]+)", self.path)
+            c = re.search(r"(?:^|;\s*)msk=([^;]+)", self.headers.get("Cookie", ""))
+            ok = (q and secrets.compare_digest(q.group(1), key)) or (c and secrets.compare_digest(c.group(1), key))
+            self._ok = bool(ok)
+            if not ok:
+                self.send_error(403, "open the link with its key")
+            return bool(ok)
+
+        def end_headers(self):
+            if key and getattr(self, "_ok", False):      # the cookie only ever goes to a request that already had the key
+                self.send_header("Set-Cookie", f"msk={key}; Path=/; SameSite=Strict; HttpOnly")
+            super().end_headers()
 
         def _json(self, obj, code=200):
             body = json.dumps(obj).encode()
@@ -143,6 +183,8 @@ def make_handler(film: Path):
                     left -= len(chunk)
 
         def do_GET(self):
+            if not self._allowed():
+                return
             path = self.path.split("?")[0]
             if path == "/":
                 return self._file(HERE / "preview.html")
@@ -154,6 +196,8 @@ def make_handler(film: Path):
                 return self._json({"mtime": max((p.stat().st_mtime for p in files if p.exists()), default=0)})
             if path == "/api/notes":
                 return self._json(load_notes(film))
+            if path == "/api/review":
+                return self._json(review(film))
             if path.startswith("/w/"):
                 target = (root / path[3:]).resolve()
                 if root.resolve() not in target.parents and target != root.resolve():
@@ -162,6 +206,32 @@ def make_handler(film: Path):
             self.send_error(404)
 
         def do_POST(self):
+            if not self._allowed():
+                return
+            self.path = self.path.split("?")[0]
+            if self.path in ("/api/picks", "/api/lock"):
+                import review_state
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                with LOCK:
+                    if self.path == "/api/picks":
+                        k = str(body.get("key", ""))
+                        groups = {g["key"]: g for g in review(film)["groups"]}
+                        if k not in groups:
+                            return self._json({"error": f"no take group {k!r}"}, 404)
+                        picks = review_state.load_picks(film)
+                        if body.get("seed") is None:
+                            picks.pop(k, None)
+                        elif int(body["seed"]) in [x["seed"] for x in groups[k]["takes"]]:
+                            picks[k] = int(body["seed"])
+                        else:
+                            return self._json({"error": f"{k} has no take with seed {body['seed']}"}, 400)
+                        review_state.save_picks(film, picks)
+                        return self._json({"key": k, "pick": picks.get(k)})
+                    try:
+                        st = review_state.set_lock(film, str(body.get("title", "")), bool(body.get("locked")), load_notes(film)["notes"])
+                    except KeyError:
+                        return self._json({"error": "no such section"}, 404)
+                    return self._json(st)
             m = re.fullmatch(r"/api/notes/(\d+)/(done|open)", self.path)
             if m:                       # the owner ticks a note done (or reopens it) from the page
                 nid, status = int(m.group(1)), m.group(2)
@@ -199,9 +269,20 @@ def make_handler(film: Path):
     return Handler
 
 
-def serve(film: Path, port: int = 4173):
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(film))
-    print(f"motion-studio preview for {film.name}: http://localhost:{port}", flush=True)
+def serve(film: Path, port: int = 4173, lan: bool = False):
+    """localhost only by default. lan=True listens on every interface so a phone on the same wifi can open it, behind
+    a random key in the link (kept in review/.lan-key so the link stays the same across restarts)."""
+    key = None
+    if lan:
+        kp = film / "review" / ".lan-key"
+        kp.parent.mkdir(parents=True, exist_ok=True)
+        key = kp.read_text().strip() if kp.exists() else secrets.token_urlsafe(18)
+        kp.write_text(key + "\n"); os.chmod(kp, 0o600)
+    server = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), make_handler(film, key))
+    print(f"motion-studio preview for {film.name}: http://localhost:{port}" + (f"/?k={key}" if key else ""), flush=True)
+    if lan:
+        host = socket.gethostname().split(".")[0]
+        print(f"on the home network (phone): http://{host}.local:{port}/?k={key}", flush=True)
     server.serve_forever()
 
 

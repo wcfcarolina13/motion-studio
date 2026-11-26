@@ -42,6 +42,7 @@ Films are one HTML file where every style is a pure function of time (`window.se
 5. **Scaffold and build.** `new`, then `film.html` with the kit: one `K.scene()` per chain step, captions from the source's own words, in-scene text registered with `K.label()`. → `references/motion-vocabulary.md`, `references/formats.md`
 6. **Stills before motion.** `stills --bars`, look; then 0.05 s stills around every transition. For generated stills: `longform.py scale` (proportions against the size sheet), the garbled-text check, and the lighting check. Fix before rendering anything long. → `references/review.md`
 7. **Preview with the user.** `serve --launch` + `preview_start`. They scrub, step frame by frame, play with sound, drag on the frame to circle what's wrong and pin a note. Every note saves a still of its exact frame (`review/notes/note-<id>.png`, the circle drawn on it); `notes` prints the path. Open each still before fixing, so the fix lands on that frame and that element, then `--resolve` each with what changed. The page hot-reloads.
+   **Takes and section locks (long-form).** When a panel has several takes, the owner picks one in the dashboard and locks sections there; agents never pick or lock. Send him the dashboard link (`serve <film> --lan` for his phone) with every batch. See `references/longform.md` "Review dashboard".
    **Reviewing a rendered cut** (an MP4, not a code film): wrap it in a `film.html` whose `#stage` is the muted `<video>`, with `seek(t)` plus `play(t, rate)`, `pause()` and `time()`. The preview then plays it natively and only corrects drift; with `seek` alone it seeks every frame, which freezes on H.264's sparse keyframes.
    **Preview first, render on the owner's word.** After a fix, the proof is the hot-reloaded preview (and a `stills` frame when the user isn't watching). Don't run `draft`, `final` or `longform.py render` after each fix; render when the owner says to, or once at step 9 when the notes are all closed.
 8. **Sound.** Write `sound.py` (music segments, beds, cues on the picture's events), then `mix`.
@@ -67,7 +68,7 @@ To pick topics, `scripts/trends.py` finds TikTok and YouTube videos that broke o
 
 ## Where things live
 
-- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, closeup.js, mapart.py + mapscene.js, stack.py + stack.js, render.py, verify.py, preview.py + preview.html, audio.py, beats.py, longform.py, panelqa.py, gemini.py, align.py, youtube.py, policycheck.py, trends.py), `assets/templates/`, `references/` (+ `references/prompts/`).
+- The skill (read-only once installed): `scripts/` (studio.py, kit.js, figure.js, closeup.js, mapart.py + mapscene.js, stack.py + stack.js, render.py, verify.py, preview.py + preview.html, review_state.py, audio.py, beats.py, longform.py, panelqa.py, gemini.py, align.py, youtube.py, policycheck.py, trends.py), `assets/templates/`, `references/` (+ `references/prompts/`).
 - Shared data (paths from `config`): the audio library with `catalog.json`, the film ledger, optional house notes.
 - One folder per film: `film.html`, `kit.js` and `audio.py` (vendored copies, so films never break on a skill update), `storyboard.md`, `sound.py`, `sources/`, `review/`, `out/`, `notes.json`.
 
