@@ -700,6 +700,19 @@ class ReviewDashboard(unittest.TestCase):
         finally:
             preview._run = orig
         self.assertEqual(urls, ["http://Studio-Mac.local:4173/?k=K", "http://192.168.1.23:4173/?k=K"])
+        answers[("tailscale", "ip", "-4")] = "100.64.0.7\n"
+        preview._run = lambda *c: answers.get(c, "")
+        try:
+            urls = [u for _, u in preview.lan_urls(4173, "K")]
+        finally:
+            preview._run = orig
+        self.assertEqual(urls[0], "http://100.64.0.7:4173/?k=K")
+
+    def test_dashboard_has_phone_viewport(self):
+        # Without it Android Chrome lays the page out 980 px wide, the phone layout never applies and the film is a
+        # thumbnail (2026-11-26).
+        html = (Path(__file__).parent / "preview.html").read_text()
+        self.assertRegex(html, r'<meta name="viewport" content="width=device-width, initial-scale=1">')
 
     """The owner picks among takes and locks sections in the studio dashboard; agents never do (2026-11-26)."""
     def film(self, d):

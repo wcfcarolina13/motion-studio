@@ -286,10 +286,16 @@ def _run(*cmd):
 
 
 def lan_urls(port, key):
-    """[(label, url)] a phone on the same network can open: the Bonjour name, then the Wi-Fi IP as a fallback.
+    """[(label, url)] a phone can open: the Tailscale IP when the Mac is on a tailnet, then the Bonjour name, then the
+    Wi-Fi IP as a fallback.
     The Bonjour name is macOS's LocalHostName (`scutil --get LocalHostName`), which is not the computer name that
     gethostname() returns: http://Mac.local did not resolve on the owner's network (2026-11-26)."""
     out, q = [], f":{port}/?k={key}"
+    # Tailscale first: a Wi-Fi that isolates clients (the owner's building, 2026-11-26) blocks phone to Mac, and the
+    # tailnet gets through it. Its traffic is encrypted end to end, unlike the plain-HTTP Wi-Fi links below.
+    ts = (_run("tailscale", "ip", "-4") or _run("/Applications/Tailscale.app/Contents/MacOS/Tailscale", "ip", "-4")).split()
+    if ts:
+        out.append(("over Tailscale (works on any network)", f"http://{ts[0]}{q}"))
     name = _run("scutil", "--get", "LocalHostName") or socket.gethostname().split(".")[0]
     if name:
         out.append(("by name", f"http://{name}.local{q}"))
