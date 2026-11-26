@@ -9,6 +9,8 @@ and a small API:
   POST /api/notes           {"t": 12.3, "text": "hard cut here", "region"?: {"x","y","w","h"} in film pixels}
                             -> appends an open note, then saves a still of that exact frame (the region circled on it)
                             to review/notes/note-<id>.png in the background and records it as the note's "still"
+                            With "take": {"key": "m0c", "seed": 2} the note is on that take (from the takes view): its t is the
+                            shot's start, its still is the take's own file, and it carries take {key, seed, n, kind, path, label}
   GET  /api/review          a long-form film's take groups (review_state.take_groups) and section states
   POST /api/picks           {"key": "m1c", "seed": 7 | null}: the owner's pick among a shot's takes, saved to picks.json
   POST /api/lock            {"title": "<chapter>", "locked": true | false}: the owner locks a section (review/state.json)
@@ -256,15 +258,24 @@ def make_handler(film: Path, key=None):
             if not text:
                 return self._json({"error": "empty note"}, 400)
             region = _region(body)
+            take = None
+            if body.get("take"):        # a note on one take in the takes view: pinned to that take, not to the playhead
+                take = take_ref(film, body["take"])
+                if isinstance(take, str):
+                    return self._json({"error": take}, 400)
             with LOCK:
                 data = load_notes(film)
                 note = {"id": 1 + max((n["id"] for n in data["notes"]), default=0), "t": round(float(body.get("t", 0)), 3),
                         "where": body.get("where", ""), "text": text, "status": "open", "created": time.strftime("%Y-%m-%d %H:%M:%S")}
-                if region:
+                if take:
+                    # the take's own file is its still: the rendered frame shows whichever take the film is built with
+                    note.update(t=take.pop("t"), where=take.pop("where"), still=take["path"], take=take)
+                elif region:
                     note["region"] = region
                 data["notes"].append(note)
                 save_notes(film, data)
-            threading.Thread(target=take_still, args=(film, note["id"], note["t"], region), daemon=True).start()
+            if not take:
+                threading.Thread(target=take_still, args=(film, note["id"], note["t"], region), daemon=True).start()
             return self._json(note)
 
     return Handler
@@ -328,13 +339,38 @@ def serve(film: Path, port: int = 4173, lan: bool = False):
     server.serve_forever()
 
 
+def take_ref(film: Path, ref):
+    """{"key", "seed"} from the takes view -> {key, seed, n, kind, path, label, t, where}, or an error string. n counts the
+    group's takes from 1 in seed order, as the takes view shows them; label reads "m0c · take 2"."""
+    groups = {g["key"]: g for g in review(film)["groups"]}
+    key = str((ref or {}).get("key", ""))
+    if key not in groups:
+        return f"no take group {key!r}"
+    g = groups[key]
+    try:
+        seed = int(ref.get("seed"))
+    except (TypeError, ValueError):
+        return "a take note needs a seed"
+    seeds = [x["seed"] for x in g["takes"]]
+    if seed not in seeds:
+        return f"{key} has no take with seed {seed}"
+    n = seeds.index(seed) + 1
+    return {"key": key, "seed": seed, "n": n, "kind": g["kind"], "path": g["takes"][n - 1]["path"],
+            "label": f"{g['shot']}{' clip' if key.endswith(':clip') else ''} · take {n}",
+            "t": round(float(g["t0"] or 0), 3), "where": ", ".join(g["segments"])}
+
+
 def list_notes(film: Path, show_all=False):
     notes = load_notes(film)["notes"]
     for n in notes:
         if show_all or n["status"] == "open":
             reply = f"  -> {n['reply']}" if n.get("reply") else ""
-            print(f"#{n['id']} [{n['status']}] t={n['t']:.2f}s {n.get('where', '')}: {n['text']}{reply}")
-            if n.get("still"):
+            tk = n.get("take")
+            on = f" on {tk['label']} (seed {tk['seed']}, {tk['path']})" if tk else ""
+            print(f"#{n['id']} [{n['status']}] t={n['t']:.2f}s {n.get('where', '')}{on}: {n['text']}{reply}")
+            if tk:
+                print(f"     take: {film / tk['path']}")
+            elif n.get("still"):
                 r = n.get("region")
                 print(f"     still: {film / n['still']}" + (f"  (circled x={r['x']} y={r['y']} w={r['w']} h={r['h']} px)" if r else ""))
             elif n.get("still_error"):

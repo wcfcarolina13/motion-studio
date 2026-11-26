@@ -23,7 +23,7 @@
   #ink { position: absolute; inset: 0; cursor: crosshair; z-index: 2; }
   #ink .ring { position: absolute; border: 3px solid #ff5a1f; border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,0,0,.6), inset 0 0 0 2px rgba(0,0,0,.6); pointer-events: none; }
   #circled { color: var(--accent); }
-  .note img { display: block; width: 100%; margin-top: 6px; border-radius: 4px; border: 1px solid var(--line); }
+  .note img, .note video { display: block; width: 100%; margin-top: 6px; border-radius: 4px; border: 1px solid var(--line); }
   .note.sel { border-color: var(--accent); }
   .note.off { opacity: .35; }
   .note .eye { float: right; background: none; border: 0; padding: 0 2px; color: var(--grey); font-size: 12px; }
@@ -65,6 +65,10 @@
   .take img, .take video { display: block; width: 100%; border-radius: 4px; background: #000; }
   .take .bar { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; color: var(--grey); }
   .take .bar button.use { border-color: var(--accent); color: var(--accent); }
+  .take .tnote { margin-top: 6px; padding: 4px 6px; border-left: 2px solid var(--accent); font-size: 13px; white-space: pre-wrap; }
+  .take .tnote.done { border-color: var(--done); color: var(--grey); }
+  .take .tform { display: flex; gap: 6px; margin-top: 6px; align-items: flex-end; }
+  .take .tform textarea { flex: 1; min-width: 0; resize: vertical; font: inherit; font-size: 13px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
   .take.chosen .bar button.use { border-color: var(--done); color: var(--done); }
   #takesBtn.wait { border-color: #d4a017; color: #d4a017; }
   #section { padding: 8px 12px; border-bottom: 1px solid var(--line); }
@@ -277,15 +281,18 @@ async function loadNotes() {
   if (JSON.stringify(fresh) === lastNotes) return;      // unchanged: don't rebuild (and re-fetch every still)
   lastNotes = JSON.stringify(fresh); notes = fresh;
   renderNotes();
+  if ($("takes").classList.contains("show")) renderTakes();
 }
 function renderNotes() {
   const box = $("notes"); box.innerHTML = "";
   [...notes].sort((a, b) => a.t - b.t).filter(n => !(hideDone && n.status === "done")).forEach(n => {
     const d = document.createElement("div");
     d.className = "note" + (n.status === "done" ? " done" : "") + (selected === n.id ? " sel" : "") + (hidden.has(n.id) ? " off" : "");
-    d.innerHTML = `<div class="meta">#${n.id} · ${fmt(n.t)}${n.where ? " · " + n.where : ""}</div><div></div>` + (n.reply ? `<div class="reply"></div>` : "");
+    d.innerHTML = `<div class="meta">#${n.id} · ${n.take ? n.take.label + " · " : ""}${fmt(n.t)}${n.where ? " · " + n.where : ""}</div><div></div>` + (n.reply ? `<div class="reply"></div>` : "");
     d.children[1].textContent = n.text; if (n.reply) d.children[2].textContent = "↳ " + n.reply;
-    if (n.still) { const im = document.createElement("img"); im.src = `/w/${encodeURIComponent(info.film)}/${n.still}?v=${n.id}`; im.alt = "frame " + n.id; im.title = "open the full still";
+    if (n.still && /\.(mp4|webm|mov)$/i.test(n.still)) { const v = document.createElement("video"); v.src = `/w/${encodeURIComponent(info.film)}/${n.still}`;
+      v.muted = true; v.playsInline = true; v.preload = "metadata"; v.controls = true; v.onclick = ev => ev.stopPropagation(); d.appendChild(v); }
+    else if (n.still) { const im = document.createElement("img"); im.src = `/w/${encodeURIComponent(info.film)}/${n.still}?v=${n.id}`; im.alt = "frame " + n.id; im.title = "open the full still";
       im.onclick = ev => { ev.stopPropagation(); window.open(im.src, "_blank"); }; d.appendChild(im); }
     else if (n.still_error) { const e = document.createElement("div"); e.className = "pending"; e.textContent = "no still: " + n.still_error; d.appendChild(e); }
     else if (n.status === "open") { const e = document.createElement("div"); e.className = "pending"; e.textContent = "saving the frame…"; d.appendChild(e); }
@@ -405,8 +412,11 @@ function renderSection() {
     lastRev = ""; loadReview();
   };
 }
+const takeDrafts = {};       // unsent take comments, kept across the 3 s rebuilds of this view
 function renderTakes() {
-  const box = $("takes"); box.innerHTML = "";
+  const box = $("takes"), act = document.activeElement, keepFocus = act && act.dataset && act.dataset.tid,
+        caret = keepFocus ? act.selectionStart : 0, top = box.scrollTop;
+  box.innerHTML = "";
   const head = document.createElement("div"); head.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:12px";
   head.innerHTML = `<b style="flex:1">Takes: mark the one to use</b><button id="takesClose">close (T)</button>`;
   box.appendChild(head); head.querySelector("#takesClose").onclick = () => toggleTakes(false);
@@ -435,10 +445,33 @@ function renderTakes() {
                                     body: JSON.stringify({ key: g.key, seed: g.pick === tk.seed ? null : tk.seed }) });
         lastRev = ""; loadReview();
       };
-      bar.appendChild(use); c.appendChild(bar); row.appendChild(c);
+      bar.appendChild(use); c.appendChild(bar);
+      // notes on this take: the ones already left, then a box to add one (pinned to this take, not the playhead)
+      notes.filter(n => n.take && n.take.key === g.key && n.take.seed === tk.seed).forEach(n => {
+        const q = document.createElement("div"); q.className = "tnote" + (n.status === "done" ? " done" : "");
+        q.textContent = (n.status === "done" ? "✓ " : "") + n.text + (n.reply ? "  ↳ " + n.reply : ""); c.appendChild(q);
+      });
+      const f = document.createElement("form"); f.className = "tform";
+      const tid = `${g.key}|${tk.seed}`;
+      const ta = document.createElement("textarea"); ta.rows = 2; ta.placeholder = `comment on take ${g.takes.indexOf(tk) + 1}`;
+      ta.dataset.tid = tid; ta.value = takeDrafts[tid] || ""; ta.oninput = () => { takeDrafts[tid] = ta.value; };
+      const send = document.createElement("button"); send.type = "submit"; send.textContent = "comment";
+      ta.addEventListener("keydown", ev => { ev.stopPropagation(); if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); f.requestSubmit(); } });
+      f.onsubmit = async ev => {
+        ev.preventDefault(); const text = ta.value.trim(); if (!text) return;
+        send.disabled = true;
+        const r = await fetch("/api/notes", { method: "POST", headers: { "Content-Type": "application/json" },
+                                             body: JSON.stringify({ text, take: { key: g.key, seed: tk.seed } }) });
+        send.disabled = false;
+        if (r.ok) { delete takeDrafts[tid]; ta.value = ""; await loadNotes(); renderTakes(); }
+      };
+      f.append(ta, send); c.appendChild(f);
+      row.appendChild(c);
     });
     d.appendChild(row); box.appendChild(d);
   });
+  box.scrollTop = top;
+  if (keepFocus) { const el = box.querySelector(`textarea[data-tid="${CSS.escape(keepFocus)}"]`); if (el) { el.focus(); el.setSelectionRange(caret, caret); } }
 }
 function toggleTakes(on) { $("takes").classList.toggle("show", on); if (on) { pause(); renderTakes(); } }
 $("takesBtn").onclick = () => toggleTakes(!$("takes").classList.contains("show"));
