@@ -837,13 +837,38 @@ class ReviewDashboard(unittest.TestCase):
                 pg.locator(".take").nth(1).locator("button.use").click()
                 pg.wait_for_function("document.querySelector('#takesBtn').textContent.includes('all picked')")
                 self.assertEqual(json.loads((film / "picks.json").read_text()), {"m1c": 19})
+                # a comment on the second take, typed in its card while the view polls and rebuilds
+                box = pg.locator(".take").nth(1).locator("textarea")
+                box.click(); box.type("the hand truck is floating")
+                pg.evaluate("window.__mark = document.querySelector('.take')")   # the view as built now
+                urllib.request.urlopen(urllib.request.Request(url + "/api/notes?k=sekret", data=json.dumps({"t": 0.5, "text": "elsewhere"}).encode(),
+                                                              headers={"Content-Type": "application/json"}))
+                pg.wait_for_function("document.querySelector('.take') !== window.__mark", timeout=8000)   # rebuilt by the poll
+                ta = pg.locator(".take").nth(1).locator("textarea")
+                self.assertEqual(ta.input_value(), "the hand truck is floating")
+                self.assertTrue(ta.evaluate("el => el === document.activeElement"))
+                pg.locator(".take").nth(1).locator("textarea").press("Enter")
+                pg.wait_for_selector(".take .tnote")
+                note = json.loads((film / "notes.json").read_text())["notes"][-1]
+                self.assertEqual((note["take"]["label"], note["take"]["seed"], note["still"]), ("m1c · take 2", 19, "panels/m1c_s19.png"))
+                self.assertIn("m1c · take 2", pg.inner_text("#notes"))
                 pg.click("#takesClose")
                 pg.wait_for_selector("#lockBtn")
                 pg.click("#lockBtn")
                 pg.wait_for_function("document.querySelector('#section .st').textContent.includes('locked')")
                 self.assertIn("Cold open", json.loads((film / "review" / "state.json").read_text())["locked"])
                 b.close()
+            req = urllib.request.Request(url + "/api/notes?k=sekret", data=json.dumps({"text": "x", "take": {"key": "m1c", "seed": 3}}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with self.assertRaises(urllib.error.HTTPError) as e:          # a seed the group doesn't have
+                urllib.request.urlopen(req)
+            self.assertEqual(e.exception.code, 400)
             srv.shutdown()
+            import contextlib, io
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                preview.list_notes(film)
+            self.assertIn("on m1c · take 2 (seed 19", out.getvalue())          # agents read which take it is
 
 
 class StillReviewRules(unittest.TestCase):
