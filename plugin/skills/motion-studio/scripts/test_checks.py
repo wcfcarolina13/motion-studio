@@ -793,6 +793,14 @@ class ReviewDashboard(unittest.TestCase):
             shutil.copy(longform.HERE / f, film / f)
         return film
 
+    def test_upscale_covers_every_take(self):
+        # the script names one take; a pick of another needs its upscale too (timeline stopped on each pick, 2026-11-26)
+        import json, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            segs = json.loads((film / "script.json").read_text())["segments"]
+            self.assertEqual(longform.upscale_list(film, segs), ["panels/m1c_s19.png", "panels/m1c_s7.png", "panels/solo.png"])
+
     def test_groups_states_picks_and_lock(self):
         import json, review_state
         with tempfile.TemporaryDirectory() as d:

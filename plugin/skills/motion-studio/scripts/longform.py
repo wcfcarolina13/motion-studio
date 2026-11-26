@@ -755,7 +755,7 @@ def cmd_upscale(a):
     if not binary:
         raise SystemExit(f"{a.bin} not found: install realesrgan-ncnn-vulkan (github.com/xinntao/Real-ESRGAN releases, BSD-3) "
                          "or pass --bin /path/to/realesrgan-ncnn-vulkan")
-    imgs = sorted({x for s in load_script(film)["segments"] if s.get("type") == "panel" for x in panel_images(s.get("data"))})
+    imgs = upscale_list(film, load_script(film)["segments"])
     done = skipped = 0
     for img in imgs:
         src = film / img
@@ -2309,6 +2309,22 @@ def film_frame0(film):
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", "-", "-vf", f"scale={w}:{h},format=rgb24", "-f", "rawvideo", "-"],
                          input=png, capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.uint8).reshape(h, w, 3)
+
+
+def upscale_list(film, segs):
+    """Every panel still to upscale: the ones the script names and every take sibling of them (<shot>_s<seed>.png). The
+    script names one take; the owner may pick another in the dashboard, and `timeline` then needs that one upscaled
+    too (it stopped with "under 1920 wide and has no upscale" on each pick, 2026-11-26)."""
+    import review_state
+    out = set()
+    for s in segs:
+        if s.get("type") != "panel":
+            continue
+        for x in panel_images(s.get("data")):
+            out.add(x)
+            g = review_state.takes_of(film, x)
+            out.update(p for _, p in (g[1] if g else []))
+    return sorted(out)
 
 
 def panel_images(d):
