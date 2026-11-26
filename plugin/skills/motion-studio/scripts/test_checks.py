@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import numpy as np
@@ -611,6 +612,75 @@ class ReviewNotes1126(unittest.TestCase):
         p, t = boxes["plate"], boxes["src"]
         self.assertTrue(p[0] <= t[0] and p[1] <= t[1] and p[2] >= t[2] and p[3] >= t[3])   # and covers the line
         self.assertNotEqual(boxes["fill"].lower(), "#969691")
+
+
+class RepairRoute(unittest.TestCase):
+    """Owner's rule (2026-11-26, picture-truth.md rule 15): local image models are drafts only; repair goes to ChatGPT."""
+    FAKE = r"""
+import os, sys
+from PIL import Image
+args = sys.argv[1:-1]
+open(os.environ["FAKE_LOG"], "a").write(" ".join(args) + "\n" + sys.argv[-1] + "\n")
+base = Image.open([a.split("=", 1)[1] for a in args if a.startswith("--image=")][0]).convert("RGB")
+n = len(open(os.environ["FAKE_LOG"]).read().splitlines()) // 2
+if n == 1:
+    Image.new("RGB", (1536, 1024)).save("image.png")      # first answer not square: asked again
+else:
+    base.paste((20, 20, 20), (0, 0, base.size[0], base.size[1] // 2)); base.save("image.png")
+"""
+
+    def film(self, d):
+        from PIL import Image
+        from PIL.PngImagePlugin import PngInfo
+        film = Path(d) / "film"; (film / "panels").mkdir(parents=True)
+        i = PngInfo(); i.add_text("motion-studio-model", "chatgpt-image via codex")
+        Image.new("RGB", (1600, 900), (230, 220, 200)).save(film / "panels" / "p1.png", pnginfo=i)
+        return film
+
+    def env(self, d):
+        Path(d, "fake.py").write_text(self.FAKE)
+        return {"CODEX_CMD": f"python3 {d}/fake.py", "CODEX_ARGS": "", "CODEX_IMAGES": f"{d}/none", "FAKE_LOG": f"{d}/log"}
+
+    def test_default_is_chatgpt_with_the_crop_as_base(self):
+        import panelqa, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            with unittest.mock.patch.dict(os.environ, self.env(d)):
+                os.environ.pop("CODEX_STILLS_OK", None)
+                with self.assertRaises(SystemExit) as no:
+                    panelqa.repair(film, "panels/p1.png", "600,300,200,200", "Redraw the hand with five fingers")
+                self.assertIn("--allow-codex", str(no.exception))
+                rdir, made, secs, e = panelqa.repair(film, "panels/p1.png", "600,300,200,200", "Redraw the hand with five fingers",
+                                                     seeds=[1], allow_codex=True)
+            log = Path(d, "log").read_text().splitlines()
+            self.assertEqual(len(log), 4)                                   # one re-ask for the non-square answer
+            self.assertIn(f"--image={rdir / 'crop.png'}", log[0])          # the crop is the edit base
+            self.assertIn("Change only this: Redraw the hand with five fingers.", log[1])
+            self.assertEqual((e["model"], e["draft"], made), ("chatgpt", False, [1]))
+            panelqa.accept(film, e["id"])
+            t = longform.png_text(film / "panels" / "p1.png")
+            self.assertEqual(t.get("motion-studio-model"), "chatgpt-image via codex")   # stamps survive the paste
+            self.assertNotIn("motion-studio-draft", t)
+            self.assertEqual(panelqa.draft_repairs(film), {})
+
+    def test_local_models_are_drafts_only_and_render_refuses_them(self):
+        import panelqa, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            for m in ("qwen", "klein"):
+                with self.assertRaises(SystemExit) as no:
+                    panelqa.repair(film, "panels/p1.png", "600,300,200,200", "fix", model=m)
+                self.assertIn("drafts only", str(no.exception))
+            self.assertFalse((film / "repairs").exists())                  # refused before anything ran
+            (film / "repairs").mkdir()
+            (film / "repairs" / "log.json").write_text(json.dumps([{"id": "panels/p1/r01", "image": "panels/p1.png",
+                                                                     "model": "qwen", "status": "accepted"}]))
+            segs = [{"id": "s1", "type": "panel", "data": {"image": "panels-hd/panels/p1.png"}}]
+            flags = longform.draft_stills(film, segs)
+            self.assertEqual(len(flags), 1); self.assertIn("qwen repair", flags[0])
+        src = Path(longform.__file__).read_text()
+        self.assertIn('p.add_argument("--model", choices=panelqa.ROUTES,', src)    # no local default on the CLI
+        self.assertEqual(panelqa.repair.__kwdefaults__["model"], "chatgpt")
 
 
 class ChartScene(unittest.TestCase):

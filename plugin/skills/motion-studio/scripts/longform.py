@@ -15,7 +15,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
   longform.py lint <film | prompts.json>        warn on prompt patterns that break hands, limbs and busy scenes
   longform.py review <film> [--checks c.json]   out/review/index.html: numbered panels to mark by click, regions by drag
-  longform.py repair <film> --beat b07 --box x,y,w,h --prompt "..."   redraw one region -> repairs/<image>/rNN/ candidates
+  longform.py repair <film> --beat b07 --box x,y,w,h --prompt "..." --allow-codex   redraw one region with ChatGPT -> repairs/<image>/rNN/
   longform.py accept|revert <film> panels/p07/r02 [--seed 2]   put a repair into the panel, or take it back out
   longform.py upscale <film> [--size 2304x1296]   Real-ESRGAN 4x then Lanczos to cover the size -> panels-hd/ (timeline uses it)
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
@@ -166,8 +166,10 @@ def png_text(path):
 
 def draft_stills(film, segs):
     """Panel stills stamped as drafts by the stills route (a step-distilled 'turbo' model): layout only, never shipped
-    (owner's rule, 2026-11-25). An upscaled copy loses the stamp, so its source is read too."""
+    (owner's rule, 2026-11-25). An upscaled copy loses the stamp, so its source is read too. A panel whose accepted repair
+    came from a local edit model is a draft too (rule 15, 2026-11-26), read from repairs/log.json, so a JPEG counts."""
     out = []
+    local = panelqa.draft_repairs(film)
     for sg in segs:
         if sg["type"] != "panel":
             continue
@@ -177,6 +179,9 @@ def draft_stills(film, segs):
             if hit is not None:
                 out.append(f'{sg["id"]}: {img} is a draft still ({hit.get("motion-studio-model", "draft model")}, layout only); '
                            f'redraw it with a full-quality model before render')
+            elif local.get(img.split("panels-hd/", 1)[-1]):
+                out.append(f'{sg["id"]}: {img} has an accepted {local[img.split("panels-hd/", 1)[-1]]} repair (local model, drafts '
+                           f'only); revert it and repair with ChatGPT before render')
     return out
 
 
@@ -605,16 +610,21 @@ def image_for(film, a):
 
 
 def cmd_repair(a):
-    """Redraw one region of a panel (a broken hand, a stray limb): crop a square around --box, redraw it with an mflux edit
-    model, and paste back only the box plus --margin, blended inside that edge and colour-matched to the panel around it.
-    mflux has no masked inpainting for klein or Qwen-Edit, so the model redraws the whole crop and our mask confines the
-    change. Candidates land in repairs/<image>/rNN/; nothing touches the panel until `accept`."""
+    """Redraw one region of a panel (a broken hand, a stray limb): crop a square around --box, send the crop to ChatGPT
+    (through codex) as the edit base, and paste back only the box plus --margin, blended inside that edge and colour-matched
+    to the panel around it. Neither route takes a mask, so the model redraws the whole crop and our mask confines the
+    change. The local mflux models are drafts only (--draft-local). Candidates land in repairs/<image>/rNN/; nothing
+    touches the panel until `accept`."""
     film = Path(a.film).resolve()
     img, found = image_for(film, a)
     beats = found[0]["beats"] if found else []
     if a.feather > a.margin:
         print(f"  note: --feather {a.feather} is wider than --margin {a.margin}, so the edge of the box itself keeps some of the old drawing")
-    rdir, made, secs, e = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=a.model, seeds=a.seeds, context=a.context,
+    model = a.model or (panelqa.CHATGPT if not a.draft_local else "qwen")
+    if model in panelqa.GENERATORS:
+        print(f"  DRAFT ONLY: {model} is a local model; the render refuses this panel while the repair is accepted")
+    rdir, made, secs, e = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=model, seeds=a.seeds, context=a.context,
+                                         draft=a.draft_local, allow_codex=a.allow_codex, faceless=a.faceless,
                                          margin=a.margin, feather=a.feather, color=not a.no_color_match, min_change=a.min_change, gen_size=a.gen_size,
                                          gen_args=a.gen_args.split() if a.gen_args else [], beats=beats)
     rid = e["id"]
@@ -634,6 +644,8 @@ def cmd_repair(a):
 def cmd_accept(a):
     film = Path(a.film).resolve()
     src = panelqa.accept(film, a.repair, a.seed)
+    if panelqa.draft_repairs(film).get(str(src.relative_to(film))):
+        print("  DRAFT ONLY: this repair came from a local model, so the render refuses this panel until it is reverted")
     print(f"{src.relative_to(film)} replaced (the previous version is in repairs/{a.repair}/); run `upscale` again for this panel")
 
 
@@ -3934,9 +3946,13 @@ def main():
     p.add_argument("--box", required=True, help="x,y,w,h in panel pixels, or all four in 0-1 (as the review sheet gives them)")
     p.add_argument("--prompt", required=True, help='what to redraw, e.g. "Redraw the right hand in image 1 with five fingers ..."')
     p.add_argument("--ref", help="a second image, e.g. the sleeve and hand cropped from the character sheet")
-    p.add_argument("--model", choices=sorted(panelqa.GENERATORS), default="qwen",
-                   help="qwen (default) redraws pose and anatomy; klein is about 4x faster but barely changes a large box")
-    p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
+    p.add_argument("--model", choices=panelqa.ROUTES,
+                   help="chatgpt (default; ChatGPT images through codex). qwen and klein are local and need --draft-local")
+    p.add_argument("--draft-local", action="store_true",
+                   help="DRAFTS ONLY: repair with a local mflux model (qwen unless --model klein); the render refuses the panel")
+    p.add_argument("--allow-codex", action="store_true", help="the ChatGPT route spends the Codex allowance: one image per take")
+    p.add_argument("--faceless", action="store_true", help="tell ChatGPT no face may show (a faceless hero)")
+    p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3], help="takes (ChatGPT) or seeds (local); 3 by default")
     p.add_argument("--context", type=float, default=2.25, help="crop side as a multiple of the box's longer side")
     p.add_argument("--margin", type=int, default=32, help="pixels the paste reaches past the box, so a redraw that spills out is kept")
     p.add_argument("--feather", type=float, default=16, help="pixels of blend inside the paste edge (keep it at most --margin)")
