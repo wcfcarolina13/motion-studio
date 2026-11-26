@@ -90,6 +90,35 @@ def find_new_png(since, roots):
     return best and best[1]
 
 
+def codex_cmd():
+    """The codex command every ChatGPT image call uses ($CODEX_CMD and $CODEX_ARGS override it, as the tests do)."""
+    cmd = shlex.split(os.environ.get("CODEX_CMD", "codex exec --skip-git-repo-check"))
+    return cmd + shlex.split(os.environ.get("CODEX_ARGS", '-m gpt-6-luna -c model_reasoning_effort="low"'))
+
+
+def allowed(flag):
+    return bool(flag) or os.environ.get("CODEX_STILLS_OK") == "1"
+
+
+def edit_image(prompt, images, dest, timeout=None):
+    """One ChatGPT image edit through codex: the pictures go in as --image=<path> (one argument each), the newest PNG it
+    writes (in its working folder or ~/.codex/generated_images) is copied to dest. Returns None, or why it gave none."""
+    work = tempfile.mkdtemp(prefix="codex-edit-")
+    since = time.time() - 1
+    note = ""
+    try:
+        r = subprocess.run(codex_cmd() + [f"--image={os.path.abspath(x)}" for x in images] + [prompt], cwd=work,
+                           capture_output=True, text=True, timeout=timeout or int(os.environ.get("CODEX_TIMEOUT", 600)))
+        note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
+    except subprocess.TimeoutExpired:
+        note = "codex timed out"
+    png = find_new_png(since, [work, os.path.expanduser(os.environ.get("CODEX_IMAGES", "~/.codex/generated_images"))])
+    if png:
+        shutil.copyfile(png, str(dest) + ".part"); os.replace(str(dest) + ".part", dest)
+    shutil.rmtree(work, True)
+    return None if png else (note or "codex returned without an image")
+
+
 def ask(shot, style, faceless, scale="", w=1536, h=1024):
     parts = [shot["prompt"].strip()]
     if scale:
@@ -190,7 +219,7 @@ def main():
     ap.add_argument("--anatomy-rerolls", type=int, help="most re-rolls the anatomy judge may ask for in this run (default: a quarter of the shots, at least 3)")
     ap.add_argument("--edit-from", help="base PNG for every shot with a \"change\" and no \"edit_from\" (flipbook frames)")
     a = ap.parse_args()
-    if not (a.allow_codex or os.environ.get("CODEX_STILLS_OK") == "1"):
+    if not allowed(a.allow_codex):
         raise SystemExit("codex_stills.py spends the owner's Codex allowance: pass --allow-codex once he has said yes")
     cfg = json.load(open(a.shots))
     shots = [s for s in cfg["shots"] if not a.only or s["id"] in a.only]
@@ -212,8 +241,7 @@ def main():
     stop = [f'{x["id"]}: "{m}" {why}' for x in todo for m, why in panelqa.refused(x.get("prompt") or x.get("change") or "")]
     if stop:
         raise SystemExit("refused prompt words, nothing run:\n  " + "\n  ".join(stop))
-    cmd = shlex.split(os.environ.get("CODEX_CMD", "codex exec --skip-git-repo-check"))
-    cmd += shlex.split(os.environ.get("CODEX_ARGS", '-m gpt-6-luna -c model_reasoning_effort="low"'))
+    cmd = codex_cmd()
     images = os.path.expanduser(os.environ.get("CODEX_IMAGES", "~/.codex/generated_images"))
     face_cmd = os.environ.get("FACE_CHECK_CMD", FACE_DEFAULT)
     budget = a.anatomy_rerolls if a.anatomy_rerolls is not None else max(3, -(-len(shots) // 4))   # re-rolls the anatomy

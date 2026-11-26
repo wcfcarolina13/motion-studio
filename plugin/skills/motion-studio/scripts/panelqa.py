@@ -364,6 +364,13 @@ def composite(base, out_png, crop, box, feather):
     return res
 
 
+# Repair routes. ChatGPT images through codex is the default: the owner's rule (2026-11-26, picture-truth.md rule 15) is
+# that local image models are not good enough for finished pictures, so the mflux edit models below are drafts only.
+# They run only with draft=True (`repair --draft-local`), and a panel with an accepted local repair is refused at
+# render (longform.draft_stills reads repairs/log.json), so the default can't slip back to them.
+CHATGPT = "chatgpt"
+ROUTES = (CHATGPT, "klein", "qwen")
+CHATGPT_TRIES = 2   # calls per take: a non-square answer is asked again once
 GENERATORS = {      # mflux 0.23 CLIs; neither takes a mask, so the crop is redrawn whole and the paste confines it
     "klein": ["mflux-generate-flux2-edit", "--model", "flux2-klein-4b"],
     "qwen": ["mflux-generate-qwen-edit", "--model", "qwen-image-edit-2511", "-q", "6", "--low-ram"],
@@ -422,8 +429,33 @@ def make_crop(src, crop, gen, dest):
     return "lanczos"
 
 
-def repair(film, img, box, prompt, *, ref=None, model="qwen", seeds=(1,), context=2.25, margin=32, feather=16,
-           color=True, min_change=0.10, gen_size=None, gen_args=(), beats=()):
+def repair_ask(prompt, side, ref=False, faceless=False):
+    """The ChatGPT edit instruction for one crop: keep the picture, change only the fault, same square size."""
+    import codex_stills
+    parts = ["Edit the first attached picture. It is a square crop of a larger illustration, and it will be pasted back "
+             "into that illustration, so keep it the same picture: the same composition, framing, line work, colours, "
+             "paper texture and light, with everything outside the part to fix in the same place. Change only this: "
+             + prompt.strip().rstrip(".") + "."]
+    if ref:
+        parts.append("The second attached picture is a reference for how that part should look. Do not copy it in whole.")
+    parts.append(f"Make exactly one square image, {side}x{side}, the same size as the first attached picture, and save it "
+                 "as image.png in the current folder.")
+    parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
+    parts.append(codex_stills.HANDS)
+    if faceless:
+        parts.append("No human face may be visible anywhere: show people from behind or cropped at the shoulders. This is a hard rule.")
+    return " ".join(parts)
+
+
+def draft_repairs(film):
+    """{image: model} for panels whose accepted repair came from a local (draft-only) model."""
+    log_path = Path(film) / "repairs" / "log.json"
+    log = json.loads(log_path.read_text()) if log_path.exists() else []
+    return {e["image"]: e["model"] for e in log if e.get("status") == "accepted" and e.get("model") in GENERATORS}
+
+
+def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), context=2.25, margin=32, feather=16,
+           color=True, min_change=0.10, gen_size=None, gen_args=(), beats=(), draft=False, allow_codex=False, faceless=False):
     """Redraw one region of a panel. The paste covers the box grown by `margin`, blends over `feather` px inside that, and
     matches the redraw's colour to the original around it. Writes repairs/<image path>/rNN/: crop.png (the square sent
     to the model), out_<seed>.png (what came back), compare_<seed>.png (the crop before and after) and, unless the seed
@@ -432,7 +464,22 @@ def repair(film, img, box, prompt, *, ref=None, model="qwen", seeds=(1,), contex
     src = film / img
     if not src.exists():
         raise SystemExit(f"no panel image {img}")
-    gen_cmd = generator(model)
+    if model not in ROUTES:
+        raise SystemExit(f"no repair route {model}: {', '.join(ROUTES)}")
+    if model in GENERATORS and not draft:
+        raise SystemExit(f"{model} is a local image model, and local models are drafts only (owner's rule, picture-truth.md "
+                         "rule 15): repair with ChatGPT (the default), or pass --draft-local for a draft the render will refuse")
+    if model == CHATGPT:
+        import codex_stills
+        if not codex_stills.allowed(allow_codex):
+            raise SystemExit("the ChatGPT repair spends the owner's Codex allowance (one image per take): pass --allow-codex "
+                             "once he has said yes")
+        stop = [f'"{m}" {why}' for m, why in refused(prompt)]
+        if stop:
+            raise SystemExit("refused prompt words, nothing run:\n  " + "\n  ".join(stop))
+        if gen_args:
+            raise SystemExit("--gen-args are mflux arguments; the ChatGPT route takes none")
+    gen_cmd = generator(model) if model in GENERATORS else None
     W, H = size(src)
     b = parse_box(box, W, H)
     region = grow(b, margin, W, H)
@@ -455,16 +502,36 @@ def repair(film, img, box, prompt, *, ref=None, model="qwen", seeds=(1,), contex
     crop = rdir / "crop.png"
     enlarged = make_crop(src, (sx, sy, side), gen, crop)
     images = [str(crop)] + ([str(Path(ref).resolve())] if ref else [])
-    cmd = [*gen_cmd, "--image-paths", *images, "--prompt", prompt, "--seed", *[str(s) for s in seeds],
-           "--width", str(gen), "--height", str(gen), "--output", str(rdir / "out.png"), *gen_args]
     t0 = time.time()
-    subprocess.run(cmd, check=True)
+    failures = {}
+    if model == CHATGPT:
+        # the crop itself is the edit base; ChatGPT has no seed, so each "seed" is one independent take
+        ask = repair_ask(prompt, gen, ref=bool(ref), faceless=faceless)
+        for x in seeds:
+            out = rdir / f"out_{x}.png"
+            for t in range(CHATGPT_TRIES):
+                why = codex_stills.edit_image(ask, images, out)
+                if why is None:
+                    w, h = size(out)
+                    if abs(w / h - 1) <= 0.02:
+                        failures.pop(str(x), None)
+                        break
+                    why = f"came back {w}x{h}, not square"
+                    out.unlink()
+                print(f"  take {x} try {t + 1}: {why}")
+                failures[str(x)] = why
+        with open(film / "repairs" / "usage.log", "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\trepair {key}\tchatgpt via codex\t{len(seeds)} takes\n")
+    else:
+        cmd = [*gen_cmd, "--image-paths", *images, "--prompt", prompt, "--seed", *[str(s) for s in seeds],
+               "--width", str(gen), "--height", str(gen), "--output", str(rdir / "out.png"), *gen_args]
+        subprocess.run(cmd, check=True)
+        for x in seeds:     # mflux writes out.png for one seed and out_seed_<n>.png for several; name them out_<n>.png
+            for got in ([rdir / "out.png"] if len(seeds) == 1 else []) + [rdir / f"out_seed_{x}.png"]:
+                if got.exists():
+                    got.rename(rdir / f"out_{x}.png")
+                    break
     secs = round(time.time() - t0, 1)
-    for x in seeds:     # mflux writes out.png for one seed and out_seed_<n>.png for several; name them out_<n>.png
-        for got in ([rdir / "out.png"] if len(seeds) == 1 else []) + [rdir / f"out_seed_{x}.png"]:
-            if got.exists():
-                got.rename(rdir / f"out_{x}.png")
-                break
     old = base[sy:sy + side, sx:sx + side]
     rc = (region[0] - sx, region[1] - sy, region[2], region[3])
     band = ring(side, side, rc, RING)
@@ -519,6 +586,7 @@ def repair(film, img, box, prompt, *, ref=None, model="qwen", seeds=(1,), contex
              "margin": margin, "feather": feather, "open_sides": sides, "crop": [sx, sy, side], "gen_size": gen, "resize_detail": trip,
              "enlarged_with": enlarged, "color_match": color, "crossings": cross, "prompt": prompt, "model": model,
              "ref": ref, "seeds": list(seeds), "candidates": made, "checks": checks, "seconds": secs,
+             "draft": model in GENERATORS, "failures": failures,
              "at": time.strftime("%Y-%m-%d %H:%M"), "status": "candidate" if made else "failed"}
     log.append(entry)
     log_path.write_text(json.dumps(log, indent=1, ensure_ascii=False) + "\n")
@@ -532,6 +600,31 @@ def _entry(film, rid):
         if e["id"] == rid:
             return log, log_path, e
     raise SystemExit(f"no repair {rid} in {log_path}")
+
+
+def png_stamps(path):
+    """A PNG panel's text entries (model, original, anatomy verdict), which an ffmpeg rewrite would drop."""
+    if Path(path).suffix.lower() != ".png":
+        return {}
+    from PIL import Image
+    with Image.open(path) as im:
+        return dict(im.text or {})
+
+
+def restamp(path, stamps, draft=None):
+    """Put a panel's text entries back after a paste; a local-model repair also marks it a draft (render refuses it)."""
+    if Path(path).suffix.lower() != ".png" or not (stamps or draft):
+        return
+    from PIL import Image
+    from PIL.PngImagePlugin import PngInfo
+    stamps = dict(stamps)
+    if draft:
+        stamps.update({"motion-studio-draft": "1", "motion-studio-model": f"{draft} repair (local, drafts only)"})
+    info = PngInfo()
+    for k, v in stamps.items():
+        info.add_text(k, v)
+    im = Image.open(path); im.load()
+    im.save(str(path) + ".part", format="PNG", pnginfo=info); os.replace(str(path) + ".part", path)
 
 
 def accept(film, rid, seed=None):
@@ -575,8 +668,10 @@ def accept(film, rid, seed=None):
         else:
             gain, off = [1.0] * 3, [0.0] * 3
         write_rgb(paste(base, redrawn(out, side, gain, off), e["crop"], e["region"], e["feather"], e.get("open_sides", "")), tmp)
+    keep = png_stamps(src)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(tmp), "-frames:v", "1",
                     *(["-q:v", "2"] if src.suffix.lower() in (".jpg", ".jpeg") else []), str(src)], check=True)
+    restamp(src, keep, draft=e.get("model") in GENERATORS and e.get("model"))
     seq = 1 + max([x.get("accepted_seq", 0) for x in log] or [0])
     e.update(status="accepted", accepted_seed=seed, accepted_seq=seq, accepted_at=time.strftime("%Y-%m-%d %H:%M"))
     log_path.write_text(json.dumps(log, indent=1, ensure_ascii=False) + "\n")
