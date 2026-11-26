@@ -1,4 +1,5 @@
 """Tests for motioncheck.py, overlapcheck.py and readcheck.py: python3 -m unittest test_checks (from scripts/). Needs ffmpeg."""
+import json
 import os
 import shutil
 import subprocess
@@ -551,6 +552,65 @@ class PanelFx(unittest.TestCase):
                 self.assertFalse(f.errors)
             self.assertGreater(float(np.abs(frames[30].astype(int) - frames[29]).mean()), 0.5)   # rain and snow move every frame
             self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])                 # the flickers stay under the flash limit
+
+
+class ReviewNotes1126(unittest.TestCase):
+    """Engine fixes from the owner's 51-note review of Survive Year 1 (2026-11-26)."""
+
+    def test_config_keeps_nested_tool_settings(self):
+        import studio
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d); (home / ".motion-studio.json").write_text(json.dumps({"root": "~/films", "mflux": {"bin": "/x"}}))
+            old = os.environ.get("HOME"); os.environ["HOME"] = str(home)
+            try:
+                cfg = studio.config()
+            finally:
+                os.environ["HOME"] = old
+        self.assertEqual(cfg["mflux"], {"bin": "/x"})
+        self.assertEqual(cfg["root"], home / "films")
+
+    def test_refused_words_and_faceless_hero(self):
+        import panelqa
+        self.assertTrue(panelqa.refused("a row of porta-potties with blank doors"))
+        self.assertTrue(panelqa.refused("one featureless plastic door"))
+        self.assertFalse(panelqa.refused("doors with a gray pull handle and a red/green occupancy dot"))
+        self.assertEqual(panelqa.lint([{"id": 1, "prompt": "The hero from behind, face hidden in black shadow."}], route="codex"), [])
+        self.assertTrue(panelqa.lint([{"id": 1, "prompt": "A tank hidden under the floor."}], route="codex"))
+
+    def test_strong_push_flagged(self):
+        import longform
+        strong = {"id": "a", "type": "panel", "data": {"camera": {"from": {"x": 0.3, "y": 0.4, "z": 1.32}, "to": {"x": 0.3, "y": 0.4, "z": 1.75}}}}
+        self.assertEqual(longform.strong_pushes([strong, {"id": "b", "type": "panel", "data": {"camera": "slow-push"}}]), [("a", 1.75)])
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_caption_card_under_tag_and_source_plate(self):
+        import longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            Image.new("RGB", (1920, 1080), (40, 40, 44)).save(film / "panels" / "a.png")
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            seg = {"id": "p", "type": "panel", "t0": 0.0, "t1": 3.0, "source": "County records, 2025", "tag": {"text": "Day 1"},
+                   "data": {"image": "panels/a.png", "camera": "slow-push", "caption_card": "Twelve units, one crew"}}
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 3.0, "segments": [seg]}) + ";\n")
+            with render.Film(film) as f:
+                f.seek(1.5)
+                boxes = f.page.evaluate("""() => {
+                  const r = el => { const b = el.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]; };
+                  const tag = [...document.querySelectorAll('rect')].find(x => x.getAttribute('fill') === '#F1EDE4' && x.closest('g') && x.getBBox().x < 200 && x.getBBox().width > 0);
+                  const card = [...document.querySelectorAll('rect')].find(x => x.getAttribute('stroke-opacity') === '0.35');
+                  const src = [...document.querySelectorAll('text')].find(x => x.textContent.startsWith('Source:'));
+                  const plate = src.previousElementSibling;
+                  return {tag: r(tag), card: r(card), src: r(src), plate: r(plate), op: +plate.getAttribute('opacity'), fill: src.getAttribute('fill')};
+                }""")
+                self.assertFalse(f.errors)
+        self.assertGreaterEqual(boxes["card"][1], boxes["tag"][3])          # the caption card starts below the tag card
+        self.assertGreater(boxes["op"], 0.5)                                  # the plate is up on a panel
+        p, t = boxes["plate"], boxes["src"]
+        self.assertTrue(p[0] <= t[0] and p[1] <= t[1] and p[2] >= t[2] and p[3] >= t[3])   # and covers the line
+        self.assertNotEqual(boxes["fill"].lower(), "#969691")
 
 
 class StatScene(unittest.TestCase):

@@ -48,6 +48,15 @@ BODY_SAID = re.compile(r"\b(?:waist[- ]up|from behind|shoulders?|whole (?:arm|bo
 TIPPED = re.compile(r"\b(?:tipped|tips? over|on its side|overturned|knocked over|toppled|upside[- ]down|fallen over|lying on its)\b", re.I)
 INSIDE_SAID = re.compile(r"\b(?:shut|closed|latched|now (?:on|faces|points|lies)|sideways|rotated|turned with it)\b", re.I)
 XRAY = re.compile(r"\b(?:hidden (?:inside|behind|under|in)|buried|underground|beneath the (?:floor|ground|surface)|inside the walls?|behind the wall)\b", re.I)
+# "face hidden in black shadow" is how a faceless hero is written, not a hidden object to show X-ray style
+XRAY_FACELESS = re.compile(r"\b(?:face|faces|head|eyes|features)\s+(?:\w+\s+){0,2}hidden in\b|hidden in (?:\w+\s+)?(?:shadow|shade|darkness)", re.I)
+# words that strip what a thing needs to read as itself: "blank doors" took the door handles off about ten porta-potty
+# stills, the owner's most repeated note (2026-11-26). These stop a run (refused()), they don't only warn.
+REFUSED = [
+    (re.compile(r"\b(?:blank|featureless|handleless|plain flat|bare)\s+(?:\w+\s+)?doors?\b", re.I),
+     "strips the door's hardware (the model drops the handle and latch); say what the door has instead, e.g. \"a gray "
+     "pull handle and a red/green occupancy dot\", as the object sheet does"),
+]
 XRAY_SAID = re.compile(r"\b(?:see[- ]through|x[- ]ray|cutaway|outline|transparent|ghost(?:ed)?)\b", re.I)
 MULTI = re.compile(r"\bwhile\b|\bthen\b|\bas (?:he|she|they)\b|\bidle\b", re.I)
 NEG = re.compile(r"\b(?:no|without|not|never|avoid|don't|doesn't|isn't)\s+[\w-]+", re.I)
@@ -154,16 +163,23 @@ def lint(items, boiler_re=None, route="klein"):
         if tp and not INSIDE_SAID.search(p):
             w.append(f"a tipped object (\"{tp.group(0)}\") that doesn't say where its insides are: say it's shut (\"door shut and "
                      "latched\") or where each inside part now lies, or the model draws them upright")
-        xr = XRAY.search(p)
+        xr = next((m for m in XRAY.finditer(p) if not any(f.start() <= m.start() < f.end() for f in XRAY_FACELESS.finditer(p))), None)
         if xr and not XRAY_SAID.search(p):
             w.append(f"a hidden thing (\"{xr.group(0)}\") with no way to show it: draw it X-ray style, the cover solid and the "
                      "thing a faint see-through outline")
         wg = WHITE_GROUND.search(p)
         if wg:
             w.append(f"\"{wg.group(0)}\": grounds are warm cream, not white (owner's rule); say \"warm cream paper\"")
+        for m, why in refused(p):
+            w.append(f"REFUSED \"{m}\": {why}")
         if w:
             out.append((it.get("id"), w))
     return out
+
+
+def refused(prompt):
+    """[(matched words, why)] for phrases no still prompt may use (REFUSED); runners stop before any model call."""
+    return [(m.group(0), why) for rx, why in REFUSED for m in rx.finditer(prompt or "")]
 
 
 def white_share(path):

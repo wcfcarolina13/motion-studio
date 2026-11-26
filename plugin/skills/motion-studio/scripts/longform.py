@@ -902,7 +902,7 @@ def cmd_timeline(a):
         else:
             dur = s.get("hold", 3.0)
         dur += holds[s["id"]][1]
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -2461,6 +2461,22 @@ def flip_frames(segs, fps=FPS):
     return {int(round(t * fps)) for sg in segs if sg["type"] == "panel" for t, _ in ((sg.get("data") or {}).get("flips") or [])[1:]}
 
 
+PUSH_MAX = 1.3     # a panel camera zoomed past this reads as "zooming at nothing" (owner's review, 2026-11-26)
+
+
+def strong_pushes(segs):
+    """[(segment id, deepest zoom)] for panels whose own camera zooms past PUSH_MAX. The engine's shot defaults stop at
+    1.2 (ECU) and "slow-push" at 1.14; only a hand-written camera gets here."""
+    out = []
+    for s in segs:
+        cam = (s.get("data") or {}).get("camera") if s.get("type") == "panel" else None
+        if isinstance(cam, dict):
+            z = max(float((cam.get(k) or {}).get("z", 1)) for k in ("from", "to"))
+            if z > PUSH_MAX:
+                out.append((s["id"], z))
+    return out
+
+
 def stat_ticks(segs, fps=FPS):
     """Video frames where a stat scene's count-up shows a new number, for verify's allow_frames. The count eases out, so
     near its end the number holds for several frames and then steps a digit, which the pop check reads as a pop (three
@@ -3642,11 +3658,15 @@ def _check(a, film):
                          f"engine.json (a slow push across every hold), or add a camera key or a piece inside the hold")
         for sid, m in low:
             how = "to move too little" if m < mfloor else "to move barely above it"
-            flags.append(f"{sid}: panel predicted {how} (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it a "
-                         f"stronger camera (\"camera\": {{\"from\": {{\"x\", \"y\", \"z\"}}, \"to\": {{...}}}}, a zoom change of 10% or more, "
-                         f"or a pan with z at least 1.12) or cut it shorter"
+            flags.append(f"{sid}: panel predicted {how} (quietest 2 s {m:.3f}, floor {mfloor:.3f}); give it "
+                         f"\"camera\": \"slow-push\" (a centred push to 1.14, the owner's preference), a pan with z at least "
+                         f"1.12, or cut it shorter. A strong or off-centre push (z over {PUSH_MAX}) reads as zooming at "
+                         f"nothing, so a quiet flag on a slow push is acceptable"
                          + ("; its clip ends before the segment does and holds its last frame: give it a camera move, "
                             "slow the clip with \"clip_speed\" under 1, or shorten the segment (never loop or reverse a clip)" if (next((x for x in segs if x["id"] == sid), {}).get("data") or {}).get("clip") else ""))
+    for sid, z in strong_pushes(segs):
+        flags.append(f"{sid}: its camera zooms to {z:.2f}, past {PUSH_MAX}: a strong push reads as zooming at nothing "
+                     f"(owner's note); use \"camera\": \"slow-push\" (centred, to 1.14) and accept a quiet-panel flag")
     video = film / "out" / "silent.mp4"
     if not video.exists():
         report.append("no render yet: run `render` for dead-air, cue and flash checks")

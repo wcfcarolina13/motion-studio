@@ -42,7 +42,9 @@ def config():
     path = Path.home() / ".motion-studio.json"
     if path.exists():
         cfg.update(json.loads(path.read_text()))
-    return {k: Path(v).expanduser() for k, v in cfg.items()}
+    # paths become Paths; other tools keep their own settings in the same file ("mflux": {...}, "gemini": {...}), which
+    # pass through untouched (a nested "mflux" crashed `config`, 2026-11-26)
+    return {k: Path(v).expanduser() if isinstance(v, str) else v for k, v in cfg.items()}
 
 
 def film_dir(arg):
