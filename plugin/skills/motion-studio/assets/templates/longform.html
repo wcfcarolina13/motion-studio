@@ -73,6 +73,13 @@ const FONT = "Georgia, serif", SANS = "Helvetica Neue, Helvetica, Arial, sans-se
 // on a phone held upright is about 6.5 cm wide, so 56 px of 1920 is about 11 pt. "type_scale" in script.json scales it per film.
 // Text marked AUX (chapter and source lines, kickers, attributions) is a label the viewer need not read, and is exempt.
 const TS = TL.type_scale || 1, READ = Math.round(V(56, 40) * TS), AUX = { "data-aux": 1 };
+// where the HUD's tag card sits (top left), and when it is up: [{t0, t1}] from the segments' "tag" keys, as the HUD reads
+// them below. Panels' caption cards stack under it.
+const TAG_LEFT = V(56, SAFE.x0 + 20), TAG_TOP = V(40, SAFE.y0 + 10);
+const tagSpans = (() => {
+  const ev = TL.segments.filter(s => "tag" in s).map(s => ({ t: s.tag && s.tag.t != null ? s.tag.t - 0.05 : s.t0, on: s.tag != null }));
+  return ev.map((e, i) => ({ t0: e.t, t1: i + 1 < ev.length ? ev[i + 1].t : TL.duration, on: e.on })).filter(x => x.on);
+})();
 const pitch = (size, k = 1.22) => Math.round(size * k);        // line pitch for a size
 const fit = (px, size, k = 0.55) => Math.max(6, Math.floor(px / (size * k)));   // characters per line that fit px at size (SANS ~0.55 em)
 
@@ -88,6 +95,9 @@ const sceneG = K.group("scenes");
 const overlayG = K.group("overlay");   // per-segment text that must not move with a scene's camera (s.ov)
 const footG = K.group("foot");
 const sourceT = K.text("", { ...AUX, "font-family": SANS, "font-size": V(20, 24), fill: C.GREY, x: 60, y: V(H - 36, SAFE.y0 - 50) }, footG);
+// the plate behind the source line on full-frame pictures (below, srcPlate); drawn under the text in the same group
+const sourcePlate = K.el("rect", { fill: "#0d0c0a", "fill-opacity": 0.72, rx: 4, opacity: 0 }, footG);
+footG.insertBefore(sourcePlate, sourceT);
 const chapterT = K.text("", { ...AUX, "font-family": SANS, "font-size": 20, fill: C.GREY, x: W - 60, y: 52, "text-anchor": "end", "letter-spacing": 3 }, footG);
 
 // ── helpers ──────────────────────────────────────────────
@@ -1129,6 +1139,9 @@ function panelCam(d) {
     case "tilt-up":   return { from: { x: fx, y: 0.5 + dx, z: zp }, to: { x: fx, y: 0.5 - dx, z: zp } };
     case "tilt-down": return { from: { x: fx, y: 0.5 - dx, z: zp }, to: { x: fx, y: 0.5 + dx, z: zp } };
     case "hold":      return { from: { ...f, z: 1.03 }, to: { ...f, z: 1.045 } };
+    // the owner's preferred fix for a quiet panel: a slow push on the frame's centre to 1.14. Strong off-centre pushes
+    // (z 1.32 to 1.75) read to him as "zooming at nothing" (review of Survive Year 1, 2026-11-26)
+    case "slow-push": return { from: { ...c, z: 1.0 }, to: { ...c, z: 1.14 } };
     default:          return { from: { x: K.lerp(0.5, fx, 0.4), y: K.lerp(0.5, fy, 0.4), z: Math.min(z0, z1) }, to: { ...f, z: Math.max(z0, z1) } };
   }
 }
@@ -1300,9 +1313,13 @@ B.panel = (s, g) => {
     const cc = typeof d.caption_card === "string" ? { text: d.caption_card } : d.caption_card;
     const c0 = cueT(cc, s.t0 + 0.15), c1 = cc.hold ? c0 + cc.hold : s.t1;
     const cg = K.el("g", {}, s.ov);
-    const cs = READ, tx = K.text(cc.text, { "font-family": FONT, "font-size": cs, fill: "#f2ead8", x: 92, y: 66 + Math.round(cs * 1.25) }, cg);
+    // top left, where the HUD's tag card also sits: while a tag is up at any moment of the card's hold, the card stacks
+    // under it (the two collided, owner's review of Survive Year 1, 2026-11-26)
+    const under = tagSpans.some(sp => sp.t0 < c1 && sp.t1 > c0);
+    const cx0 = under ? TAG_LEFT + 4 : 60, cy0 = under ? TAG_TOP + Math.round(READ * 1.45) + 22 : 66;
+    const cs = READ, tx = K.text(cc.text, { "font-family": FONT, "font-size": cs, fill: "#f2ead8", x: cx0 + 32, y: cy0 + Math.round(cs * 1.25) }, cg);
     const bw = Math.max(260, cc.text.length * cs * 0.5 + 64);
-    cg.insertBefore(K.el("rect", { x: 60, y: 66, width: bw, height: Math.round(cs * 1.75), rx: 4, fill: "#0d0c0a", "fill-opacity": 0.86, stroke: "#f2ead8", "stroke-opacity": 0.35 }, cg), tx);
+    cg.insertBefore(K.el("rect", { x: cx0, y: cy0, width: bw, height: Math.round(cs * 1.75), rx: 4, fill: "#0d0c0a", "fill-opacity": 0.86, stroke: "#f2ead8", "stroke-opacity": 0.35 }, cg), tx);
     K.label(cc.text, c0, c1, "caption card");
     card = { g: cg, c0, c1 };
   }
@@ -1491,6 +1508,18 @@ window.STUDIO.ready = Promise.all([...new Set(PANEL_IMAGES.concat(MAP ? MAP.imag
 const labelRuns = pick => SEGS.reduce((runs, s) => { const v = pick(s), r = runs[runs.length - 1];
   if (r && r.v === v) r.t1 = s.t1; else runs.push({ v, t0: s.t0, t1: s.t1 }); return runs; }, []);
 const srcRuns = labelRuns(s => s.source ? "Source: " + s.source : "");
+// grey on a map or a busy picture was unreadable ("black text on a noisy background", owner's review, 2026-11-26): on panels
+// and maps the line sits on a dark plate in light grey. A segment's "source_plate" (true/false) overrides either way.
+const srcPlate = s => s.source_plate != null ? !!s.source_plate : FULL.has(s.type);
+const segAt = t => { let cur = null; for (const s of SEGS) { if (s.t0 > t) break; cur = s; } return cur; };
+const showSource = t => {
+  showLabel(sourceT, srcRuns, t);
+  const a = +sourceT.getAttribute("opacity"), s = segAt(t), on = a > 0.001 && s && srcPlate(s);
+  sourceT.setAttribute("fill", on ? "#e4e1da" : C.GREY);
+  if (!on) { sourcePlate.setAttribute("opacity", 0); return; }
+  const b = sourceT.getBBox();
+  K.set(sourcePlate, { x: b.x - 12, y: b.y - 6, width: b.width + 24, height: b.height + 12, opacity: a.toFixed(3) });
+};
 const chapRuns = labelRuns(s => FULL.has(s.type) || VERT ? "" : (s.chapter || "").toUpperCase());   // a drama panel (and a Short) carries no chapter label
 const showLabel = (el, runs, t) => {
   const i = runs.findIndex(r => t >= r.t0 && t < r.t1), last = runs[runs.length - 1];
@@ -1512,6 +1541,10 @@ const HUD = (() => {
   if (!ev.counter.length && !ev.tag.length) return null;
   const hudG = K.group("hud");
   const PAPER = "#F1EDE4", NEG = C.NEG || "#B3261E", POS = C.POS || "#2E7D32";
+  // the cards are paper whatever the film's palette, so their ink must be dark: on the engine's default dark palette C.INK
+  // is a light grey, and a tag read as light on light (2026-11-26)
+  const lum = h => { const n = parseInt(String(h).replace("#", "").slice(0, 6), 16); return ((n >> 16 & 255) * 0.299 + (n >> 8 & 255) * 0.587 + (n & 255) * 0.114) / 255; };
+  const INK = /^#[0-9a-f]{6}$/i.test(C.INK) && lum(C.INK) > 0.5 ? "#1f1d1a" : C.INK;
   const num = str => {          // "−$25,375.50k" -> {sign, pre, n, dec, post}
     const m = String(str).match(/^(.*?)(\d[\d,]*(?:\.\d+)?)(.*)$/);
     if (!m) return null;
@@ -1519,7 +1552,7 @@ const HUD = (() => {
     return { pre: m[1].replace(/[−-]/g, ""), n: (neg ? -1 : 1) * parseFloat(m[2].replace(/,/g, "")), dec: (m[2].split(".")[1] || "").length, post: m[3] };
   };
   const fmt = (p, n) => (n < 0 ? "−" : "") + p.pre + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: p.dec, maximumFractionDigits: p.dec }) + p.post;
-  const right = V(W - 56, SAFE.x1 - 20), top = V(40, SAFE.y0 + 10);
+  const right = V(W - 56, SAFE.x1 - 20), top = TAG_TOP;
 
   // counter: states between events
   const cs = [];
@@ -1530,8 +1563,8 @@ const HUD = (() => {
     cs.push({ t: e.t, value: String(e.v.value), label, note, p: num(e.v.value) });
   });
   cs.forEach((c, i) => { c.t1 = i + 1 < cs.length ? cs[i + 1].t : TL.duration; c.prev = i && !cs[i - 1].off ? cs[i - 1] : null; });
-  const cG = K.el("g", {}, hudG), cShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, cG), cCard = K.el("rect", { fill: PAPER, stroke: C.INK, "stroke-width": 2 }, cG);
-  const cLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4, fill: C.INK, "text-anchor": "end" }, cG);
+  const cG = K.el("g", {}, hudG), cShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, cG), cCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, cG);
+  const cLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4, fill: INK, "text-anchor": "end" }, cG);
   const cVal = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, "text-anchor": "end" }, cG);
   const cNote = K.text("", { ...AUX, "font-family": SANS, "font-size": 20, "font-style": "italic", fill: C.GREY, "text-anchor": "end" }, cG);
   // the card is as wide as the widest value it will count through, measured once
@@ -1546,9 +1579,9 @@ const HUD = (() => {
   // tag
   const ts = ev.tag.map((e, i) => ({ t: e.t, text: e.v == null ? null : String(e.v.text != null ? e.v.text : e.v) }));
   ts.forEach((x, i) => { x.t1 = i + 1 < ts.length ? ts[i + 1].t : TL.duration; if (x.text) K.label(x.text, x.t, x.t1, "tag"); });
-  const tG = K.el("g", {}, hudG), tCard = K.el("rect", { fill: PAPER, stroke: C.INK, "stroke-width": 2 }, tG);
-  const tTxt = K.text("", { "font-family": SANS, "font-size": READ, "font-weight": 700, "letter-spacing": 3, fill: C.INK }, tG);
-  const left = V(56, SAFE.x0 + 20);
+  const tG = K.el("g", {}, hudG), tCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, tG);
+  const tTxt = K.text("", { "font-family": SANS, "font-size": READ, "font-weight": 700, "letter-spacing": 3, fill: INK }, tG);
+  const left = TAG_LEFT;
 
   const at = (list, t) => { let cur = null; for (const x of list) if (t >= x.t) cur = x; return cur; };
   return {
@@ -1574,7 +1607,7 @@ const HUD = (() => {
         let yy = y + 14;
         cLab.textContent = show.label.toUpperCase(); if (show.label) { yy += 24; K.set(cLab, { x: right - 24, y: yy }); }
         yy += READ * 1.0 + (show.label ? 8 : 4);
-        cVal.textContent = txt; K.set(cVal, { x: right - 24, y: yy, fill: n < 0 ? NEG : n > 0 ? POS : C.INK });
+        cVal.textContent = txt; K.set(cVal, { x: right - 24, y: yy, fill: n < 0 ? NEG : n > 0 ? POS : INK });
         cNote.textContent = show.note; if (show.note) K.set(cNote, { x: right - 24, y: yy + 30 });
         cG.setAttribute("opacity", a.toFixed(3));
         cG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
@@ -1622,7 +1655,7 @@ K.run(t => {
       }
     }
   });
-  showLabel(sourceT, srcRuns, t);
+  showSource(t);
   showLabel(chapterT, chapRuns, t);
   if (HUD) { HUD.frame(t); if (HUD.counterOn(t)) chapterT.setAttribute("opacity", 0); }
   capPages.forEach(pg => {

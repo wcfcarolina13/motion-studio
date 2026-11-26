@@ -209,6 +209,9 @@ def main():
     for i, ws in pre:
         for wtxt in ws:
             print(f"LINT {i}: {wtxt}")
+    stop = [f'{x["id"]}: "{m}" {why}' for x in todo for m, why in panelqa.refused(x.get("prompt") or x.get("change") or "")]
+    if stop:
+        raise SystemExit("refused prompt words, nothing run:\n  " + "\n  ".join(stop))
     cmd = shlex.split(os.environ.get("CODEX_CMD", "codex exec --skip-git-repo-check"))
     cmd += shlex.split(os.environ.get("CODEX_ARGS", '-m gpt-6-luna -c model_reasoning_effort="low"'))
     images = os.path.expanduser(os.environ.get("CODEX_IMAGES", "~/.codex/generated_images"))

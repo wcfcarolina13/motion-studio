@@ -25,6 +25,13 @@ if m.get('route') == 'codex':
                      "(spends the owner's Codex allowance; only with his yes)")
 if m.get('draft') and not a.draft:
     raise SystemExit(f"{name} is a draft model (layout only; render refuses its stills): pass --draft to use it for drafts")
+import sys
+sys.path.insert(0, os.path.join(HERE, '..', '..', '..', 'scripts'))
+import panelqa   # the refused prompt words (e.g. "blank doors" strips door handles): stop before any GPU time
+stop = [f"{s['id']}: \"{w}\" {why}" for s in cfg['shots']
+        for w, why in panelqa.refused(' '.join([s.get('prompt', ''), s.get('style', ''), cfg.get('style', '')]))]
+if stop:
+    raise SystemExit("refused prompt words, nothing written:\n  " + "\n  ".join(stop))
 m['call'] = dict(m['call'], **cfg.get('settings', {}))
 if 'negative' in cfg:
     m['negative_prompt'] = cfg['negative']
