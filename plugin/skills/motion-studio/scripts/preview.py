@@ -23,6 +23,7 @@ import os
 import re
 import secrets
 import socket
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -269,6 +270,33 @@ def make_handler(film: Path, key=None):
     return Handler
 
 
+def _run(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def lan_urls(port, key):
+    """[(label, url)] a phone on the same network can open: the Bonjour name, then the Wi-Fi IP as a fallback.
+    The Bonjour name is macOS's LocalHostName (`scutil --get LocalHostName`), which is not the computer name that
+    gethostname() returns: http://Mac.local did not resolve on the owner's network (2026-11-26)."""
+    out, q = [], f":{port}/?k={key}"
+    name = _run("scutil", "--get", "LocalHostName") or socket.gethostname().split(".")[0]
+    if name:
+        out.append(("by name", f"http://{name}.local{q}"))
+    ip = _run("ipconfig", "getifaddr", "en0") or _run("ipconfig", "getifaddr", "en1")
+    if not ip:
+        try:  # the address of the interface that routes outward; a UDP connect sends no packet
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as u:
+                u.connect(("192.0.2.1", 9)); ip = u.getsockname()[0]
+        except OSError:
+            ip = ""
+    if ip and not ip.startswith("127."):
+        out.append(("by IP, if the name does not open", f"http://{ip}{q}"))
+    return out
+
+
 def serve(film: Path, port: int = 4173, lan: bool = False):
     """localhost only by default. lan=True listens on every interface so a phone on the same wifi can open it, behind
     a random key in the link (kept in review/.lan-key so the link stays the same across restarts)."""
@@ -281,8 +309,8 @@ def serve(film: Path, port: int = 4173, lan: bool = False):
     server = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), make_handler(film, key))
     print(f"motion-studio preview for {film.name}: http://localhost:{port}" + (f"/?k={key}" if key else ""), flush=True)
     if lan:
-        host = socket.gethostname().split(".")[0]
-        print(f"on the home network (phone): http://{host}.local:{port}/?k={key}", flush=True)
+        for label, url in lan_urls(port, key):
+            print(f"on the home network (phone), {label}: {url}", flush=True)
     server.serve_forever()
 
 

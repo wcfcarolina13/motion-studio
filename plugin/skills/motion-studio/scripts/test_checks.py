@@ -666,6 +666,17 @@ class ClipPanel(unittest.TestCase):
 
 
 class ReviewDashboard(unittest.TestCase):
+    def test_lan_urls_use_bonjour_name_and_ip(self):
+        import preview
+        answers = {("scutil", "--get", "LocalHostName"): "Studio-Mac", ("ipconfig", "getifaddr", "en0"): "192.168.1.23"}
+        orig = preview._run
+        preview._run = lambda *c: answers.get(c, "")
+        try:
+            urls = [u for _, u in preview.lan_urls(4173, "K")]
+        finally:
+            preview._run = orig
+        self.assertEqual(urls, ["http://Studio-Mac.local:4173/?k=K", "http://192.168.1.23:4173/?k=K"])
+
     """The owner picks among takes and locks sections in the studio dashboard; agents never do (2026-11-26)."""
     def film(self, d):
         import json, longform
