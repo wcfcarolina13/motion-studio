@@ -270,6 +270,14 @@ def make_handler(film: Path, key=None):
     return Handler
 
 
+class Server(ThreadingHTTPServer):
+    """The stdlib default listen backlog is 5. A film page asks for a dozen scripts and stills at once, and over Wi-Fi
+    macOS resets every connection past the backlog, so a phone got a black page (three.min.js, set3d.js and
+    timeline.js never loaded). Loopback hides it. Measured on the owner's Mac over the LAN IP, 30 parallel fetches:
+    25 reset at 5, 30 of 30 at 128 (2026-11-26)."""
+    request_queue_size = 128
+
+
 def _run(*cmd):
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout.strip()
@@ -306,7 +314,7 @@ def serve(film: Path, port: int = 4173, lan: bool = False):
         kp.parent.mkdir(parents=True, exist_ok=True)
         key = kp.read_text().strip() if kp.exists() else secrets.token_urlsafe(18)
         kp.write_text(key + "\n"); os.chmod(kp, 0o600)
-    server = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), make_handler(film, key))
+    server = Server(("0.0.0.0" if lan else "127.0.0.1", port), make_handler(film, key))
     print(f"motion-studio preview for {film.name}: http://localhost:{port}" + (f"/?k={key}" if key else ""), flush=True)
     if lan:
         for label, url in lan_urls(port, key):

@@ -666,6 +666,30 @@ class ClipPanel(unittest.TestCase):
 
 
 class ReviewDashboard(unittest.TestCase):
+    def test_lan_server_takes_a_burst_of_connections(self):
+        # A page load opens a dozen connections at once; past the listen backlog macOS resets them over Wi-Fi and the
+        # phone got a black page (2026-11-26). Connect 30 before the server accepts any: all must queue, then answer.
+        import preview, socket as so, threading
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            srv = preview.Server(("0.0.0.0", 0), preview.make_handler(film, "K"))
+            port, socks, t = srv.server_address[1], [], None
+            try:
+                for _ in range(30):
+                    c = so.socket(); c.settimeout(2)
+                    c.connect(("127.0.0.1", port)); socks.append(c)
+                t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+                for c in socks:
+                    c.sendall(b"GET /?k=K HTTP/1.0\r\nHost: x\r\n\r\n")
+                codes = [c.recv(64).split(b" ")[1] for c in socks]
+            finally:
+                for c in socks:
+                    c.close()
+                if t:
+                    srv.shutdown()
+                srv.server_close()
+        self.assertEqual(codes, [b"200"] * 30)
+
     def test_lan_urls_use_bonjour_name_and_ip(self):
         import preview
         answers = {("scutil", "--get", "LocalHostName"): "Studio-Mac", ("ipconfig", "getifaddr", "en0"): "192.168.1.23"}
