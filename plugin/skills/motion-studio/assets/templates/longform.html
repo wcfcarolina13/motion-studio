@@ -555,6 +555,128 @@ B.bars = (s, g) => {   // horizontal bar chart, values revealed one by one
   };
 };
 
+// ── line chart: series that draw on left to right, each on its own cue word, on a paper card (growth paths and
+// scenarios: "what happens with high density, low competition, more ads"). data:
+//   title?: text; series: [{label, points: [[x, y], ...], color?, at?: cue word, dash?: true}]
+//   x: {label?, ticks?: [x, ...] or [[x, "label"], ...], min?, max?}; y: {label?, format?: "money" | "number" | "percent",
+//   ticks?, min?, max?}; zero_line?: true; note?: "our model, illustrative" (a small attribution, bottom right);
+//   draw?: seconds each line takes to draw (1.6); paper?, ink? (default: the film's own paper and ink when it is light,
+//   else warm cream and near-black)
+// On a money axis the axis and its labels are red below zero and green above (the HUD cash card's colours). Each line's
+// label sits at its end on a plate; labels that would collide are pushed apart and joined to their line by a leader.
+// Values are pure functions of t. The camera pushes slowly in on the plot (1.0 to 1.04), so a held chart keeps moving.
+const lumOf = h => { const n = parseInt(String(h).replace("#", "").slice(0, 6), 16); return ((n >> 16 & 255) * 0.299 + (n >> 8 & 255) * 0.587 + (n & 255) * 0.114) / 255; };
+function chartFmt(v, f) {
+  const sgn = v < 0 ? "−" : "", a = Math.abs(v);
+  if (f === "percent") return sgn + fmtNum(a, a < 10 && a % 1 ? 1 : 0) + "%";
+  const short = a >= 1e6 ? fmtNum(a / 1e6, a % 1e6 ? 1 : 0) + "M" : a >= 1e3 ? fmtNum(a / 1e3, a % 1e3 && a < 1e4 ? 1 : 0) + "k" : fmtNum(a, 0);
+  return f === "money" ? sgn + "$" + short : sgn + short;
+}
+function niceTicks(lo, hi, n = 5) {
+  const span = hi - lo || 1, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(st => span / st <= n) || 10 * mag;
+  const out = []; for (let v = Math.floor(lo / step) * step; v <= hi + step * 1e-6; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+B.chart = (s, g) => {
+  const d = s.data, series = d.series || [], DRAW = d.draw || 1.6;
+  const PAPERC = d.paper || (lumOf(C.BG) > 0.6 ? C.BG : "#F1EDE4"), INKC = d.ink || (lumOf(C.INK) < 0.5 ? C.INK : "#1f1d1a");
+  const NEGC = C.NEG || "#B3261E", POSC = C.POS || "#2E7D32", MUTE = "#8c867a";
+  const PALETTE = [INKC, C.ACCENT, "#2f5d8a", "#7b4b94", "#8a5a2b", "#3d7a74"];
+  const yf = (d.y || {}).format || "number";
+  K.el("rect", { x: -400, y: -400, width: W + 800, height: H + 800, fill: PAPERC }, g);
+  // the data's extent, with 0 kept in view when the zero line is asked for or the values cross it
+  const xs = series.flatMap(sr => sr.points.map(p => p[0])), ys = series.flatMap(sr => sr.points.map(p => p[1]));
+  let ylo = (d.y || {}).min ?? Math.min(...ys), yhi = (d.y || {}).max ?? Math.max(...ys);
+  if (d.zero_line || (ylo < 0 && yhi > 0)) { ylo = Math.min(ylo, 0); yhi = Math.max(yhi, 0); }
+  const yt = (d.y || {}).ticks || niceTicks(ylo, yhi, 5);
+  ylo = Math.min(ylo, ...yt); yhi = Math.max(yhi, ...yt);
+  const xlo = (d.x || {}).min ?? Math.min(...xs), xhi = (d.x || {}).max ?? Math.max(...xs);
+  const xt = ((d.x || {}).ticks || niceTicks(xlo, xhi, 5)).map(x => Array.isArray(x) ? x : [x, chartFmt(x, (d.x || {}).format)]);
+  // text: title, axis labels, tick labels, end labels (all at reading size), the note (an attribution, exempt)
+  const T = (str, a) => K.text(str, Object.assign({ "font-family": SANS, "font-size": READ, fill: INKC }, a), g);
+  const title = d.title ? T(d.title, { "font-family": FONT, "font-size": Math.max(READ, 60), "text-anchor": "middle" }) : null;
+  const yLab = (d.y || {}).label ? T(d.y.label, { fill: MUTE }) : null, xLab = (d.x || {}).label ? T(d.x.label, { fill: MUTE, "text-anchor": "middle" }) : null;
+  const note = d.note ? K.text(d.note, { ...AUX, "font-family": SANS, "font-size": V(24, 26), "font-style": "italic", fill: MUTE, "text-anchor": "end" }, s.ov) : null;
+  const ends = series.map((sr, k) => {
+    const col = sr.color || PALETTE[k % PALETTE.length];
+    const plate = K.el("rect", { fill: PAPERC, stroke: col, "stroke-width": 3, rx: 6 }, g);
+    const lab = T(sr.label, { "font-weight": 700, fill: col === INKC || lumOf(col) > 0.55 ? INKC : col });
+    return { sr, col, plate, lab, w: 0 };
+  });
+  // layout: the plot leaves room on the right for the widest end label
+  const labW = Math.max(0, ...ends.map(e => e.lab.getComputedTextLength()));
+  const yTickW = Math.max(...yt.map(v => { const x = T(chartFmt(v, yf)); const w = x.getComputedTextLength(); x.remove(); return w; }));
+  // the camera pushes in on the frame's centre to ZMAX, so everything is laid out inside the frame as it will be at ZMAX
+  const ZMAX = 1.04, inX = x => W / 2 + (x - W / 2) / ZMAX, inY = y => H / 2 + (y - H / 2) / ZMAX;
+  const px0 = inX(V(70, SAFE.x0 + 10)) + yTickW + 24, px1 = Math.max(W * V(0.55, 0.6), inX(W - V(60, 30)) - labW - 56);
+  const py0 = inY(V(title ? 230 : 150, SAFE.y0 + (title ? 200 : 120))), py1 = inY(V(H - (xLab ? 210 : 140), SAFE.y1 - (xLab ? 210 : 150)));
+  const X = x => px0 + (x - xlo) / ((xhi - xlo) || 1) * (px1 - px0), Y = y => py1 - (y - ylo) / ((yhi - ylo) || 1) * (py1 - py0);
+  if (title) K.set(title, { x: W / 2, y: py0 - V(110, 120) });
+  if (yLab) K.set(yLab, { x: px0 - yTickW - 24, y: py0 - 40 });
+  if (xLab) K.set(xLab, { x: (px0 + px1) / 2, y: py1 + READ * 1.2 + 70 });
+  if (note) K.set(note, { x: W - 60, y: V(H - 36, SAFE.y1 + 40) });
+  // grid, ticks, axes, zero line
+  yt.forEach(v => {
+    K.el("line", { x1: px0, x2: px1, y1: Y(v), y2: Y(v), stroke: INKC, "stroke-opacity": v === 0 ? 0 : 0.12, "stroke-width": 2 }, g);
+    T(chartFmt(v, yf), { x: px0 - 24, y: Y(v) + READ * 0.35, "text-anchor": "end",
+      fill: yf === "money" ? (v < 0 ? NEGC : v > 0 ? POSC : INKC) : INKC });
+  });
+  xt.forEach(([v, l]) => { K.el("line", { x1: X(v), x2: X(v), y1: py1, y2: py1 + 14, stroke: INKC, "stroke-width": 3 }, g);
+    T(l, { x: X(v), y: py1 + 14 + READ * 1.05, "text-anchor": "middle" }); });
+  K.el("line", { x1: px0, x2: px1, y1: py1, y2: py1, stroke: INKC, "stroke-width": 3 }, g);
+  if (yf === "money" && ylo < 0 && yhi > 0) {
+    K.el("line", { x1: px0, x2: px0, y1: Y(0), y2: py1, stroke: NEGC, "stroke-width": 5 }, g);
+    K.el("line", { x1: px0, x2: px0, y1: py0, y2: Y(0), stroke: POSC, "stroke-width": 5 }, g);
+  } else K.el("line", { x1: px0, x2: px0, y1: py0, y2: py1, stroke: yf === "money" ? (yhi <= 0 ? NEGC : POSC) : INKC, "stroke-width": 3 }, g);
+  if ((d.zero_line || (ylo < 0 && yhi > 0)) && ylo < 0)
+    K.el("line", { x1: px0, x2: px1, y1: Y(0), y2: Y(0), stroke: INKC, "stroke-width": 3, "stroke-dasharray": "14 10" }, g);
+  // the lines, each drawn along its length (left to right for a series ordered by x), with a dot at the tip
+  ends.forEach((e, k) => {
+    const pts = e.sr.points.slice().sort((a, b) => a[0] - b[0]);
+    e.path = K.el("path", { d: "M" + pts.map(p => `${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(" L"), fill: "none", stroke: e.col,
+      "stroke-width": 7, "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
+    e.len = e.path.getTotalLength();
+    e.tip = K.el("circle", { r: 10, fill: e.col }, g);
+    e.end = [X(pts[pts.length - 1][0]), Y(pts[pts.length - 1][1])];
+    e.t0 = cueT(e.sr, revealAt(s, k, series.length, 0.55, 0.6));
+    e.w = e.lab.getComputedTextLength();
+    e.lead = K.el("line", { stroke: e.col, "stroke-width": 3 }, g);
+    g.appendChild(e.plate); g.appendChild(e.lab);     // labels over every line
+    K.label(e.sr.label, e.t0 + DRAW, s.t1, "chart line label");
+  });
+  // end labels: at their line's end, pushed apart so plates never touch (a few relaxation passes, kept inside the plot)
+  const PH = READ * 1.3, GAP = 10, order = ends.slice().sort((a, b) => a.end[1] - b.end[1]);
+  order.forEach(e => { e.ly = e.end[1]; });
+  for (let it = 0; it < 40; it++) {
+    for (let i = 1; i < order.length; i++) { const a = order[i - 1], b = order[i], need = PH + GAP - (b.ly - a.ly);
+      if (need > 0) { a.ly -= need / 2; b.ly += need / 2; } }
+    order.forEach(e => { e.ly = Math.min(Math.max(e.ly, py0 + PH / 2), py1 - PH / 2); });
+  }
+  if (title) K.label(d.title, s.t0, s.t1, "chart title");
+  xt.forEach(([, l]) => K.label(String(l), s.t0, s.t1, "chart axis"));
+  yt.forEach(v => K.label(chartFmt(v, yf), s.t0, s.t1, "chart axis"));
+  if (yLab) K.label(d.y.label, s.t0, s.t1, "chart axis"); if (xLab) K.label(d.x.label, s.t0, s.t1, "chart axis");
+  return t => {
+    ends.forEach(e => {
+      const p = K.eio(K.prog(t, e.t0, e.t0 + DRAW)), on = t >= e.t0;
+      e.path.setAttribute("stroke-dasharray", `${e.len.toFixed(1)} ${(e.len + 10).toFixed(1)}`);
+      e.path.setAttribute("stroke-dashoffset", (e.len * (1 - p)).toFixed(1));
+      e.path.setAttribute("opacity", on ? 1 : 0);
+      const tp = e.path.getPointAtLength(e.len * p);
+      K.set(e.tip, { cx: tp.x, cy: tp.y, opacity: on ? 1 : 0 });
+      const la = K.eout(K.prog(t, e.t0 + DRAW - 0.1, e.t0 + DRAW + 0.25));
+      const lx = e.end[0] + 34, moved = Math.abs(e.ly - e.end[1]) > 2;
+      K.set(e.plate, { x: lx - 14, y: e.ly - PH / 2, width: e.w + 28, height: PH, opacity: la });
+      K.set(e.lab, { x: lx, y: e.ly + READ * 0.36, opacity: la });
+      K.set(e.lead, { x1: e.end[0] + 12, y1: e.end[1], x2: lx - 14, y2: e.ly, opacity: moved ? la : 0 });
+    });
+    // a slow push on the plot's centre, so a chart held after its last line still moves (the owner prefers slow centred
+    // pushes to strong ones, 2026-11-26)
+    g.__cam = { cx: W / 2, cy: H / 2, z: 1 + (ZMAX - 1) * K.prog(t, s.t0, s.t1), frac: 1 };
+  };
+};
+
 B.title = (s, g) => {   // the cold-open title card
   const d = s.data, lines = wrapWords(d.title, V(22, 12));
   const ms = lines.map((l, k) => maskText(l, { "font-size": V(110, 104), fill: k === lines.length - 1 ? C.ACCENT : C.INK }, g));
@@ -1407,7 +1529,7 @@ B.capture = (s, g) => {
   };
 };
 
-const OPAQUE = new Set(["stage", "board", "crowd", "set3d"]);   // scenes with their own set: no drifting dots behind them
+const OPAQUE = new Set(["stage", "board", "crowd", "set3d", "chart"]);   // scenes with their own set: no drifting dots behind them
 const FULL = new Set(["panel", "map"]);                // full-frame images: they cut (or fade), and nothing shows behind them
 // the map scene (mapscene.js, references/maps.md): one engraved map shared by a run of map segments, drawn in its own layer
 const MAP = window.MapScene ? window.MapScene({ K, W, H, READ, VERT, SAFE, SEGS, TL, sceneG, cueT }) : null;
@@ -1510,7 +1632,7 @@ const labelRuns = pick => SEGS.reduce((runs, s) => { const v = pick(s), r = runs
 const srcRuns = labelRuns(s => s.source ? "Source: " + s.source : "");
 // grey on a map or a busy picture was unreadable ("black text on a noisy background", owner's review, 2026-11-26): on panels
 // and maps the line sits on a dark plate in light grey. A segment's "source_plate" (true/false) overrides either way.
-const srcPlate = s => s.source_plate != null ? !!s.source_plate : FULL.has(s.type);
+const srcPlate = s => s.source_plate != null ? !!s.source_plate : FULL.has(s.type) || s.type === "chart";
 const segAt = t => { let cur = null; for (const s of SEGS) { if (s.t0 > t) break; cur = s; } return cur; };
 const showSource = t => {
   showLabel(sourceT, srcRuns, t);
