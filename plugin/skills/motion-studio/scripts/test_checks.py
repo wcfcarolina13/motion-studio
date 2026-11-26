@@ -793,6 +793,60 @@ class ReviewDashboard(unittest.TestCase):
             shutil.copy(longform.HERE / f, film / f)
         return film
 
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_takes_view_filters_sort_new_posters_and_ack(self):
+        import json, threading, time as tm, urllib.request, preview
+        from http.server import ThreadingHTTPServer
+        from playwright.sync_api import sync_playwright
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d); (film / "clips").mkdir()
+            for seed in (1, 2):
+                subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c={'red' if seed == 1 else 'blue'}:s=320x180:d=1",
+                                "-pix_fmt", "yuv420p", str(film / "clips" / f"m2_s{seed}.mp4")], check=True)
+            sc = json.loads((film / "script.json").read_text())
+            sc["segments"][0]["data"]["shot"] = "CU"
+            sc["segments"][1]["data"]["clip"] = "clips/m2_s1.mp4"
+            (film / "script.json").write_text(json.dumps(sc))
+            os.utime(film / "panels" / "m1c_s7.png", (1e9, 1e9)); os.utime(film / "panels" / "m1c_s19.png", (1e9, 1e9))   # the stills are old
+            r = preview.review(film)
+            g = {x["key"]: x for x in r["groups"]}
+            self.assertEqual((g["m1c"]["framing"], g["m2"]["kind"]), ("CU", "clip"))
+            self.assertGreater(g["m2"]["updated"], g["m1c"]["updated"])
+            self.assertTrue(preview.poster(film, "clips/m2_s2.mp4").read_bytes()[:2] == b"\xff\xd8")   # a JPEG of the first frame
+            self.assertIsNone(preview.poster(film, "../outside.mp4"))
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), preview.make_handler(film, None))
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            url = f"http://127.0.0.1:{srv.server_address[1]}"
+            with sync_playwright() as p:
+                b = p.chromium.launch(executable_path=os.environ["MS_CHROMIUM"])
+                pg = b.new_page(viewport={"width": 1280, "height": 800})
+                pg.goto(url); pg.wait_for_selector("#takesBtn:not([hidden])")
+                self.assertIn("4 new", pg.inner_text("#takesBtn"))
+                pg.click("#takesBtn")
+                self.assertEqual(pg.locator(".grp h3 b, .grp h3").first.inner_text().split()[0], "m2")      # newest first
+                self.assertTrue(pg.locator("video").first.get_attribute("poster").startswith("/api/poster"))
+                self.assertIn("?v=", pg.locator(".take img").first.get_attribute("src"))
+                pg.select_option("#tkKind", "image")
+                self.assertEqual(pg.locator(".grp").count(), 1); self.assertIn("1 of 2", pg.inner_text(".tcount"))
+                pg.select_option("#tkKind", "all"); pg.select_option("#tkSort", "film")
+                self.assertTrue(pg.locator(".grp h3").first.inner_text().startswith("m1c"))
+                pg.click("#takesSeen")
+                self.assertEqual(pg.locator(".newb").count(), 0)
+                pg.reload(); pg.wait_for_selector("#takesBtn:not([hidden])")
+                self.assertNotIn("new", pg.inner_text("#takesBtn"))                          # seen is remembered
+                pg.click("#takesBtn"); self.assertEqual(pg.input_value("#tkSort"), "film")    # and so is the sort
+                # a comment, then an agent picks it up: the card says so while the note stays open
+                pg.locator(".take").first.locator("textarea").fill("hand truck floats")
+                pg.locator(".take").first.locator("textarea").press("Enter")
+                pg.wait_for_selector(".take .tnote")
+                nid = json.loads((film / "notes.json").read_text())["notes"][-1]["id"]
+                preview.ack_note(film, nid, "redrawing as seed 5")
+                pg.wait_for_selector(".take .tnote.prog .tans", timeout=8000)
+                self.assertEqual(pg.inner_text(".take .tnote.prog .tans"), "seen · redrawing as seed 5")
+                b.close()
+            srv.shutdown()
+            self.assertEqual(json.loads((film / "notes.json").read_text())["notes"][-1]["status"], "open")
+
     def test_upscale_covers_every_take(self):
         # the script names one take; a pick of another needs its upscale too (timeline stopped on each pick, 2026-11-26)
         import json, longform

@@ -11,6 +11,7 @@ and a small API:
                             to review/notes/note-<id>.png in the background and records it as the note's "still"
                             With "take": {"key": "m0c", "seed": 2} the note is on that take (from the takes view): its t is the
                             shot's start, its still is the take's own file, and it carries take {key, seed, n, kind, path, label}
+  GET  /api/poster?p=<clip>  a clip take's first frame as a JPEG (made once, kept in review/posters/)
   GET  /api/review          a long-form film's take groups (review_state.take_groups) and section states
   POST /api/picks           {"key": "m1c", "seed": 7 | null}: the owner's pick among a shot's takes, saved to picks.json
   POST /api/lock            {"title": "<chapter>", "locked": true | false}: the owner locks a section (review/state.json)
@@ -114,7 +115,45 @@ def review(film: Path):
     except (OSError, ValueError, IndexError):
         tl = None
     notes = load_notes(film)["notes"]
-    return {"groups": review_state.take_groups(film, script, tl), "sections": review_state.sections(film, notes)}
+    groups = review_state.take_groups(film, script, tl)
+    for g in groups:
+        # for the takes view's filters and its "last updated" sort: open comments on the group's takes, and the newest of
+        # its take files and its comments
+        mine = [n for n in notes if (n.get("take") or {}).get("key") == g["key"]]
+        g["open_notes"] = sum(n["status"] == "open" for n in mine)
+        g["updated"] = max([t["mtime"] for t in g["takes"]] + [_note_time(n) for n in mine] or [0])
+    return {"groups": groups, "sections": review_state.sections(film, notes)}
+
+
+def _note_time(n):
+    try:
+        return time.mktime(time.strptime(n.get("created", ""), "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OverflowError):
+        return 0
+
+
+POSTERS = "review/posters"
+
+
+def poster(film: Path, rel: str):
+    """A clip take's first frame as a JPEG (review/posters/), made once per clip version: a <video> shows black until it
+    plays, so the takes view gives every clip this as its poster."""
+    src = (film / rel).resolve()
+    if film.resolve() not in src.parents or src.suffix.lower() not in (".mp4", ".mov", ".webm") or not src.is_file():
+        return None
+    import hashlib
+    st = src.stat()
+    out = film / POSTERS / (hashlib.sha1(f"{rel}|{st.st_mtime_ns}|{st.st_size}".encode()).hexdigest()[:16] + ".jpg")
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(".part.jpg")
+        import subprocess as sp
+        r = sp.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "4", str(tmp)],
+                   capture_output=True)
+        if r.returncode or not tmp.exists():
+            return None
+        tmp.replace(out)
+    return out
 
 
 def make_handler(film: Path, key=None):
@@ -182,7 +221,10 @@ def make_handler(film: Path, key=None):
                     chunk = fh.read(min(65536, left))
                     if not chunk:
                         break
-                    self.wfile.write(chunk)
+                    try:
+                        self.wfile.write(chunk)
+                    except (BrokenPipeError, ConnectionResetError):   # the browser dropped a video load it no longer needs
+                        return
                     left -= len(chunk)
 
         def do_GET(self):
@@ -201,6 +243,11 @@ def make_handler(film: Path, key=None):
                 return self._json(load_notes(film))
             if path == "/api/review":
                 return self._json(review(film))
+            if path == "/api/poster":
+                from urllib.parse import parse_qs, urlparse
+                rel = (parse_qs(urlparse(self.path).query).get("p") or [""])[0]
+                out = poster(film, rel)
+                return self._file(out) if out else self.send_error(404)
             if path.startswith("/w/"):
                 target = (root / path[3:]).resolve()
                 if root.resolve() not in target.parents and target != root.resolve():
@@ -246,7 +293,7 @@ def make_handler(film: Path, key=None):
                             if status == "done":
                                 n["resolved"], n["closed_by"] = time.strftime("%Y-%m-%d %H:%M:%S"), "owner"
                             else:
-                                for k in ("closed_by", "resolved", "reply"):
+                                for k in ("closed_by", "resolved", "reply", "ack"):
                                     n.pop(k, None)
                             save_notes(film, data)
                             return self._json(n)
@@ -367,7 +414,9 @@ def list_notes(film: Path, show_all=False):
             reply = f"  -> {n['reply']}" if n.get("reply") else ""
             tk = n.get("take")
             on = f" on {tk['label']} (seed {tk['seed']}, {tk['path']})" if tk else ""
-            print(f"#{n['id']} [{n['status']}] t={n['t']:.2f}s {n.get('where', '')}{on}: {n['text']}{reply}")
+            st = "in progress" if n["status"] == "open" and n.get("ack") else n["status"]
+            ack = f"  [seen: {n['ack']['text']}]" if n.get("ack") and n["status"] == "open" else ""
+            print(f"#{n['id']} [{st}] t={n['t']:.2f}s {n.get('where', '')}{on}: {n['text']}{ack}{reply}")
             if tk:
                 print(f"     take: {film / tk['path']}")
             elif n.get("still"):
@@ -377,6 +426,22 @@ def list_notes(film: Path, show_all=False):
                 print(f"     still failed: {n['still_error']}")
     if not any(n["status"] == "open" for n in notes):
         print("no open notes")
+
+
+def ack_note(film: Path, note_id: int, text: str):
+    """Mark an open note as being worked on, with a short reply ("seen · redrawing as seed 5"). It stays open, so it still
+    counts against its section; the dashboard shows it as in progress. The owner read a take comment with no sign it had
+    been picked up as ignored (2026-11-26)."""
+    with LOCK:
+        data = load_notes(film)
+        for n in data["notes"]:
+            if n["id"] == note_id:
+                if n["status"] != "open":
+                    raise SystemExit(f"note #{note_id} is {n['status']}; reopen it in the dashboard first")
+                n["ack"] = {"text": text, "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+                save_notes(film, data)
+                return n
+    raise SystemExit(f"no note #{note_id}")
 
 
 def resolve_note(film: Path, note_id: int, reply: str):

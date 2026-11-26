@@ -10,6 +10,7 @@
   studio.py blindpack <film> [--redo]                      packet for a blind reader (stills + on-screen text + prompt)
   studio.py serve <film> [--port 4173] [--launch]          live preview; --launch writes .claude/launch.json (Browser pane: preview_start "motion-studio")
   studio.py notes <film> [--all] [--resolve ID --reply "what changed"]   read / close the notes pinned in the preview
+                 [--ack ID --reply "redrawing as seed 5"]   pick a note up: it shows as in progress, still open
   studio.py search music|sfx <category>                    Mixkit ids + titles for a category page (e.g. music house, sfx footsteps)
   studio.py fetch music|sfx <id> [<id> ...] | fetch kenney [<pack>]   download into the shared library + catalog
   studio.py measure <track-id>                              beat grid + corrected downbeat + bar loudness map (sections)
@@ -195,7 +196,12 @@ def cmd_serve(a):
 def cmd_notes(a):
     import preview
     film = film_dir(a.film)
-    if a.resolve is not None:
+    if a.ack is not None:
+        if not a.reply:
+            raise SystemExit("--ack needs --reply \"what you're doing\", e.g. \"redrawing as seed 5\"")
+        n = preview.ack_note(film, a.ack, a.reply)
+        print(f"#{n['id']} in progress: {n['ack']['text']}")
+    elif a.resolve is not None:
         n = preview.resolve_note(film, a.resolve, a.reply or "done")
         print(f"#{n['id']} done: {n['reply']}")
     else:
@@ -340,6 +346,7 @@ def main():
     p = sp.add_parser("serve"); p.add_argument("film"); p.add_argument("--port", type=int, default=4173); p.add_argument("--launch", action="store_true")
     p.add_argument("--lan", action="store_true", help="also open on the home network (the owner's phone), behind a key in the link"); p.set_defaults(fn=cmd_serve)
     p = sp.add_parser("notes"); p.add_argument("film"); p.add_argument("--all", action="store_true"); p.add_argument("--resolve", type=int)
+    p.add_argument("--ack", type=int, help="mark a note in progress (stays open) with --reply saying what is being done")
     p.add_argument("--reply"); p.set_defaults(fn=cmd_notes)
     p = sp.add_parser("search"); p.add_argument("kind", choices=["music", "sfx"]); p.add_argument("query"); p.set_defaults(fn=cmd_search)
     p = sp.add_parser("fetch"); p.add_argument("kind", choices=["music", "sfx", "kenney"]); p.add_argument("ids", nargs="*"); p.set_defaults(fn=cmd_fetch)
