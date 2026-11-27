@@ -833,6 +833,46 @@ Image.new("RGB", (1536, 1024), (120, 110, 100)).save("image.png")
             self.assertIn("gwait", Path(preview.__file__).with_name("preview.html").read_text())
 
 
+class HudDelta(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_change_chip_pops_holds_fades_and_can_be_hidden(self):
+        import io, longform, render, readcheck
+        from PIL import Image
+        segs = [{"id": "a", "type": "title", "t0": 0.0, "t1": 3.0, "data": {"text": "Month one"},
+                 "counter": {"value": "−$25,375", "label": "Cash"}},
+                {"id": "b", "type": "title", "t0": 3.0, "t1": 7.0, "data": {"text": "Month two"},
+                 "counter": {"value": "−$24,302", "delta_label": "this month"}},
+                {"id": "c", "type": "title", "t0": 7.0, "t1": 10.0, "data": {"text": "Reset"},
+                 "counter": {"value": "−$28,227", "delta": False}}]
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 10.0, "segments": segs}) + ";\n")
+            chip = "() => { const g = document.querySelector('#hud'); const r = [...g.querySelectorAll('rect[rx=\"10\"]')][0]; " \
+                   "const p = r.parentNode; return [p.style.display !== 'none' && p.getAttribute('display') !== 'none' ? " \
+                   "+(p.getAttribute('opacity') || 1) : 0, r.getAttribute('fill'), p.querySelector('text').textContent, " \
+                   "p.querySelectorAll('text')[1].textContent]; }"
+            with render.Film(film) as f:
+                got = {}
+                for t in (1.0, 3.05, 3.6, 5.0, 5.8, 7.6):
+                    f.seek(t); got[t] = f.page.evaluate(chip)
+                frames = []
+                for i in range(90):
+                    f.seek(2.9 + i / 30)
+                    frames.append(np.asarray(Image.open(io.BytesIO(f.page.locator("#stage").screenshot())).convert("RGB").resize((320, 180))))
+                self.assertFalse(f.errors)
+        self.assertEqual(got[1.0][0], 0)                                    # no chip on the first value
+        self.assertGreater(got[3.6][0], 0.99)                               # popped in as the count starts
+        self.assertEqual(got[3.6][2:], ["+$1,073", "THIS MONTH"])
+        self.assertEqual(got[3.6][1].lower(), "#2e7d32")                    # POS green for a rise
+        self.assertGreater(got[5.0][0], 0.99)                               # held about 2 s
+        self.assertEqual(got[5.8][0], 0)                                    # then gone
+        self.assertEqual(got[7.6][0], 0)                                    # "delta": false on a reset
+        self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
+
+
 class ChartScene(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
     def test_lines_draw_on_cue_labels_fit_and_no_flash(self):

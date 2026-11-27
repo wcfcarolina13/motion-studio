@@ -1654,7 +1654,8 @@ const showLabel = (el, runs, t) => {
 // ── HUD: a counter card (top right) and a tag card (top left) that stay up across segments until changed ──
 // A segment's "counter": {"value": "−$25,375", "label": "CASH", "note": "our math", "at": "word"} sets the counter on its
 // word (or the segment's start); a new value counts to it over 0.6 s; "counter": null takes the card away. label and
-// note carry over until changed. A value below zero is red, above zero green. "tag": "MONTHS 4–6" (or {"text", "at"})
+// note carry over until changed. A value below zero is red, above zero green. A change between two values shows a chip
+// with the difference under the card for about 2 s ("delta": false hides it, "delta_label" captions it). "tag": "MONTHS 4–6" (or {"text", "at"})
 // does the same for the tag card; "tag": null removes it. Both are read like any other text (size, overlap, contrast,
 // reading time). While the counter is up, the chapter label (top right) is hidden.
 const HUD = (() => {
@@ -1682,19 +1683,33 @@ const HUD = (() => {
   ev.counter.forEach(e => {
     if (e.v == null) { cs.push({ t: e.t, off: true }); return; }
     label = e.v.label != null ? e.v.label : label; note = e.v.note != null ? e.v.note : note;
-    cs.push({ t: e.t, value: String(e.v.value), label, note, p: num(e.v.value) });
+    cs.push({ t: e.t, value: String(e.v.value), label, note, p: num(e.v.value), delta: e.v.delta !== false, dlab: e.v.delta_label || "" });
   });
   cs.forEach((c, i) => { c.t1 = i + 1 < cs.length ? cs[i + 1].t : TL.duration; c.prev = i && !cs[i - 1].off ? cs[i - 1] : null; });
+  // the change chip: "+$1,073" in green or "−$3,925" in red under the card, popping in as the count starts, held about
+  // 2 s, then fading (owner, 2026-11-27: "flash a green change showing how much it changed by"). Only between two values
+  // of the same unit; "delta": false hides it (a reset), "delta_label" adds a small line under it ("this month").
+  const DHOLD = 2.0, DIN = 0.2, DOUT = 0.4;
+  cs.forEach(c => {
+    if (c.off || !c.delta || !c.prev || !c.p || !c.prev.p || c.p.pre !== c.prev.p.pre || c.p.post !== c.prev.p.post) return;
+    const d = +(c.p.n - c.prev.p.n).toFixed(c.p.dec);
+    if (!d) return;
+    c.d = { n: d, text: (d > 0 ? "+" : "") + fmt(c.p, d), t1: Math.min(c.t + DIN + DHOLD + DOUT, c.t1) };
+  });
   const cG = K.el("g", {}, hudG), cShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, cG), cCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, cG);
   const cLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4, fill: INK, "text-anchor": "end" }, cG);
   const cVal = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, "text-anchor": "end" }, cG);
   const cNote = K.text("", { ...AUX, "font-family": SANS, "font-size": 20, "font-style": "italic", fill: C.GREY, "text-anchor": "end" }, cG);
+  const dG = K.el("g", {}, hudG), dChip = K.el("rect", { rx: 10 }, dG);
+  const dVal = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, fill: PAPER, "text-anchor": "end" }, dG);
+  const dLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 2, "text-anchor": "end" }, dG);
   // the card is as wide as the widest value it will count through, measured once
   const meas = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700 }, hudG);
   cs.forEach(c => { if (c.off) return;
     const vals = [c.value].concat(c.prev && c.p && c.prev.p ? [fmt(c.p, c.prev.p.n)] : []);
     c.w = Math.max(...vals.map(v => { meas.textContent = v + "0"; return meas.getComputedTextLength(); }), c.label.length * 17, c.note.length * 10) + 56;
-    K.label(c.value, c.t, c.t1, "counter"); });
+    K.label(c.value, c.t, c.t1, "counter");
+    if (c.d) { meas.textContent = c.d.text; c.d.w = meas.getComputedTextLength() + 44; K.label(c.d.text, c.t, c.d.t1, "counter"); } });
   meas.remove();
   const COUNT = 0.6;
 
@@ -1733,7 +1748,21 @@ const HUD = (() => {
         cNote.textContent = show.note; if (show.note) K.set(cNote, { x: right - 24, y: yy + 30 });
         cG.setAttribute("opacity", a.toFixed(3));
         cG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
-      }
+        // the change chip, under the card's right edge: in over DIN with a small rise, held, out over DOUT
+        const dd = on && show.d && t < show.d.t1 ? show.d : null;
+        const da = dd ? Math.min(K.eout(K.prog(t, show.t, show.t + DIN)), 1 - K.ein(K.prog(t, dd.t1 - DOUT, dd.t1))) * a : 0;
+        K.show(dG, da > 0.01);
+        if (da > 0.01) {
+          // the caption sits inside the chip, paper on the sign colour, so it reads on any scene behind
+          const col = dd.n < 0 ? NEG : POS, lh = show.dlab ? 30 : 0, ch = READ * 1.2 + lh;
+          const cy = y + h + 16 + (1 - K.eout(K.prog(t, show.t, show.t + DIN))) * 10;
+          K.set(dChip, { x: right - Math.max(dd.w, show.dlab.length * 15 + 44), y: cy, width: Math.max(dd.w, show.dlab.length * 15 + 44), height: ch, fill: col });
+          dLab.textContent = show.dlab.toUpperCase(); K.set(dLab, { x: right - 22, y: cy + 30, fill: PAPER });
+          dVal.textContent = dd.text; K.set(dVal, { x: right - 22, y: cy + lh + READ * 0.95 });
+          dG.setAttribute("opacity", da.toFixed(3));
+          dG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
+        }
+      } else K.show(dG, false);
       const g = at(ts, t), gl = g && !g.text ? ts[ts.indexOf(g) - 1] : null;
       const ta = g && g.text ? (g.t === ts[0].t || !ts[ts.indexOf(g) - 1] || !ts[ts.indexOf(g) - 1].text ? K.eout(K.prog(t, g.t, g.t + 0.25)) : 1)
                              : gl && gl.text ? 1 - K.ein(K.prog(t, g.t, g.t + 0.25)) : 0;
