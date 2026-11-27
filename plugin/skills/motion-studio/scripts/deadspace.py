@@ -156,7 +156,7 @@ def candidates(text, seg_source=None):
 
 
 def shown(seg):
-    """Lower-cased text already in the shot for this beat: its counter, tag, caption card, screen lines and callouts."""
+    """Lower-cased text already in the shot for this beat: its counter, tag, tally, caption card, screen lines and callouts."""
     d = seg.get("data") or {}
     bits = []
     for k in ("counter", "tag"):
@@ -169,6 +169,8 @@ def shown(seg):
         bits.append(l.get("text", "") if isinstance(l, dict) else str(l))
     for c in d.get("callouts") or []:
         bits += [str(c.get("text", "")), str(c.get("value", ""))]
+    for it in ((seg.get("tally") or {}).get("items") or []):      # the napkin tally's lines
+        bits += [str(it.get("label", "")), str(it.get("value", ""))]
     return " ".join(bits).lower()
 
 

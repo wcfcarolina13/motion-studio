@@ -197,11 +197,26 @@ Trade-offs: every real-looking element needs either a capture or an explicit "ma
 - Charts: the map's paper, Caslon type, line labels on paper scraps, and the title on a card with a yellow FIG label (`"fig"` changes its text). A chart with no title puts its y label on the card.
 - Yellow is palette `HIGHLIGHT`, else the house yellow #EDBD2E. It is not ACCENT, which a warm palette often makes a dark ochre that ink can't be read on. Maps still paint with ACCENT.
 - `"paper_grain": true` lays a fibre grain over the paper pieces. Off by default.
+- Napkin math (owner's pick, 2026-11-27; works in either style, drawn in the collage look in a collage film):
+  - Price tags: a callout with `"kind": "price"` and a `"point"` is a manila hang tag. Its pointed end faces the thing it prices, it is tied to it by a cream twine that pays out with the slap, and it hangs a few degrees askew. Auto placement keeps it near its point and never over it.
+  - Running tally: a segment's `"tally": {"title": "Startup", "items": [{"label": "Truck", "value": "$9,500", "at": "truck"}], "total": {"label": "Total", "at": "comes to"}}` puts a taped napkin under the tag card. Each line slaps on at its word. The total draws a marker rule, then counts up to the sum of the lines. Lines carry into later segments' tallies until `"tally": null`, or `"reset": true` starts a new one. More than six lines warns. Callouts keep clear of the napkin, and its numbers count as on screen for the number-at-word and deadspace checks.
+  - Ticking cash card: `"cash": true` on a tally item ticks the counter card on that word, down by the item (a cost), or up when the value starts with "+". The item's label captions the change stub. A tick with no counter card up warns.
+  - Trade-offs: the napkin takes the top-left corner beside the picture, so stills need room there or the callouts move away. A tick is computed from the card's last value, so a later explicit `"counter"` must agree with the running sum, which `check` does not test.
 - Trade-offs: a tag is still a box on the picture, which is what he called "plastered-on"; tape, tilt and a shadow make it read as stuck on, not melded in. Paper covers drawing, so the quiet-room warning still matters. Special Elite's zero looks like a capital O. The map's sound roles have no recordings yet, so the slaps are silent.
 
 ## Source line
 
 A segment's `source` shows as "Source: …" bottom left. On panels and maps it sits on a dark plate in light grey, since grey text alone was lost on coastlines and busy stills (owner's review, 2026-11-26); elsewhere it stays plain grey. `"source_plate": true` or `false` on a segment overrides that. Trade-off: the plate is a visible box on every panel and map with a source.
+
+## Beat sync
+
+Owner, 2026-11-27: "improve how well we pace what is on screen/the beats with the voiced lines to make sure it is in sync." `check` reads the timeline (pace.py) and treats each cut and each thing cued to a word as a landing. Cued things include data items with `at`, the counter, the tag, and tally lines and totals.
+
+- It flags any stretch of narration over `--pace-gap` s (4) with nothing new landing. The flag quotes the words said in the gap and suggests a cue word: a number said there first, else the longest content word near the middle. A clip panel is moving footage and is skipped.
+- It flags reveals that land at a default time (a callout, ink, a chart line, a bullet) while their own words are said in the segment, and gives the matching word or spoken amount.
+- It reports the rhythm: the median time between landings while the voice runs, and the share of spoken time within 3 s of one. Strong business explainers land something every 2 to 4 s (editing study, 2026-11-27).
+- `longform.py pace <film>` writes all of it to review/pace.md. `--apply` writes the matched words into script.json as `at` (the previous copy goes to script.json.bak). Run `timeline` after.
+- Trade-offs: it reads cues from the data, not the frames, so a scene type's own default-timed reveals don't count as landings until they are cued. Camera moves never count, because a move is not new information. Suggested cue words are a heuristic with no grammar, so read them before using them. Gaps need new content (a tag, ink, a tally line, another still), which only a person or the episode thread can choose.
 
 ## Captions
 

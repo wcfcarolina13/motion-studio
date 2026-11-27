@@ -1479,6 +1479,100 @@ class CollageStyle(unittest.TestCase):
         self.assertFalse((a != b).any())                                  # the same frame however it is reached
 
 
+class NapkinMath(unittest.TestCase):
+    """Napkin math (owner's pick, 2026-11-27): a price tag tied to its object, a tally that adds a line per cost on its
+    word, a cash card that ticks by each "cash" item, and a total that sums the lines."""
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_napkin(self):
+        import io, longform, mapart, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    mapart.cmd_fonts(film)
+            except Exception as e:
+                self.skipTest(f"fonts not reachable: {e}")
+            Image.new("RGB", (1920, 1080), (226, 214, 190)).save(film / "panels" / "yard.png")
+            segs = [{"id": "a", "type": "panel", "t0": 0, "t1": 6, "counter": {"value": "−$1,000", "label": "Your cash", "t": 0.1},
+                     "tally": {"title": "Startup", "items": [{"label": "Truck", "value": "$1,000", "t": 0.5},
+                                                             {"label": "Tank", "value": "$500", "t": 2.0, "cash": True}], "total": {"label": "Total", "t": 3.5}},
+                     "data": {"image": "panels/yard.png", "callouts": [{"kind": "price", "value": "$500", "text": "tank", "point": [0.7, 0.6], "t": 2.0}]}},
+                    {"id": "b", "type": "panel", "t0": 6, "t1": 8, "tally": None, "data": {"image": "panels/yard.png"}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 8, "segments": segs, "style": "collage"}) + ";\n")
+            with render.Film(film) as f:
+                seen = {}
+                for t in (0.3, 1.0, 2.5, 4.5, 7.5):
+                    f.seek(t); seen[t] = set(f.page.evaluate(longform.VISIBLE_TEXT))
+                f.seek(4.5)
+                string = f.page.evaluate("() => (document.querySelector('[data-callout=a] > path[stroke=\"#f3ecd9\"]') || {getAttribute: () => ''}).getAttribute('d') || ''")
+                over = f.page.evaluate(longform.OVERLAP)
+                self.assertFalse(f.errors)
+        flat = lambda t: " | ".join(sorted(x if isinstance(x, str) else str(x[0]) for x in seen[t]))
+        self.assertNotIn("Truck", flat(0.3)); self.assertIn("Truck", flat(1.0)); self.assertNotIn("Tank", flat(1.0))
+        self.assertIn("−$1,000", flat(1.0)); self.assertIn("−$1,500", flat(4.5))      # the card ticked by the tank
+        self.assertIn("$1,500", flat(4.5)); self.assertIn("Total", flat(4.5))           # the total sums the lines
+        self.assertNotIn("Truck", flat(7.5))                                            # "tally": null clears it
+        self.assertGreater(len(string), 40)                                             # the price tag's string
+        self.assertFalse([o for o in over if o[0] in ("Truck", "Tank", "Total", "$1,000", "$500", "$1,500", "STARTUP")], over)
+
+
+class BeatSync(unittest.TestCase):
+    """Something new lands on a word every few seconds while the voice runs, and reveals land on their words (owner,
+    2026-11-27: "pace what is on screen/the beats with the voiced lines to make sure it is in sync")."""
+    WORDS = [["The", 0.2, 0.3], ["truck", 0.3, 0.6], ["costs", 0.6, 0.9], ["nine", 0.9, 1.1], ["thousand", 1.1, 1.4], ["dollars.", 1.4, 1.8],
+             ["Then", 2.5, 2.7], ["you", 2.7, 2.8], ["wait", 2.8, 3.1], ["for", 3.1, 3.2], ["customers", 3.2, 3.8], ["while", 4.5, 4.7],
+             ["the", 4.7, 4.8], ["phone", 4.8, 5.1], ["stays", 5.1, 5.4], ["quiet", 5.4, 5.8], ["for", 6.4, 6.5], ["twelve", 6.5, 6.9], ["weeks.", 6.9, 7.4]]
+
+    def seg(self, **kw):
+        d = {"id": "a", "type": "panel", "t0": 0, "t1": 8, "words": self.WORDS,
+             "data": {"image": "x.png", "callouts": [{"kind": "stat", "value": "$9,000", "text": "the truck", "at": "nine", "t": 0.9},
+                                                     {"kind": "stat", "value": "12 weeks", "text": "of quiet"}]}}
+        d.update(kw)
+        return d
+
+    def test_gaps_and_uncued(self):
+        import pace
+        s = self.seg()
+        self.assertEqual(pace.events(s), [0, 0.9])
+        g = pace.gaps(s)
+        self.assertEqual(len(g), 1)
+        self.assertEqual((g[0]["t0"], g[0]["t1"]), (0.9, 7.4))
+        self.assertEqual(g[0]["suggest"], "twelve")                     # a number said in the gap first
+        u = pace.uncued(s)
+        self.assertEqual([(x["key"], x["index"], x["match"]) for x in u], [("callouts", 1, "twelve weeks")])     # the number as said, with its unit
+        s2 = self.seg(); s2["data"]["callouts"][1].update(at="twelve", t=6.5)
+        self.assertEqual(len(pace.gaps(s2)), 1)                         # 0.9 -> 6.5 is 5.6 s: still a gap
+
+    def test_gap_closes_with_a_landing_and_clips_skip(self):
+        import pace
+        s = self.seg(); s["data"]["callouts"][1].update(at="twelve", t=6.5)
+        s["data"]["ink"] = [{"kind": "circle", "place": [0.5, 0.5], "at": "customers", "t": 3.2}]
+        self.assertEqual(pace.gaps(s), [])
+        self.assertEqual(pace.gaps(self.seg(data={"clip": "a.mp4"})), [])  # moving footage is new all the time
+        med, near = pace.rhythm([s])
+        self.assertTrue(med and near > 0.9, (med, near))
+
+    def test_apply_writes_at(self):
+        import io, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            sc = {"title": "t", "segments": [{"id": "a", "type": "panel", "narration": "x", "data": {"image": "x.png", "callouts": [
+                  {"kind": "stat", "value": "$9,000", "text": "the truck", "at": "nine"}, {"kind": "stat", "value": "12 weeks", "text": "of quiet"}]}}]}
+            (film / "script.json").write_text(json.dumps(sc))
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 8, "segments": [self.seg()]}) + ";\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                longform.cmd_pace(type("A", (), {"film": str(film), "gap": 4.0, "apply": True})())
+            got = json.loads((film / "script.json").read_text())["segments"][0]["data"]["callouts"][1]
+            self.assertEqual(got.get("at"), "twelve weeks")
+            self.assertTrue((film / "script.json.bak").exists())
+            self.assertIn("twelve", (film / "review" / "pace.md").read_text())
+
+
 class SpokenNumbers(unittest.TestCase):
     """Every spoken amount is on screen at its word (editing-quality study, 2026-11-27: 6 of 83 were)."""
     def test_parse(self):

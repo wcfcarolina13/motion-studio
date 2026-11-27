@@ -21,6 +21,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
   longform.py short <film> <short> --from s05 --to s09   a 9:16 film from those segments: same voice and sound, its own layout
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
+  longform.py pace <film> [--apply]             review/pace.md: narration with nothing new landing, reveals not on a word (--apply cues them)
   longform.py tsheet <film> [--all]             review/intro-tsheet.md (or tsheet.md): audio | visual rows, numbers marked
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
@@ -959,7 +960,7 @@ def cmd_timeline(a):
         else:
             dur = s.get("hold", 3.0)
         dur += holds[s["id"]][1]
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace", "drift", "intro", "shows", "unshown") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "tally", "source_plate", "deadspace", "drift", "intro", "shows", "unshown") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -1019,6 +1020,8 @@ def cmd_timeline(a):
                 seg[k] = {"value" if k == "counter" else "text": str(v)}
             if isinstance(seg.get(k), dict):
                 resolve_cues(seg[k], seg.get("words"), seg, problems, cues)
+        if isinstance(seg.get("tally"), dict):      # napkin math (longform.md): each line lands on its word
+            resolve_cues(seg["tally"], seg.get("words"), seg, problems, cues)
         if seg.get("bed"):      # ambience under the whole segment: "bed": "rain glass" (or a list)
             seg["bed"] = [kind_key(b) for b in ([seg["bed"]] if isinstance(seg["bed"], str) else seg["bed"])]
         segs.append(seg)
@@ -3834,6 +3837,66 @@ def number_sync(film, segs):
     return rows
 
 
+PACE_GAP = 4.0      # s (pace.py): the beat-sync check flags narration this long with nothing new landing
+
+
+def pace_flags(segs, gap=PACE_GAP):
+    """(report lines, flags) for beat sync (pace.py): stretches of narration with nothing new landing, and reveals that
+    land at a default time while their own words are said in the segment."""
+    import pace
+    med, near = pace.rhythm(segs)
+    lines, flags = [], []
+    if med is not None:
+        lines.append(f"beat sync: something new every {med:g} s (median while the voice runs); {near:.0%} of spoken time is "
+                     f"within {pace.AIM:g} s of a landing")
+    for s in segs:
+        for g in pace.gaps(s, gap):
+            flags.append(f"{g['seg']}: {g['len']:g} s with nothing new on screen ({g['t0']:.1f}-{g['t1']:.1f} s, \"{g['said'][:80]}\")"
+                         + (f"; land something on \"{g['suggest']}\"" if g["suggest"] else "") + ". `longform.py pace` lists them all")
+        for u in pace.uncued(s):
+            if u["match"]:
+                flags.append(f"{u['seg']}: {u['key']}[{u['index']}] (\"{u['text']}\") appears at a default time, but its words are "
+                             f"said: cue it with \"at\": \"{u['match']}\" (`longform.py pace --apply` does it)")
+    return lines, flags
+
+
+def cmd_pace(a):
+    """review/pace.md: every gap in the narration with nothing new on screen (with a suggested cue word) and every reveal
+    that isn't on a word. --apply writes the matched words into script.json as "at" (a copy goes to script.json.bak),
+    then run timeline."""
+    import pace
+    film = Path(a.film).resolve()
+    tl = load_timeline(film)
+    segs = tl["segments"]
+    med, near = pace.rhythm(segs)
+    gs = [g for s in segs for g in pace.gaps(s, a.gap)]
+    us = [u for s in segs for u in pace.uncued(s)]
+    out = [f"# Beat sync\n", f"Something new lands every {med} s (median while the voice runs); {near:.0%} of spoken time is within "
+           f"{pace.AIM:g} s of a landing. Aim: every 2-3 s.\n" if med is not None else "No narrated segments.\n",
+           f"## Gaps over {a.gap:g} s ({len(gs)})\n", "| segment | from | to | s | said | cue on |", "|---|---|---|---|---|---|"]
+    out += [f"| {g['seg']} | {g['t0']:.1f} | {g['t1']:.1f} | {g['len']:g} | {g['said'][:90]} | {g['suggest'] or ''} |" for g in gs]
+    out += ["", f"## Reveals not on a word ({len(us)})\n", "| segment | item | text | said as |", "|---|---|---|---|"]
+    out += [f"| {u['seg']} | {u['key']}[{u['index']}] | {u['text']} | {u['match'] or '(not said)'} |" for u in us]
+    (film / "review").mkdir(exist_ok=True)
+    (film / "review" / "pace.md").write_text("\n".join(out) + "\n")
+    print("\n".join(out[:2]).strip())
+    print(f"{len(gs)} gap(s), {len(us)} uncued reveal(s): {film / 'review' / 'pace.md'}")
+    if a.apply:
+        sp = film / "script.json"
+        sc = json.loads(sp.read_text())
+        by = {x["id"]: x for x in sc["segments"]}
+        n = 0
+        for u in us:
+            items = ((by.get(u["seg"]) or {}).get("data") or {}).get(u["key"])
+            if u["match"] and isinstance(items, list) and u["index"] < len(items) and isinstance(items[u["index"]], dict) \
+                    and "at" not in items[u["index"]]:
+                items[u["index"]]["at"] = u["match"]; n += 1
+        if n:
+            shutil.copy(sp, film / "script.json.bak")
+            sp.write_text(json.dumps(sc, indent=1, ensure_ascii=False) + "\n")
+        print(f"cued {n} reveal(s) in script.json (previous copy: script.json.bak); run timeline")
+
+
 def number_flags(film, segs):
     """(report line, flags) for spoken numbers and the counter's word cues."""
     flags = []
@@ -4140,6 +4203,10 @@ def _check(a, film):
         if nline:
             report.append(nline)
         flags += nflags
+    # beat sync: something new lands on a word at least every --pace-gap s while the voice runs, and reveals land on words
+    if a.pace_gap > 0:
+        r, fl = pace_flags(segs, a.pace_gap)
+        report += r; flags += fl
     # the intro: its length, and whether its first seconds name the subject with the sound off
     if a.intro_max > 0:
         r, fl = intro_flags(film, tl, load_script(film), a.intro_max, a.mute)
@@ -4582,6 +4649,7 @@ def main():
                    help="a text scene type drawing at least this share of the frame as picture is not text-only (0 = by type alone)")
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
     p.add_argument("--no-numbers", dest="numbers", action="store_false", help="skip the spoken-numbers-on-screen test")
+    p.add_argument("--pace-gap", type=float, default=PACE_GAP, help="longest stretch of narration with nothing new landing on a word, s (0 skips)")
     p.add_argument("--intro-max", type=float, default=INTRO_MAX, help="longest intro, seconds (0 skips the intro tests)")
     p.add_argument("--mute", type=float, default=MUTE_S, help="opening seconds that must name the subject with the sound off (0 skips)")
     p.add_argument("--no-deadspace", dest="deadspace", action="store_false",
@@ -4600,6 +4668,9 @@ def main():
     p.add_argument("--beat", type=float, default=5.0, help="flag a beat with nothing new moving or entering while the voice speaks longer than this (0 skips)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("deadspace"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_deadspace)
+    p = sp.add_parser("pace"); p.add_argument("film"); p.add_argument("--gap", type=float, default=PACE_GAP)
+    p.add_argument("--apply", action="store_true", help="write matched cue words into script.json as \"at\"")
+    p.set_defaults(fn=cmd_pace)
     p = sp.add_parser("tsheet"); p.add_argument("film"); p.add_argument("--all", action="store_true", help="the whole film, not just the intro")
     p.set_defaults(fn=cmd_tsheet)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
