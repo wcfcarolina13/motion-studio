@@ -1644,6 +1644,28 @@ class BeatSync(unittest.TestCase):
             self.assertNotIn("script.json.bak", buf.getvalue())
             self.assertFalse((film / "script.json.bak").exists())
 
+    def test_stale_timeline_refused(self):
+        # episode thread, 2026-11-27: timeline stopped, left the last timeline.js, and check counted an old cut
+        import io, time, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            (film / "script.json").write_text(json.dumps({"title": "t", "segments": []}))
+            tl = {"duration": 8, "segments": [self.seg()], "script_sha": longform.script_sha(film)}
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+            self.assertIsNone(longform.stale_timeline(film))
+            args = type("A", (), {"film": str(film), "gap": 4.0, "apply": False})()
+            with contextlib.redirect_stdout(io.StringIO()):
+                longform.cmd_pace(args)
+            (film / "script.json").write_text(json.dumps({"title": "t2", "segments": []}))
+            self.assertIn("changed since", longform.stale_timeline(film))
+            with self.assertRaises(SystemExit) as e:
+                longform.cmd_pace(args)
+            self.assertIn("pace refused", str(e.exception))
+            tl.pop("script_sha")                                         # an old timeline.js: file times decide
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+            os.utime(film / "script.json", (time.time() + 60, time.time() + 60))
+            self.assertIn("newer than", longform.stale_timeline(film))
+
 class SpokenNumbers(unittest.TestCase):
     """Every spoken amount is on screen at its word (editing-quality study, 2026-11-27: 6 of 83 were)."""
     def test_parse(self):

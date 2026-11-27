@@ -90,6 +90,36 @@ def load_timeline(film):
     return json.loads((film / "timeline.js").read_text().split("=", 1)[1].rstrip().rstrip(";"))
 
 
+def script_sha(film):
+    sp = film / "script.json"
+    return hashlib.sha256(sp.read_bytes()).hexdigest()[:16] if sp.exists() else None
+
+
+def stale_timeline(film, tl=None):
+    """Why timeline.js does not match script.json, or None. timeline writes the script's hash into timeline.js, so a
+    timeline that stopped (and left the last one in place) or a script edited since is caught; a timeline.js from before
+    the hash existed falls back to file times. Episode thread, 2026-11-27: timeline stopped on stills that weren't
+    upscaled, and check read the previous cut and reported its numbers as current."""
+    sha = script_sha(film)
+    if sha is None or not (film / "timeline.js").exists():
+        return None
+    tl = tl if tl is not None else load_timeline(film)
+    if tl.get("script_sha"):
+        return None if tl["script_sha"] == sha else "script.json has changed since timeline.js was written"
+    if (film / "script.json").stat().st_mtime > (film / "timeline.js").stat().st_mtime + 1:
+        return "script.json is newer than timeline.js"
+    return None
+
+
+def require_fresh_timeline(film, what):
+    tl = load_timeline(film)
+    why = stale_timeline(film, tl)
+    if why:
+        raise SystemExit(f"{what} refused: {why}, so it would read an old cut. Run `longform.py timeline {film}` and fix "
+                         "what stops it first.")
+    return tl
+
+
 # ── real things on screen need a real capture ───────────────
 # A scene that shows a real thing (a scam text, a company site, a headline, an agency page) points at a capture:
 # "real": "<id>" in sources/captures.json, {"<id>": {"file", "url", "captured": "YYYY-MM-DD", "licence", "credit"?}}.
@@ -1083,6 +1113,7 @@ def cmd_timeline(a):
             problems.append("map segments but no maps/map.json: run mapart.py build first")
     if short:
         problems += short_audio(film, short, segs, a.lead)
+    tl["script_sha"] = script_sha(film)      # check and pace refuse a timeline.js that no longer matches script.json
     (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl, indent=1, ensure_ascii=False) + ";\n")
     # narration bed: every clip placed at its segment start
     sr = 48000
@@ -3871,7 +3902,7 @@ def cmd_pace(a):
     script.json as "at" (a copy goes to script.json.bak), then run timeline; it leaves cues already set alone."""
     import pace
     film = Path(a.film).resolve()
-    tl = load_timeline(film)
+    tl = require_fresh_timeline(film, "pace")
     segs = tl["segments"]
     med, near = pace.rhythm(segs)
     gs = [g for s in segs for g in pace.gaps(s, a.gap)]
@@ -4164,7 +4195,7 @@ def write_gate(film, page_clean, flags):
 def _check(a, film):
     """Dead air, text-only stretches, cue landings and one-frame flashes, measured from the timeline and the render."""
     import numpy as np
-    tl = load_timeline(film)
+    tl = require_fresh_timeline(film, "check")
     segs, total = tl["segments"], tl["duration"]
     seg_at = lambda t: next((s["id"] for s in segs if s["t0"] <= t < s["t1"]), "end")
     report, flags = [], []
