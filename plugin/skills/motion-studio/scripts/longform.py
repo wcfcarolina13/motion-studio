@@ -3810,7 +3810,8 @@ NUM_BEFORE, NUM_AFTER, NUM_EARLY = 0.3, 0.7, 1.0
 def number_sync(film, segs):
     """[{"seg", "text", "value", "t", "state"}] for every amount, count or duration spoken (numbersync.spoken), where
     state is "ok" (on screen from NUM_BEFORE s before its word to NUM_AFTER s after), "missing", "early" (already on
-    screen NUM_EARLY s before its word, and not said earlier in the film) or "opted out" (the segment's "unshown": true,
+    screen NUM_EARLY s before its word, and not said earlier in the film; never the second end of a range, which lands
+    with its first) or "opted out" (the segment's "unshown": true,
     a reason, or a list of the values it leaves off screen)."""
     import numbersync
     import render
@@ -3829,7 +3830,8 @@ def number_sync(film, segs):
                 else:
                     win = [a["t"] - NUM_BEFORE + k * (NUM_BEFORE + NUM_AFTER) / 5 for k in range(6)]
                     hit = any(numbersync.matches(a["value"], seen(t)) for t in win)
-                    early = (a["t"] >= NUM_EARLY and not any(numbersync.matches(a["value"], {v}) for v in said)
+                    early = (a["t"] >= NUM_EARLY and a.get("range_of") is None     # a range lands on its first end
+                             and not any(numbersync.matches(a["value"], {v}) for v in said)
                              and numbersync.matches(a["value"], seen(a["t"] - NUM_EARLY)))
                     row["state"] = "early" if early else "ok" if hit else "missing"
                 said.append(abs(a["value"]))

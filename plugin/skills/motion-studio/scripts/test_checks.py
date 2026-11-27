@@ -318,6 +318,20 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
         return subprocess.run(["python3", str(Path(__file__).with_name("codex_stills.py")), f"{d}/shots.json", f"{d}/out",
                                *(["--allow-codex"] if ok else []), *extra], capture_output=True, text=True, env=env)
 
+    def test_check_is_a_dry_run(self):
+        # 2026-11-27: the one-change rule refused a 39-shot job only after it was queued; --check fails it in seconds
+        with tempfile.TemporaryDirectory() as d:
+            bad = {"style": "ink", "faceless": True, "shots": [{"id": "a", "prompt": "a yard"},
+                   {"id": "b", "change": "Move the truck left. Make the sky grey.", "edit_from": f"{d}/x.png"}]}
+            r = self.run_it(d, "1536x1024", "NOFACE", "--check", ok=False, shots=bad)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("STOP b: one change per edit", r.stdout)
+            self.assertFalse(Path(d, "n").exists())                  # no Codex call
+            self.assertFalse(Path(d, "out").exists())                # no files
+            r = self.run_it(d, "1536x1024", "NOFACE", "--check", ok=False)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("2 shot(s) to draw: 0 problem(s)", r.stdout)
+
     def test_rerolls_crops_and_stamps(self):
         import longform
         from PIL import Image
@@ -1581,7 +1595,7 @@ class BeatSync(unittest.TestCase):
              "caption_card": "Rent: $1,200/mo", "callouts": [{"kind": "stat", "value": "$15–25", "text": "per unit"}]}}
         got = {pace.label(u["path"]): u["match"] for u in pace.uncued(s)}
         self.assertEqual(got["caption_card"], "twelve hundred dollars")          # "$1,200/mo" was read as 1 before
-        self.assertEqual(got["callouts[0]"], "twenty-five dollars")             # "$15–25": the en dash no longer joins them
+        self.assertEqual(got["callouts[0]"], "fifteen")                         # "$15–25": a range cues on its first end
         st = {"id": "s", "type": "stat", "t0": 0, "t1": 6, "words": w, "data": {"prefix": "$", "value": 1200, "label": "a month in rent"}}
         self.assertEqual([(u["path"], u["match"]) for u in pace.uncued(st)], [([], "twelve hundred dollars")])
         st["data"]["label"] = "rent each month"                                  # a stat cues on its number only, never its label
@@ -1600,6 +1614,21 @@ class BeatSync(unittest.TestCase):
         s["words"] = [["The", 0.0, 0.1]] + self.WORDS[1:]
         e = pace.cued_early(s)
         self.assertEqual([(x["label"], x["cue"], x["number"]) for x in e], [("callouts[0]", "The", "nine thousand dollars")])
+
+    def test_range_cued_on_first_end(self):
+        import pace, numbersync as n
+        w = [[x, 0.5 + 0.4 * i, 0.8 + 0.4 * i] for i, x in enumerate("Payment takes forty-five to sixty days and costs thirty-five to forty thousand".split())]
+        self.assertEqual([(a["value"], a.get("range_of")) for a in n.spoken(w)], [(45, None), (60, 45), (35000, None), (40000, 35000)])
+        self.assertEqual(n.on_screen(["$35–40k"]), {35000.0, 40000.0})
+        s = {"id": "r", "type": "panel", "t0": 0, "t1": 6, "words": w, "data": {"image": "x.png", "callouts": [
+            {"kind": "stat", "value": "45–60 days", "at": "forty-five", "t": 1.7},
+            {"kind": "stat", "value": "$35–40k", "at": "thirty-five", "t": 3.7},
+            {"kind": "stat", "value": "1 per 40", "text": "toilets", "at": "Payment", "t": 0.5}]}}
+        self.assertEqual([e["label"] for e in pace.cued_early(s)], [])          # ranges on their first end are right
+        w2 = w + [["one", 5.0, 5.1], ["per", 5.1, 5.2], ["forty", 5.2, 5.4], ["people", 5.4, 5.7]]
+        s["words"] = w2
+        self.assertEqual([e["label"] for e in pace.cued_early(s)], ["callouts[2]"])   # "1 per 40" on a word before "forty"
+        self.assertEqual([a["value"] for a in n.spoken([[x, i, i] for i, x in enumerate("two of them broke".split())])], [])
 
     def test_apply_with_nothing_to_cue(self):
         import io, longform
