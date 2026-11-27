@@ -1842,14 +1842,25 @@ B.panel = (s, g) => {
     K.label(cc.text, c0, c1, "caption card");
     card = { g: cg, c0, c1 };
   }
-  const cam = panelCam(d);
+  // adjacent panels on the same still are one shot: one camera move across the run, from the first panel's camera, so
+  // the cut between them is invisible instead of a jump back to the same picture (owner's note, 2026-11-27). A panel
+  // with its own camera object starts a new move (timeline warns about it); a camera name on a later panel is ignored
+  const run = (() => {
+    const i = SEGS.indexOf(s), same = j => { const x = SEGS[j]; return !!(x && x.type === "panel" && x.data && d.image && !d.clip
+      && x.data.image === d.image && !x.data.clip); }, own = j => typeof (SEGS[j].data || {}).camera === "object";
+    let a = i, b = i;
+    while (a > 0 && same(a - 1) && !own(a)) a--;
+    while (same(b + 1) && !own(b + 1)) b++;
+    return { t0: SEGS[a].t0, t1: SEGS[b].t1, first: SEGS[a] };
+  })();
+  const cam = panelCam(run.first.data);
   const fz = d.freeze ? (d.freeze === true ? s.t1 - 0.6 : cueT(d.freeze, s.t1 - 0.6)) : null;
   const sh = d.shake ? { t: cueT(d.shake, s.t0), a: d.shake.amp || 14 } : null;
   // the camera as a pure function of t, also handed to check (STUDIO.panelCam), which predicts from it and the still how
   // much the picture will move before anything is rendered
   const camAt = t => {
-    const end = fz != null ? Math.min(fz, s.t1) : s.t1;
-    const p = K.eio(K.prog(Math.min(t, end), s.t0, end));
+    const end = fz != null ? Math.min(fz, run.t1) : run.t1;
+    const p = K.eio(K.prog(Math.min(t, end), run.t0, end));
     let z = Math.exp(K.lerp(Math.log(cam.from.z), Math.log(cam.to.z), p));
     z = Math.max(1, z);
     let cx = K.lerp(cam.from.x, cam.to.x, p) * IW, cy = K.lerp(cam.from.y, cam.to.y, p) * IH;
