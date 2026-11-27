@@ -1203,6 +1203,8 @@ class StatScene(unittest.TestCase):
         self.assertEqual(low, [], est)
         self.assertEqual(hits, [])
         self.assertFalse(longform.STAT_STILL["v35f stat"])
+        px, secs = longform.STAT_TRAVEL["v35f stat"]
+        self.assertGreater(px / secs, 10, (px, secs))      # the page holds its speed over a long hold
         # a film whose own film.html predates stat drift: check must say so rather than tell it to raise "drift"
         with tempfile.TemporaryDirectory() as d:
             film = Path(d)
@@ -1215,6 +1217,60 @@ class StatScene(unittest.TestCase):
             (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 18.0, "segments": [seg]}) + ";\n")
             longform.stat_motion(film, [seg])
         self.assertTrue(longform.STAT_STILL["v35f stat"])
+
+
+class PaletteAndFades(unittest.TestCase):
+    """A pale accent on a warm ground is caught when the timeline is written, and the contrast sampler leaves out moments
+    when text is mid-fade (Survive Year 1, 2026-11-27: stat numbers at 2.0:1, chart labels flagged on their exit)."""
+    def test_palette_lint(self):
+        import longform
+        w = longform.palette_warnings({"BG": "#E6DAC3", "INK": "#2a231c", "ACCENT": "#C8922E", "GREY": "#6b6257"})
+        self.assertEqual(len(w), 1, w)
+        self.assertIn("ACCENT", w[0])
+        fix = w[0].split("; ")[-1].split()[0]
+        self.assertGreaterEqual(longform._wcag(longform._hex_rgb(fix), longform._hex_rgb("#E6DAC3")), 3.5)
+        self.assertEqual(longform.palette_warnings({"BG": "#E6DAC3", "INK": "#2a231c", "ACCENT": "#9A6614", "GREY": "#6b6257"}), [])
+        # a light ground that leaves GREY to the house value (made for a dark ground) is caught too
+        self.assertIn("GREY", " ".join(longform.palette_warnings({"BG": "#E6DAC3", "INK": "#2a231c", "ACCENT": "#9A6614"})))
+        self.assertEqual(longform.palette_warnings({}), [])                   # the house colours pass
+        self.assertEqual(longform.palette_warnings({"BG": "url(#paper)"}), [])  # not a plain colour: not judged
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_sampler_skips_fade_frames(self):
+        import json, longform
+        seg = {"id": "s", "type": "statement", "t0": 0.0, "t1": 4.0, "data": {"lines": ["Forty units a week"]}}
+        for fade, want in ((0.4, None), (1.0, None)):
+            with tempfile.TemporaryDirectory() as d:
+                film = Path(d)
+                html = longform.TEMPLATE.read_text()
+                # the scene's group fades to `fade` from 3 s, as a chart label or a map tag does on its way out
+                hook = ("<script>{const S = window.seek; window.seek = t => { S(t); "
+                        "document.querySelector('#scenes > [data-seg=s]').setAttribute('opacity', t > 3 ? %s : 1); };}</script>" % fade)
+                (film / "film.html").write_text(html.replace("</body>", hook + "</body>"))
+                for f in longform.ENGINE_FILES:
+                    shutil.copy(longform.HERE / f, film / f)
+                (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4.0, "segments": [seg]}) + ";\n")
+                sheet = longform.text_contrast(film, [{"seg": "s", "lines": ["Forty units a week"], "t": 1.5, "hold": 2.4}], 3.0)
+                b = sheet[0]
+                if fade < 1:
+                    self.assertEqual(b["faded_skipped"], 1, b)
+                    self.assertLess(b["contrast_t"], 3.0, b)
+                else:
+                    self.assertEqual(b["faded_skipped"], 0, b)
+                self.assertGreater(b["contrast"], 3.0, b)
+                self.assertAlmostEqual(b["readable"], 2.4, places=3)
+        # never fully opaque: still measured, at its most opaque moment
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            hook = ("<script>{const S = window.seek; window.seek = t => { S(t); "
+                    "document.querySelector('#scenes > [data-seg=s]').setAttribute('opacity', 0.2); };}</script>")
+            (film / "film.html").write_text(longform.TEMPLATE.read_text().replace("</body>", hook + "</body>"))
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4.0, "segments": [seg]}) + ";\n")
+            b = longform.text_contrast(film, [{"seg": "s", "lines": ["Forty units a week"], "t": 1.5, "hold": 2.4}], 3.0)[0]
+            self.assertIsNotNone(b["contrast"])
+            self.assertLess(b["contrast"], 3.0, b)
 
 
 class ClipPanel(unittest.TestCase):
