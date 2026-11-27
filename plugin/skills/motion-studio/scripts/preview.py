@@ -114,9 +114,13 @@ def review(film: Path):
         tl = json.loads((film / "timeline.js").read_text().split("=", 1)[1].rstrip().rstrip(";"))
     except (OSError, ValueError, IndexError):
         tl = None
+    import gate
     notes = load_notes(film)["notes"]
     groups = review_state.take_groups(film, script, tl)
+    gates = gate.load(film)
     for g in groups:
+        for t in g["takes"]:    # rule 16.4: a new take reaches him only once it has passed the full-size check
+            t["gate"] = gate.status(film, t["path"], t.get("mtime"), gates)
         # for the takes view's filters and its "last updated" sort: open comments on the group's takes, and the newest of
         # its take files and its comments
         mine = [n for n in notes if (n.get("take") or {}).get("key") == g["key"]]

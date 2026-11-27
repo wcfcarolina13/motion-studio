@@ -68,6 +68,8 @@
   .tfilters { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-bottom: 12px; color: var(--grey); font-size: 13px; }
   .tfilters select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; font: inherit; }
   .tcount { margin-left: auto; }
+  .gwait { color: var(--mute, #888); font-size: 12px; margin: 0 0 6px; }
+  .take.unchecked { opacity: .55; }
   .newb { color: var(--bg); background: var(--accent); border-radius: 3px; padding: 0 5px; font-size: 11px; font-weight: 700; letter-spacing: .5px; }
   .take .tnote { margin-top: 6px; padding: 4px 6px; border-left: 2px solid var(--accent); font-size: 13px; white-space: pre-wrap; }
   .take .tnote.done { border-color: var(--done); color: var(--grey); }
@@ -456,6 +458,7 @@ function renderTakes() {
   if (framings.length) sel("tkShot", "shot", [["all", "all"]].concat(framings.map(f => [f, f])));
   sel("tkState", "show", [["all", "all"], ["waiting", "waiting for a pick"], ["picked", "picked"], ["notes", "with open comments"], ["new", "with new takes"]]);
   sel("tkSort", "sort", [["updated", "last updated"], ["film", "film order"]]);
+  sel("tkGate", "takes", [["checked", "checked"], ["all", "also unchecked"]]);
   box.appendChild(bar);
   const v = k => takeView[k] || "all", isNew = tk => tk.mtime > seenAt;
   const shown = rev.groups.filter(g => (v("tkKind") === "all" || g.kind === v("tkKind")) && (v("tkShot") === "all" || g.framing === v("tkShot"))
@@ -474,8 +477,12 @@ function renderTakes() {
       go.onclick = () => { toggleTakes(false); pause(); seek(g.t0 + 0.01); }; h.appendChild(go); }
     d.appendChild(h);
     const row = document.createElement("div"); row.className = "row3";
-    g.takes.forEach(tk => {
-      const c = document.createElement("div"); c.className = "take" + (g.pick === tk.seed ? " chosen" : "");
+    // takes not yet checked at full size (or failed) stay out of his view unless he asks for them
+    const showAll = (takeView.tkGate || "checked") === "all", hold = g.takes.filter(tk => tk.gate === "unchecked" || tk.gate === "fail");
+    if (hold.length && !showAll) { const w = document.createElement("div"); w.className = "gwait";
+      w.textContent = `${hold.length} take${hold.length > 1 ? "s" : ""} waiting for the full-size check`; d.appendChild(w); }
+    g.takes.filter(tk => showAll || !(tk.gate === "unchecked" || tk.gate === "fail")).forEach(tk => {
+      const c = document.createElement("div"); c.className = "take" + (g.pick === tk.seed ? " chosen" : "") + (tk.gate === "unchecked" || tk.gate === "fail" ? " unchecked" : "");
       // ?v= the file's mtime: a take redrawn under the same name gets a new URL, so no cache can show the old picture
       const src = `/w/${encodeURIComponent(info.film)}/${tk.path.split("/").map(encodeURIComponent).join("/")}?v=${tk.mtime}`;
       const m = document.createElement(g.kind === "clip" ? "video" : "img");
@@ -483,7 +490,7 @@ function renderTakes() {
         m.poster = `/api/poster?p=${encodeURIComponent(tk.path)}&v=${tk.mtime}`; } else m.loading = "lazy";
       m.src = src; c.appendChild(m);
       const bar = document.createElement("div"); bar.className = "bar";
-      bar.innerHTML = `<span>seed ${tk.seed}${isNew(tk) ? ' <b class="newb">new</b>' : ""}</span>`;
+      bar.innerHTML = `<span>seed ${tk.seed}${isNew(tk) ? ' <b class="newb">new</b>' : ""}${tk.gate === "unchecked" ? " · not checked" : tk.gate === "fail" ? " · failed the check" : ""}</span>`;
       const use = document.createElement("button"); use.className = "use";
       use.textContent = g.pick === tk.seed ? "✓ chosen (undo)" : "use this";
       use.onclick = async () => {

@@ -683,6 +683,65 @@ else:
             calls = [x for x in Path(__file__).with_name(f).read_text().split("subprocess.run(")[1:] if not x.startswith('["ffmpeg"')]
             self.assertTrue(calls and all("stdin=subprocess.DEVNULL" in x.split("\n", 2)[0] + x.split("\n", 2)[1] for x in calls), f)
 
+    def test_markup_route_and_edit_ab(self):
+        # the markup route sends the whole panel with the region outlined plus the clean panel; the fake answers with the
+        # clean panel darkened in the box, at ChatGPT's 3:2 shape, with a stray change far outside it
+        fake = r"""
+import os, sys
+from PIL import Image, ImageDraw
+args = sys.argv[1:-1]; prompt = sys.argv[-1]
+open(os.environ["FAKE_LOG"], "a").write(" ".join(args) + "\n")
+ims = [a.split("=", 1)[1] for a in args if a.startswith("--image=")]
+im = Image.open(ims[0]).convert("RGB")
+W, H = im.size
+d = ImageDraw.Draw(im)
+if W == H:                                  # the crop route: darken the middle
+    d.rectangle((W // 3, H // 3, 2 * W // 3, 2 * H // 3), fill=(30, 30, 30))
+else:
+    d.rectangle((600, 300, 800, 500), fill=(30, 30, 30)); d.rectangle((0, 0, 120, 120), fill=(0, 90, 0))
+    im = im.resize((1536, 1024)) if "red rectangle" in prompt else im
+im.save("image.png")
+"""
+        import panelqa, longform
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            im = Image.open(film / "panels" / "p1.png"); dr = ImageDraw.Draw(im)
+            for i in range(0, 1600, 80):
+                dr.line((i, 0, i + 300, 900), fill=(90, 70, 50), width=5)          # texture, so likeness means something
+            im.save(film / "panels" / "p1.png")
+            Path(d, "fake.py").write_text(fake)
+            env = dict(self.env(d), EDITAB_JUDGE_CMD="echo 'A: FIXED CLEAN'; echo 'B: NOT SEAM'")
+            with unittest.mock.patch.dict(os.environ, env):
+                rdir, made, secs, e = panelqa.repair(film, "panels/p1.png", "600,300,200,200", "darken it", seeds=[1],
+                                                     allow_codex=True, method="markup")
+                self.assertEqual(made, [1])
+                self.assertEqual(e["markup"]["1"]["fit"], "stretched")             # 3:2 answer mapped onto 16:9
+                self.assertLess(e["markup"]["1"]["outside_likeness"], 1.0)
+                self.assertEqual(e["markup"]["1"]["red_left"], 0.0)
+                mk = np.asarray(Image.open(rdir / "markup.png").convert("RGB"))
+                self.assertEqual(tuple(mk[300 - 32 - 3, 700]), (255, 0, 0))         # outline just outside the paste
+                cand = np.asarray(Image.open(rdir / "candidate_1.png").convert("RGB")).astype(int)
+                orig = np.asarray(Image.open(film / "panels" / "p1.png").convert("RGB")).astype(int)
+                self.assertEqual(int(np.abs(cand[:200, :200] - orig[:200, :200]).max()), 0)   # the stray change is not pasted
+                self.assertGreater(np.abs(cand[350:450, 650:750] - orig[350:450, 650:750]).mean(), 40)
+                with self.assertRaises(SystemExit):
+                    panelqa.repair(film, "panels/p1.png", "600,300,200,200", "x", model="qwen", draft=True, method="markup")
+                r = subprocess.run(["python3", str(Path(__file__).with_name("editab.py")), str(film), "--image", "panels/p1.png",
+                                    "--box", "600,300,200,200", "--change", "darken it", "--allow-codex", "--seed", "3"],
+                                   capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            ab = film / "repairs" / "ab" / "panels" / "p1" / "01"
+            res = json.loads((ab / "results.json").read_text())
+            self.assertEqual([x["method"] for x in res["rows"]], ["crop", "markup", "whole"])
+            key = json.loads((ab / "key.json").read_text())
+            self.assertEqual(len(key), 4)                                           # crop, markup, whole raw, whole pasted
+            self.assertEqual(res["blind"], {key["A"]: {"fixed": True, "clean": True}, key["B"]: {"fixed": False, "clean": False}})
+            whole = [x for x in res["rows"] if x["method"] == "whole"][0]
+            self.assertLess(whole["outside_likeness"], 1.0)
+            for f in ("report.md", "blind.png", "compare.png"):
+                self.assertTrue((ab / f).exists(), f)
+
     def test_local_models_are_drafts_only_and_render_refuses_them(self):
         import panelqa, longform
         with tempfile.TemporaryDirectory() as d:
@@ -701,6 +760,77 @@ else:
         src = Path(longform.__file__).read_text()
         self.assertIn('p.add_argument("--model", choices=panelqa.ROUTES,', src)    # no local default on the CLI
         self.assertEqual(panelqa.repair.__kwdefaults__["model"], "chatgpt")
+
+
+class RedrawRules(unittest.TestCase):
+    """picture-truth.md rule 16 (owner, 2026-11-27): photo first, one flaw one spot, blockout then style pass, gate."""
+
+    def test_shot_problems(self):
+        import codex_stills
+        with tempfile.TemporaryDirectory() as d:
+            ph = Path(d, "p.jpg"); ph.write_bytes(b"x")
+            bad = codex_stills.shot_problems([
+                {"id": "a", "prompt": "yard", "photo": str(ph)},                                   # no licence
+                {"id": "b", "edit_from": "a", "change": "raise the gate", "note": 12},             # a note's fix
+                {"id": "c", "edit_from": "a", "change": "raise the gate. Move the truck left."},   # two changes
+                {"id": "d", "prompt": "yard", "photo": str(ph), "photo_licence": "own", "style_refs": ["1", "2", "3", "4", "5"]},
+                {"id": "e", "prompt": "yard", "blockout": f"{d}/missing.png"},
+            ], {})
+            got = {x.split(":")[0] for x in bad}
+            self.assertEqual(got, {"a", "b", "c", "d", "e"}, bad)
+            self.assertEqual(codex_stills.shot_problems([{"id": "f", "prompt": "yard", "photo": str(ph), "photo_licence": "own"},
+                                                         {"id": "g", "edit_from": "f", "change": "the gate is raised"}], {}), [])
+
+    def test_photo_and_blockout_routes(self):
+        from PIL import Image
+        fake = r"""
+import os, sys
+from PIL import Image
+open(os.environ["FAKE_LOG"], "a").write(repr(sys.argv[1:]) + "\n")
+Image.new("RGB", (1536, 1024), (120, 110, 100)).save("image.png")
+"""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "fake.py").write_text(fake)
+            for f in ("photo.jpg", "block.png", "style.png"):
+                Image.new("RGB", (900, 600)).save(Path(d, f))
+            Path(d, "shots.json").write_text(json.dumps({"style": "ink on cream", "style_refs": [f"{d}/style.png"], "shots": [
+                {"id": "a", "prompt": "a wedding trailer", "photo": f"{d}/photo.jpg", "photo_licence": "own"},
+                {"id": "b", "prompt": "a gate by a fence", "blockout": f"{d}/block.png"}]}))
+            env = dict(os.environ, CODEX_CMD=f"python3 {d}/fake.py", CODEX_ARGS="", CODEX_IMAGES=f"{d}/none",
+                       FAKE_LOG=f"{d}/log", FACE_CHECK_CMD="off", ANATOMY_CHECK_CMD="off")
+            r = subprocess.run(["python3", str(Path(__file__).with_name("codex_stills.py")), f"{d}/shots.json", f"{d}/out",
+                                "--allow-codex"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = [eval(x) for x in Path(d, "log").read_text().splitlines()]
+            self.assertEqual(len(calls), 3)                                     # the photo, then blockout + style pass
+            self.assertEqual(calls[0][:2], [f"--image={d}/photo.jpg", f"--image={d}/style.png"])   # the photo is image 1
+            self.assertIn("Image 1 is a reference photo", calls[0][-1]); self.assertIn("Image 2 is a style reference", calls[0][-1])
+            self.assertEqual(calls[1][0], f"--image={d}/block.png"); self.assertIn("blockout", calls[1][-1])
+            self.assertIn("Repaint only the surfaces", calls[2][-1])
+            self.assertIn("ink on cream", calls[2][-1])
+            self.assertIn("3 codex calls", Path(d, "out", "usage.log").read_text())
+
+    def test_gate_holds_new_takes_and_ruler(self):
+        import gate, preview
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            Image.new("RGB", (800, 450), (230, 220, 200)).save(film / "t.png")
+            m = round((film / "t.png").stat().st_mtime, 3)
+            self.assertEqual(gate.status(film, "t.png", m), "unchecked")
+            self.assertEqual(gate.status(film, "t.png", gate.SINCE - 10), "old")      # made before the rule
+            with self.assertRaises(SystemExit):
+                gate.record(film, "t.png", "", True)                                  # the note's own question is required
+            out = gate.ruler(film, "t.png", 400, 400, 120, 7)                         # a 7 ft door from y 400 to 120
+            px = np.asarray(Image.open(out).convert("RGB"))
+            self.assertEqual(tuple(px[400 - 140, 400 + 5]), (255, 255, 0))           # 40 px a foot: the 3.5 ft tick
+            self.assertEqual(tuple(px[400 - 140, 400 + 15]), (230, 220, 200))        # a half-foot tick is short
+            self.assertEqual(tuple(px[400 - 160, 400 + 15]), (255, 255, 0))          # a whole-foot one is long
+            gate.record(film, "t.png", "Is the handle at 3.5 ft?", True, ruler_args=[400, 400, 120, 7])
+            self.assertEqual(gate.status(film, "t.png", m), "pass")
+            os.utime(film / "t.png", (m + 5, m + 5))                                  # redrawn under the same name
+            self.assertEqual(gate.status(film, "t.png", m + 5), "unchecked")
+            self.assertIn("gwait", Path(preview.__file__).with_name("preview.html").read_text())
 
 
 class ChartScene(unittest.TestCase):
@@ -941,6 +1071,9 @@ class ReviewDashboard(unittest.TestCase):
             sc["segments"][1]["data"]["clip"] = "clips/m2_s1.mp4"
             (film / "script.json").write_text(json.dumps(sc))
             os.utime(film / "panels" / "m1c_s7.png", (1e9, 1e9)); os.utime(film / "panels" / "m1c_s19.png", (1e9, 1e9))   # the stills are old
+            import gate
+            for seed in (1, 2):                 # new takes reach the view once checked (rule 16.4)
+                gate.record(film, f"clips/m2_s{seed}.mp4", "Does the clip hold one shot?", True)
             r = preview.review(film)
             g = {x["key"]: x for x in r["groups"]}
             self.assertEqual((g["m1c"]["framing"], g["m2"]["kind"]), ("CU", "clip"))
@@ -1013,8 +1146,14 @@ class ReviewDashboard(unittest.TestCase):
         import json, threading, urllib.request, urllib.error, preview
         from http.server import ThreadingHTTPServer
         from playwright.sync_api import sync_playwright
+        import gate
         with tempfile.TemporaryDirectory() as d:
             film = self.film(d)
+            takes = [t for g in preview.review(film)["groups"] for t in g["takes"]]
+            self.assertTrue(takes and all(t["gate"] == "unchecked" for t in takes))      # new takes wait for the check
+            for t in takes:
+                gate.record(film, t["path"], "Does it answer the note?", True)
+            self.assertTrue(all(t["gate"] == "pass" for g in preview.review(film)["groups"] for t in g["takes"]))
             srv = ThreadingHTTPServer(("127.0.0.1", 0), preview.make_handler(film, "sekret"))
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             url = f"http://127.0.0.1:{srv.server_address[1]}"

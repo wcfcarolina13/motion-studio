@@ -447,6 +447,76 @@ def repair_ask(prompt, side, ref=False, faceless=False):
     return " ".join(parts)
 
 
+MARK_RGB = (255, 0, 0)   # the outline drawn on the panel for a markup repair
+MARK_W = 6
+
+
+def repair_markup_ask(prompt, W, H, ref=False, faceless=False):
+    """The ChatGPT instruction for a markup repair: the whole panel with the fault outlined in red, plus the clean panel."""
+    import codex_stills
+    # the clean panel goes first: only the first input gets the model's extra fidelity (OpenAI's image guide), and the
+    # finished picture must not carry the marker; image 2 only says where
+    parts = ["Image 1 is the illustration to edit. Image 2 is the same illustration with a red rectangle drawn on it to "
+             "show where the change goes. Edit image 1: change only what lies inside the area the red rectangle marks, and "
+             "keep everything outside it exactly as it is, with the same composition, framing, line work, colours, paper "
+             "texture and light. The change: " + prompt.strip().rstrip(".") + ". The finished picture has no red rectangle."]
+    if ref:
+        parts.append("Image 3 is a reference for how that part should look. Do not copy it in whole.")
+    parts.append(f"Make exactly one image, {W}x{H}, the same size and shape as image 2, and save it as image.png in the "
+                 "current folder.")
+    parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
+    parts.append(codex_stills.HANDS)
+    if faceless:
+        parts.append("No human face may be visible anywhere: show people from behind or cropped at the shoulders. This is a hard rule.")
+    return " ".join(parts)
+
+
+def draw_mark(base, region, dest):
+    """The panel with a red rectangle around the paste region (drawn just outside it, so it never lands in the paste)."""
+    a = np.clip(base + 0.5, 0, 255).astype(np.uint8).copy()
+    H, W = a.shape[:2]
+    x, y, w, h = region
+    x0, y0, x1, y1 = max(0, x - MARK_W), max(0, y - MARK_W), min(W, x + w + MARK_W), min(H, y + h + MARK_W)
+    a[y0:y0 + MARK_W, x0:x1] = MARK_RGB; a[y1 - MARK_W:y1, x0:x1] = MARK_RGB
+    a[y0:y1, x0:x0 + MARK_W] = MARK_RGB; a[y0:y1, x1 - MARK_W:x1] = MARK_RGB
+    write_rgb(a.astype(np.float32), dest)
+
+
+def outside_likeness(a, b, region, step=4):
+    """Correlation of two panels' gray values outside the region (sampled every `step` px): 1.0 when nothing outside moved."""
+    g = [(x[::step, ::step] @ np.array([0.299, 0.587, 0.114], np.float32)) for x in (a, b)]
+    m = np.ones(g[0].shape, bool)
+    x, y, w, h = region
+    m[y // step:(y + h) // step + 1, x // step:(x + w) // step + 1] = False
+    u, v = g[0][m] - g[0][m].mean(), g[1][m] - g[1][m].mean()
+    den = float(np.sqrt((u * u).sum() * (v * v).sum()))
+    return round(float((u * v).sum() / den), 3) if den else 0.0
+
+
+def fit_full(out, W, H, base, region):
+    """A whole-panel answer mapped onto the panel: resized when it came back at the panel's shape; otherwise the better
+    aligned of a stretch and a centre crop (by likeness outside the region). Returns (array, how, likeness)."""
+    w, h = size(out)
+    tries = [("resized", read_rgb(out, W, H))]
+    if abs(w / h - W / H) > 0.01:
+        cw, ch = (round(h * W / H), h) if w / h > W / H else (w, round(w * H / W))
+        tmp = Path(str(out) + ".fit.png")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-vf", f"crop={cw}:{ch},scale={W}:{H}:flags=lanczos",
+                        "-frames:v", "1", str(tmp)], check=True)
+        tries = [("stretched", tries[0][1]), ("centre-cropped", read_rgb(tmp))]
+        tmp.unlink()
+    scored = [(outside_likeness(a, base, region), how, a) for how, a in tries]
+    k, how, a = max(scored, key=lambda x: x[0])
+    return a, how, k
+
+
+def red_left(new, old, mask):
+    """Share of the masked pixels that came back marker-red where the panel was not (the outline left in)."""
+    def red(a):
+        return (a[..., 0] > 170) & (a[..., 1] < 80) & (a[..., 2] < 80)
+    return round(float((red(new) & ~red(old))[mask].mean()), 4) if mask.any() else 0.0
+
+
 def draft_repairs(film):
     """{image: model} for panels whose accepted repair came from a local (draft-only) model."""
     log_path = Path(film) / "repairs" / "log.json"
@@ -455,7 +525,8 @@ def draft_repairs(film):
 
 
 def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), context=2.25, margin=32, feather=16,
-           color=True, min_change=0.10, gen_size=None, gen_args=(), beats=(), draft=False, allow_codex=False, faceless=False):
+           color=True, min_change=0.10, gen_size=None, gen_args=(), beats=(), draft=False, allow_codex=False, faceless=False,
+           method="crop"):
     """Redraw one region of a panel. The paste covers the box grown by `margin`, blends over `feather` px inside that, and
     matches the redraw's colour to the original around it. Writes repairs/<image path>/rNN/: crop.png (the square sent
     to the model), out_<seed>.png (what came back), compare_<seed>.png (the crop before and after) and, unless the seed
@@ -466,6 +537,10 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
         raise SystemExit(f"no panel image {img}")
     if model not in ROUTES:
         raise SystemExit(f"no repair route {model}: {', '.join(ROUTES)}")
+    if method not in ("crop", "markup"):
+        raise SystemExit(f"no repair method {method}: crop or markup")
+    if method == "markup" and model != CHATGPT:
+        raise SystemExit("the markup method sends the whole panel with the fault outlined; only the ChatGPT route takes it")
     if model in GENERATORS and not draft:
         raise SystemExit(f"{model} is a local image model, and local models are drafts only (owner's rule, picture-truth.md "
                          "rule 15): repair with ChatGPT (the default), or pass --draft-local for a draft the render will refuse")
@@ -504,7 +579,23 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
     images = [str(crop)] + ([str(Path(ref).resolve())] if ref else [])
     t0 = time.time()
     failures = {}
-    if model == CHATGPT:
+    whole = {}
+    if model == CHATGPT and method == "markup":
+        # the whole panel goes, with the paste region outlined in red, plus the clean panel; the answer is mapped back onto
+        # the panel and only the same crop is kept, so the paste, colour match and checks below are the crop route's
+        mark = rdir / "markup.png"
+        draw_mark(base, region, mark)
+        ask = repair_markup_ask(prompt, W, H, ref=bool(ref), faceless=faceless)
+        for x in seeds:
+            full = rdir / f"full_{x}.png"
+            why = codex_stills.edit_image(ask, [str(src), str(mark)] + ([str(Path(ref).resolve())] if ref else []), full)
+            if why:
+                print(f"  take {x}: {why}"); failures[str(x)] = why
+                continue
+            arr, how, k = fit_full(full, W, H, base, region)
+            whole[str(x)] = {"fit": how, "outside_likeness": k, "size": list(size(full))}
+            write_rgb(arr[sy:sy + side, sx:sx + side], rdir / f"out_{x}.png")
+    elif model == CHATGPT:
         # the crop itself is the edit base; ChatGPT has no seed, so each "seed" is one independent take
         ask = repair_ask(prompt, gen, ref=bool(ref), faceless=faceless)
         for x in seeds:
@@ -560,6 +651,15 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
         overflow = float((np.abs(blur(new) - blur(old)).max(-1) > 50)[near].mean()) if near.any() else 0.0
         sharp = detail(new)
         notes = []
+        if method == "markup":
+            pm = np.zeros((side, side), bool)
+            pm[max(0, rc[1]):rc[1] + rc[3], max(0, rc[0]):rc[0] + rc[2]] = True
+            whole[str(s)]["red_left"] = red_left(new, old, pm)
+            if whole[str(s)]["red_left"] > 0.002:
+                notes.append(f"the red outline is left in ({whole[str(s)]['red_left']:.1%} of the paste is marker red)")
+            if whole[str(s)]["outside_likeness"] < 0.9:
+                notes.append(f"the model redrew the panel outside the outline (likeness {whole[str(s)]['outside_likeness']}); "
+                             "only the outlined region is pasted, so check the seam")
         if min_change and change < min_change:
             notes.append(f"no edit ({change:.0%} of the box changed)")
         if overflow > 0.03:
@@ -586,7 +686,7 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
              "margin": margin, "feather": feather, "open_sides": sides, "crop": [sx, sy, side], "gen_size": gen, "resize_detail": trip,
              "enlarged_with": enlarged, "color_match": color, "crossings": cross, "prompt": prompt, "model": model,
              "ref": ref, "seeds": list(seeds), "candidates": made, "checks": checks, "seconds": secs,
-             "draft": model in GENERATORS, "failures": failures,
+             "draft": model in GENERATORS, "failures": failures, "method": method, "markup": whole,
              "at": time.strftime("%Y-%m-%d %H:%M"), "status": "candidate" if made else "failed"}
     log.append(entry)
     log_path.write_text(json.dumps(log, indent=1, ensure_ascii=False) + "\n")

@@ -624,7 +624,7 @@ def cmd_repair(a):
     if model in panelqa.GENERATORS:
         print(f"  DRAFT ONLY: {model} is a local model; the render refuses this panel while the repair is accepted")
     rdir, made, secs, e = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=model, seeds=a.seeds, context=a.context,
-                                         draft=a.draft_local, allow_codex=a.allow_codex, faceless=a.faceless,
+                                         draft=a.draft_local, allow_codex=a.allow_codex, faceless=a.faceless, method=a.method,
                                          margin=a.margin, feather=a.feather, color=not a.no_color_match, min_change=a.min_change, gen_size=a.gen_size,
                                          gen_args=a.gen_args.split() if a.gen_args else [], beats=beats)
     rid = e["id"]
@@ -3952,6 +3952,9 @@ def main():
                    help="DRAFTS ONLY: repair with a local mflux model (qwen unless --model klein); the render refuses the panel")
     p.add_argument("--allow-codex", action="store_true", help="the ChatGPT route spends the Codex allowance: one image per take")
     p.add_argument("--faceless", action="store_true", help="tell ChatGPT no face may show (a faceless hero)")
+    p.add_argument("--method", choices=["crop", "markup"], default="crop",
+                   help="crop: the square around the box is the edit base; markup: the whole panel with the box outlined in red "
+                        "(ChatGPT only). Either way only the box plus --margin is pasted back")
     p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3], help="takes (ChatGPT) or seeds (local); 3 by default")
     p.add_argument("--context", type=float, default=2.25, help="crop side as a multiple of the box's longer side")
     p.add_argument("--margin", type=int, default=32, help="pixels the paste reaches past the box, so a redraw that spills out is kept")
