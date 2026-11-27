@@ -683,6 +683,65 @@ else:
             calls = [x for x in Path(__file__).with_name(f).read_text().split("subprocess.run(")[1:] if not x.startswith('["ffmpeg"')]
             self.assertTrue(calls and all("stdin=subprocess.DEVNULL" in x.split("\n", 2)[0] + x.split("\n", 2)[1] for x in calls), f)
 
+    def test_markup_route_and_edit_ab(self):
+        # the markup route sends the whole panel with the region outlined plus the clean panel; the fake answers with the
+        # clean panel darkened in the box, at ChatGPT's 3:2 shape, with a stray change far outside it
+        fake = r"""
+import os, sys
+from PIL import Image, ImageDraw
+args = sys.argv[1:-1]; prompt = sys.argv[-1]
+open(os.environ["FAKE_LOG"], "a").write(" ".join(args) + "\n")
+ims = [a.split("=", 1)[1] for a in args if a.startswith("--image=")]
+im = Image.open(ims[1] if len(ims) > 1 and "red rectangle" in prompt else ims[0]).convert("RGB")
+W, H = im.size
+d = ImageDraw.Draw(im)
+if W == H:                                  # the crop route: darken the middle
+    d.rectangle((W // 3, H // 3, 2 * W // 3, 2 * H // 3), fill=(30, 30, 30))
+else:
+    d.rectangle((600, 300, 800, 500), fill=(30, 30, 30)); d.rectangle((0, 0, 120, 120), fill=(0, 90, 0))
+    im = im.resize((1536, 1024)) if "red rectangle" in prompt else im
+im.save("image.png")
+"""
+        import panelqa, longform
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            im = Image.open(film / "panels" / "p1.png"); dr = ImageDraw.Draw(im)
+            for i in range(0, 1600, 80):
+                dr.line((i, 0, i + 300, 900), fill=(90, 70, 50), width=5)          # texture, so likeness means something
+            im.save(film / "panels" / "p1.png")
+            Path(d, "fake.py").write_text(fake)
+            env = dict(self.env(d), EDITAB_JUDGE_CMD="echo 'A: FIXED CLEAN'; echo 'B: NOT SEAM'")
+            with unittest.mock.patch.dict(os.environ, env):
+                rdir, made, secs, e = panelqa.repair(film, "panels/p1.png", "600,300,200,200", "darken it", seeds=[1],
+                                                     allow_codex=True, method="markup")
+                self.assertEqual(made, [1])
+                self.assertEqual(e["markup"]["1"]["fit"], "stretched")             # 3:2 answer mapped onto 16:9
+                self.assertLess(e["markup"]["1"]["outside_likeness"], 1.0)
+                self.assertEqual(e["markup"]["1"]["red_left"], 0.0)
+                mk = np.asarray(Image.open(rdir / "markup.png").convert("RGB"))
+                self.assertEqual(tuple(mk[300 - 32 - 3, 700]), (255, 0, 0))         # outline just outside the paste
+                cand = np.asarray(Image.open(rdir / "candidate_1.png").convert("RGB")).astype(int)
+                orig = np.asarray(Image.open(film / "panels" / "p1.png").convert("RGB")).astype(int)
+                self.assertEqual(int(np.abs(cand[:200, :200] - orig[:200, :200]).max()), 0)   # the stray change is not pasted
+                self.assertGreater(np.abs(cand[350:450, 650:750] - orig[350:450, 650:750]).mean(), 40)
+                with self.assertRaises(SystemExit):
+                    panelqa.repair(film, "panels/p1.png", "600,300,200,200", "x", model="qwen", draft=True, method="markup")
+                r = subprocess.run(["python3", str(Path(__file__).with_name("editab.py")), str(film), "--image", "panels/p1.png",
+                                    "--box", "600,300,200,200", "--change", "darken it", "--allow-codex", "--seed", "3"],
+                                   capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            ab = film / "repairs" / "ab" / "panels" / "p1" / "01"
+            res = json.loads((ab / "results.json").read_text())
+            self.assertEqual([x["method"] for x in res["rows"]], ["crop", "markup", "whole"])
+            key = json.loads((ab / "key.json").read_text())
+            self.assertEqual(len(key), 4)                                           # crop, markup, whole raw, whole pasted
+            self.assertEqual(res["blind"], {key["A"]: {"fixed": True, "clean": True}, key["B"]: {"fixed": False, "clean": False}})
+            whole = [x for x in res["rows"] if x["method"] == "whole"][0]
+            self.assertLess(whole["outside_likeness"], 1.0)
+            for f in ("report.md", "blind.png", "compare.png"):
+                self.assertTrue((ab / f).exists(), f)
+
     def test_local_models_are_drafts_only_and_render_refuses_them(self):
         import panelqa, longform
         with tempfile.TemporaryDirectory() as d:
