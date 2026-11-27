@@ -8,8 +8,18 @@ spreading words by spoken weight between the clip's measured pauses when alignme
     words = align_clip("narration/s03.mp3", "Behind that one message is a subscription business...")
     # [{"w": "Behind", "t0": 0.0, "t1": 0.64}, ...]   times in seconds from the clip's start
 
-Each result says how it was timed ("align" or "spread"); spread times are good to about 0.15 s.
+Each result says how it was timed: "whisper", "align" (PocketSphinx) or "spread". Whisper is tried first: its word
+timestamps are matched to the script's words, so the text stays the script's and only the times come from the audio.
+It runs as mlx-whisper on an Apple-silicon Mac (in this Python, or the interpreter in $MS_WHISPER_PY, or a pipx venv
+at ~/.local/pipx/venvs/mlx-whisper), or as faster-whisper elsewhere. Model: $MS_WHISPER_MODEL, default "small"
+(MIT-licensed weights, cached after the first run, free). Spread times are estimates: off by up to 0.5 s on a long
+clip, which moves every cue keyed to a word, so `check` fails a film with any spread segment (Survive Year 1 had
+140 of 140 segments spread because PocketSphinx was never installed on the Mac, 2026-11-27).
 """
+import difflib
+import json
+import os
+import sys
 import re
 import subprocess
 import wave
@@ -170,6 +180,12 @@ def align_clip(clip, text, work=None, say_map=None):
     toks = tokens(text, say_map)
     gaps, dur = pauses(wav)
     try:
+        words, method = _snap(_whisper(toks, wav), gaps, dur), "whisper"
+        wav.unlink(missing_ok=True)
+        return words, method
+    except Exception as e:
+        why_w = str(e)
+    try:
         words = _sphinx(toks, wav)
         method = "align"
         # a year can be read "twenty twenty-five" or "two thousand twenty-five": try the other reading and keep
@@ -188,7 +204,7 @@ def align_clip(clip, text, work=None, say_map=None):
         words = _snap(words, gaps, dur)
     except Exception as e:                                   # no pocketsphinx, or the aligner gave up
         words, method = spread(toks, wav), "spread"
-        print(f"  {clip.name}: alignment unavailable ({e}); spread by weight")
+        print(f"  {clip.name}: alignment unavailable (whisper: {why_w}; pocketsphinx: {e}); spread by weight")
     wav.unlink(missing_ok=True)
     return words, method
 
@@ -230,3 +246,90 @@ def _sphinx(toks, wav):
             out.append({"w": toks[k]["w"], "t0": round(a + (k - i) * step, 3), "t1": round(a + (k - i + 1) * step, 3)})
         i = j
     return out
+
+
+# ── Whisper word timestamps, matched to the script ──
+WHISPER_MODELS = {"tiny": ("mlx-community/whisper-tiny-mlx", "tiny"), "base": ("mlx-community/whisper-base-mlx", "base"),
+                  "small": ("mlx-community/whisper-small-mlx", "small"), "medium": ("mlx-community/whisper-medium-mlx", "medium")}
+MATCH_MIN = 0.6      # share of the script's spoken words Whisper must hear for its times to be used
+_RUN = r"""
+import json, sys
+wav, repo, size = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    import mlx_whisper
+    r = mlx_whisper.transcribe(wav, path_or_hf_repo=repo, word_timestamps=True, language="en")
+    ws = [(w["word"], w["start"], w["end"]) for sg in r["segments"] for w in sg.get("words", [])]
+except ImportError:
+    from faster_whisper import WhisperModel
+    segs, _ = WhisperModel(size, device="cpu", compute_type="int8").transcribe(wav, word_timestamps=True, language="en")
+    ws = [(w.word, w.start, w.end) for sg in segs for w in (sg.words or [])]
+print(json.dumps(ws))
+"""
+
+
+def _whisper_python():
+    """The interpreter that has mlx-whisper or faster-whisper: this one, $MS_WHISPER_PY, or the pipx venv."""
+    import importlib.util
+    if importlib.util.find_spec("mlx_whisper") or importlib.util.find_spec("faster_whisper"):
+        return sys.executable
+    for c in (os.environ.get("MS_WHISPER_PY"), str(Path.home() / ".local/pipx/venvs/mlx-whisper/bin/python")):
+        if c and Path(c).exists():
+            return c
+    raise RuntimeError("no mlx-whisper or faster-whisper (pipx install mlx-whisper on a Mac)")
+
+
+def whisper_words(wav):
+    """[(word, start, end)] as Whisper heard them, in seconds."""
+    repo, size = WHISPER_MODELS.get(os.environ.get("MS_WHISPER_MODEL", "small"), WHISPER_MODELS["small"])
+    r = subprocess.run([_whisper_python(), "-c", _RUN, str(wav), repo, size], capture_output=True, text=True, timeout=900)
+    if r.returncode:
+        raise RuntimeError((r.stderr.strip().splitlines() or ["whisper failed"])[-1][:200])
+    return [tuple(x) for x in json.loads(r.stdout.strip().splitlines()[-1])]
+
+
+def match_words(toks, heard, dur):
+    """Script tokens timed by Whisper's words. Both sides are reduced to spoken words ("$4,860" and "4,860" both become
+    four thousand eight hundred sixty dollars...), matched in order (difflib), and each token takes the span of its
+    matched spoken words. A token Whisper didn't hear shares the gap between its timed neighbours. Raises when under
+    MATCH_MIN of the script was heard (wrong clip, or a garbled transcript)."""
+    ours, owner = [], []
+    for i, t in enumerate(toks):
+        for w in t["say"]:
+            ours.append(w); owner.append(i)
+    theirs, at = [], []
+    for w, a, b in heard:
+        sp = spoken(w.strip())
+        for k, x in enumerate(sp):           # a written number Whisper gave as one word: its spoken words share its span
+            step = (b - a) / len(sp)
+            theirs.append(x); at.append((a + k * step, a + (k + 1) * step))
+    if not ours:
+        raise RuntimeError("no spoken words")
+    sm = difflib.SequenceMatcher(a=ours, b=theirs, autojunk=False)
+    span, hit = {}, 0
+    for blk in sm.get_matching_blocks():
+        for k in range(blk.size):
+            i, (a, b) = owner[blk.a + k], at[blk.b + k]
+            lo, hi = span.get(i, (a, b))
+            span[i] = (min(lo, a), max(hi, b)); hit += 1
+    if hit < MATCH_MIN * len(ours):
+        raise RuntimeError(f"heard {hit} of {len(ours)} script words")
+    out, i = [], 0
+    while i < len(toks):
+        if i in span:
+            out.append({"w": toks[i]["w"], "t0": round(span[i][0], 3), "t1": round(span[i][1], 3)}); i += 1; continue
+        j = i
+        while j < len(toks) and j not in span:
+            j += 1
+        a = span[i - 1][1] if i > 0 else 0.0
+        b = span[j][0] if j < len(toks) else dur
+        step = max(0.0, b - a) / (j - i)
+        for k in range(i, j):
+            out.append({"w": toks[k]["w"], "t0": round(a + (k - i) * step, 3), "t1": round(a + (k - i + 1) * step, 3)})
+        i = j
+    return out
+
+
+def _whisper(toks, wav):
+    with wave.open(str(wav)) as w:
+        dur = w.getnframes() / w.getframerate()
+    return match_words(toks, whisper_words(wav), dur)
