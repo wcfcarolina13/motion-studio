@@ -63,6 +63,9 @@ finger counts, proportion, floating parts and, on a faceless shot, a face. A FAI
 --anatomy-rerolls per run (a quarter of the shots, at least 3); every verdict and its reason goes to judge.tsv and onto
 the still as PNG text motion-studio-anatomy; a still failing its last try is kept and listed in review.tsv.
 
+`--check` runs every check above that comes before a Codex call and stops, with no call, no files and no --allow-codex: run
+it before handing a job to longjob, so a refused shot fails in seconds instead of after the job is queued.
+
 Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
 import argparse, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -317,9 +320,11 @@ def main():
     ap.add_argument("--only", nargs="+")
     ap.add_argument("--sizes", help="read the size sheet from this script.json (its \"sizes\") instead of shots.json")
     ap.add_argument("--anatomy-rerolls", type=int, help="most re-rolls the anatomy judge may ask for in this run (default: a quarter of the shots, at least 3)")
+    ap.add_argument("--check", action="store_true", help="run every check made before a Codex call (size sheet, refused words, "
+                    "rule 16, lint) and stop: no call, no files, no --allow-codex needed. Run it before handing a job to longjob")
     ap.add_argument("--edit-from", help="base PNG for every shot with a \"change\" and no \"edit_from\" (flipbook frames)")
     a = ap.parse_args()
-    if not allowed(a.allow_codex):
+    if not a.check and not allowed(a.allow_codex):
         raise SystemExit("codex_stills.py spends the owner's Codex allowance: pass --allow-codex once he has said yes")
     cfg = json.load(open(a.shots))
     shots = [s for s in cfg["shots"] if not a.only or s["id"] in a.only]
@@ -327,9 +332,10 @@ def main():
     bad = scalecheck.sheet_problems(sizes) + [
         f'{s["id"]}: props with no entry in "sizes": {", ".join(k for k in s.get("props") or [] if k not in sizes)}'
         for s in shots if any(k not in sizes for k in s.get("props") or [])]
-    if bad:
+    if bad and not a.check:
         raise SystemExit("size sheet problems, nothing run:\n  " + "\n  ".join(bad))
-    os.makedirs(os.path.join(a.out, "originals"), exist_ok=True)
+    if not a.check:
+        os.makedirs(os.path.join(a.out, "originals"), exist_ok=True)
     # what-gets-drawn lint (money, hands with no body, tipped objects, hidden things; picture-truth.md rule 12) before
     # any Codex call. It warns, never stops: the words are a heuristic, and a person decides
     import panelqa
@@ -346,6 +352,13 @@ def main():
         if not (x.get("photo") or x.get("blockout") or x.get("change")) and len(scalecheck.sized_items(x, sizes)) >= 2:
             pre.append((x["id"], ["scale shot with no reference photo or blockout: start from one (rule 16)"]))
             print(f"LINT {x['id']}: scale shot with no reference photo or blockout: start from one (rule 16)")
+    if a.check:
+        # a dry run (2026-11-27: the one-change rule refused a 39-shot job only once it was queued under longjob)
+        for x in bad + stop:
+            print(f"STOP {x}")
+        print(f"{len(todo)} shot(s) to draw: {len(bad) + len(stop)} problem(s) that stop the run, "
+              f"{sum(len(ws) for _, ws in pre)} lint warning(s)")
+        raise SystemExit(1 if bad or stop else 0)
     if stop:
         raise SystemExit("refused prompt words, nothing run:\n  " + "\n  ".join(stop))
     cmd = codex_cmd()
