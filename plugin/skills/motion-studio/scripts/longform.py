@@ -21,7 +21,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
   longform.py short <film> <short> --from s05 --to s09   a 9:16 film from those segments: same voice and sound, its own layout
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
-  longform.py tsheet <film>                     review/intro-tsheet.md: the intro as audio | visual rows
+  longform.py tsheet <film> [--all]             review/intro-tsheet.md (or tsheet.md): audio | visual rows, numbers marked
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py cast-sheet <film>                 set3d cast design sheet (review/cast-sheet.png); render needs it current
@@ -958,7 +958,7 @@ def cmd_timeline(a):
         else:
             dur = s.get("hold", 3.0)
         dur += holds[s["id"]][1]
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace", "drift", "intro", "shows") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace", "drift", "intro", "shows", "unshown") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -1049,6 +1049,14 @@ def cmd_timeline(a):
     problems += cutaway_problems(segs, sc.get("sizes") or {})
     for w in palette_warnings(tl["palette"]):
         print("WARN", w)
+    # adjacent panels on one still play as one camera move; a camera object on the later one restarts it, a cut back to
+    # the same picture (owner's note, 2026-11-27)
+    for p_, q_ in zip(segs, segs[1:]):
+        dp, dq = p_.get("data") or {}, q_.get("data") or {}
+        if p_["type"] == q_["type"] == "panel" and dp.get("image") and dp.get("image") == dq.get("image") \
+                and not dp.get("clip") and not dq.get("clip") and isinstance(dq.get("camera"), dict):
+            print("WARN", f"{q_['id']}: same still as {p_['id']} with its own camera: it cuts back to the same picture. "
+                          f"Drop its camera to carry {p_['id']}'s move on, or use another still")
     drift, drift_warn = engine_drift(film, segs)
     problems += drift
     for w in drift_warn:
@@ -3781,6 +3789,65 @@ def deadspace_scan(film, segs, sc):
     return rows
 
 
+# ── spoken numbers on screen (editing-quality study, 2026-11-27) ──
+NUM_BEFORE, NUM_AFTER, NUM_EARLY = 0.3, 0.7, 1.0
+
+
+def number_sync(film, segs):
+    """[{"seg", "text", "value", "t", "state"}] for every amount, count or duration spoken (numbersync.spoken), where
+    state is "ok" (on screen from NUM_BEFORE s before its word to NUM_AFTER s after), "missing", "early" (already on
+    screen NUM_EARLY s before its word, and not said earlier in the film) or "opted out" (the segment's "unshown": true,
+    a reason, or a list of the values it leaves off screen)."""
+    import numbersync
+    import render
+    rows, said = [], []
+    with render.Film(film) as f:
+        def seen(t):
+            f.seek(max(0.0, t))
+            return numbersync.on_screen(f.page.evaluate(VISIBLE_TEXT))
+        for sg in segs:
+            opt = sg.get("unshown")
+            for a in numbersync.spoken(sg.get("words") or []):
+                row = {"seg": sg["id"], "text": a["text"].strip(".,;:"), "value": a["value"], "t": a["t"]}
+                if opt is True or isinstance(opt, str) or (isinstance(opt, list) and any(
+                        numbersync.matches(a["value"], numbersync.on_screen([str(x)])) for x in opt)):
+                    row["state"] = "opted out"
+                else:
+                    win = [a["t"] - NUM_BEFORE + k * (NUM_BEFORE + NUM_AFTER) / 5 for k in range(6)]
+                    hit = any(numbersync.matches(a["value"], seen(t)) for t in win)
+                    early = (a["t"] >= NUM_EARLY and not any(numbersync.matches(a["value"], {v}) for v in said)
+                             and numbersync.matches(a["value"], seen(a["t"] - NUM_EARLY)))
+                    row["state"] = "early" if early else "ok" if hit else "missing"
+                said.append(abs(a["value"]))
+                rows.append(row)
+    return rows
+
+
+def number_flags(film, segs):
+    """(report line, flags) for spoken numbers and the counter's word cues."""
+    flags = []
+    for sg in segs:
+        c = sg.get("counter")
+        if isinstance(c, dict) and c.get("t") is None and sg.get("words"):
+            flags.append(f"{sg['id']}: the counter card changes at the segment's start, not on a word; give it \"at\" "
+                         f"(the word its value is said on)")
+    rows = number_sync(film, segs)
+    if not rows:
+        return None, flags
+    n = {k: sum(r["state"] == k for r in rows) for k in ("ok", "missing", "early", "opted out")}
+    line = (f"spoken numbers on screen at their word ({NUM_BEFORE:g} s before to {NUM_AFTER:g} s after): {n['ok']} of "
+            f"{len(rows) - n['opted out']}" + (f", {n['opted out']} opted out" if n["opted out"] else ""))
+    for r in rows:
+        if r["state"] == "missing":
+            flags.append(f"{r['seg']}: \"{r['text']}\" is said at {r['t']:.1f} s but isn't on screen then. Put it in the "
+                         f"shot on its word (a callout, the counter with \"at\", a screen line), or opt out with "
+                         f"\"unshown\": [\"{r['text']}\"] or a reason")
+        elif r["state"] == "early":
+            flags.append(f"{r['seg']}: \"{r['text']}\" is on screen {NUM_EARLY:g} s before it's said at {r['t']:.1f} s; "
+                         f"land it on its word")
+    return line, flags
+
+
 # ── the intro (owner's intro rules, 2026-11-27, from a study of a YouTube strategist's intro system) ──
 INTRO_MAX = 45.0     # seconds: the intro states the promise, opens its gaps and gets out
 MUTE_S = 5.0         # the first seconds must name the subject with the sound off
@@ -3882,25 +3949,36 @@ def intro_flags(film, tl, sc, max_s=INTRO_MAX, secs=MUTE_S):
 
 
 def cmd_tsheet(a):
-    """review/intro-tsheet.md: the intro as a T-sheet, one row per segment with its time, what is heard (narration)
-    and what is seen (scene type, still or clip, "shows", on-screen text), to read and edit before boards."""
+    """A T-sheet, one row per segment: its time, what is heard (narration) and what is seen (scene type, still or clip,
+    "shows", on-screen text, the counter). Every spoken number is bolded in the audio column and every number on
+    screen in the visual one; a spoken number with no match on screen is marked "not on screen". The intro alone
+    (review/intro-tsheet.md) by default; --all for the whole film (review/tsheet.md)."""
+    import deadspace
+    import numbersync
     film = Path(a.film).resolve()
     sc = load_script(film)
     tlp = film / "timeline.js"
     tl = load_timeline(film) if tlp.exists() else None
     segs = tl["segments"] if tl else [dict(s, t0=None, t1=None) for s in sc["segments"]]
-    span = intro_span(segs, tl.get("chapters") if tl else []) if tl else None
-    if tl and span:
-        rows = [s for s in segs if s["t0"] < span[1] - 1e-6]
+    if getattr(a, "all", False):
+        rows = segs
     else:
-        first = sc["segments"][0].get("chapter") if sc["segments"] else None
-        rows = [s for s in segs if s.get("intro")] or [s for s in segs if s.get("chapter", first) == first]
+        span = intro_span(segs, tl.get("chapters") if tl else []) if tl else None
+        if tl and span:
+            rows = [s for s in segs if s["t0"] < span[1] - 1e-6]
+        else:
+            first = sc["segments"][0].get("chapter") if sc["segments"] else None
+            rows = [s for s in segs if s.get("intro")] or [s for s in segs if s.get("chapter", first) == first]
     by_id = {s["id"]: s for s in sc["segments"]}
     cell = lambda x: str(x).replace("|", "/").replace("\n", " ").strip()
-    out = [f"# Intro T-sheet: {sc.get('title', film.name)}", "",
+    bold = lambda txt: numbersync.SHOWN.sub(lambda m: f"**{m.group(0).rstrip()}**" + (" " if m.group(0).endswith(" ") else ""), txt)
+    title = "T-sheet" if getattr(a, "all", False) else "Intro T-sheet"
+    out = [f"# {title}: {sc.get('title', film.name)}", "",
            f"Subject: {', '.join(_subject_terms(sc)[0]) or '(set \"subject\" in script.json)'}. "
-           f"Limit {INTRO_MAX:g} s; the first {MUTE_S:g} s must name the subject with the sound off.", "",
+           f"Intro limit {INTRO_MAX:g} s; the first {MUTE_S:g} s must name the subject with the sound off. Spoken numbers "
+           f"are bold, and marked when nothing on screen in that segment shows them.", "",
            "| time | id | audio | visual |", "|---|---|---|---|"]
+    missing = 0
     for s in rows:
         src = by_id.get(s["id"], s)
         d = src.get("data") or {}
@@ -3910,11 +3988,34 @@ def cmd_tsheet(a):
         for k in ("text", "label", "caption_card"):
             if isinstance(d.get(k), str):
                 vis.append(f"on screen: {d[k]}")
+        if d.get("value") is not None:
+            vis.append(f"on screen: {d.get('prefix', '')}{d['value']}{d.get('suffix', '')}")
+        c = src.get("counter")
+        if isinstance(c, dict):
+            vis.append(f"counter: {c.get('value')}" + (f" at \"{c['at']}\"" if c.get("at") else " (no word cue)"))
+        for co in d.get("callouts") or []:
+            vis.append(f"callout: {co.get('value', '')} {co.get('text', '')}".strip())
+        narr = str(src.get("narration", ""))
+        shown_txt = deadspace.shown(src) + " " + " ".join(str(d.get(k, "")) for k in ("text", "label", "value"))
+        nums = numbersync.spoken([[w, 0, 0] for w in narr.split()])
+        have = numbersync.on_screen([shown_txt])
+        gone = [n["text"].strip(".,;:") for n in nums if not numbersync.matches(n["value"], have)]
+        missing += len(gone)
+        audio = narr
+        for n in nums:
+            w = n["text"].strip(".,;:")
+            if not re.search(r"\d", w):
+                audio = audio.replace(w, f"**{w}**", 1)
+        audio = bold(audio)
+        if gone:
+            audio += " (not on screen: " + ", ".join(gone) + ")"
         when = f"{s['t0']:.1f}-{s['t1']:.1f}" if s.get("t0") is not None else ""
-        out.append(f"| {when} | {s['id']} | {cell(src.get('narration', ''))} | {cell('; '.join(vis))} |")
+        out.append(f"| {when} | {s['id']} | {cell(audio)} | {cell(bold('; '.join(vis)))} |")
+    out += ["", f"{missing} spoken number(s) with nothing on screen showing them."]
+    name = "tsheet.md" if getattr(a, "all", False) else "intro-tsheet.md"
     (film / "review").mkdir(exist_ok=True)
-    (film / "review" / "intro-tsheet.md").write_text("\n".join(out) + "\n")
-    print(film / "review" / "intro-tsheet.md")
+    (film / "review" / name).write_text("\n".join(out) + "\n")
+    print(film / "review" / name)
 
 
 def deadspace_flags(rows):
@@ -4022,6 +4123,12 @@ def _check(a, film):
         dflags = deadspace_flags(ds)
         report.append(f"dead space: {len(dflags)} of {len(ds)} panel beat(s) have quiet room and a number, quote or source not in the shot")
         flags += dflags
+    # spoken numbers: each amount on screen at its word, and counter changes cued to words
+    if a.numbers:
+        nline, nflags = number_flags(film, segs)
+        if nline:
+            report.append(nline)
+        flags += nflags
     # the intro: its length, and whether its first seconds name the subject with the sound off
     if a.intro_max > 0:
         r, fl = intro_flags(film, tl, load_script(film), a.intro_max, a.mute)
@@ -4463,6 +4570,7 @@ def main():
     p.add_argument("--picture-min", type=float, default=0.06,
                    help="a text scene type drawing at least this share of the frame as picture is not text-only (0 = by type alone)")
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
+    p.add_argument("--no-numbers", dest="numbers", action="store_false", help="skip the spoken-numbers-on-screen test")
     p.add_argument("--intro-max", type=float, default=INTRO_MAX, help="longest intro, seconds (0 skips the intro tests)")
     p.add_argument("--mute", type=float, default=MUTE_S, help="opening seconds that must name the subject with the sound off (0 skips)")
     p.add_argument("--no-deadspace", dest="deadspace", action="store_false",
@@ -4481,7 +4589,8 @@ def main():
     p.add_argument("--beat", type=float, default=5.0, help="flag a beat with nothing new moving or entering while the voice speaks longer than this (0 skips)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("deadspace"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_deadspace)
-    p = sp.add_parser("tsheet"); p.add_argument("film"); p.set_defaults(fn=cmd_tsheet)
+    p = sp.add_parser("tsheet"); p.add_argument("film"); p.add_argument("--all", action="store_true", help="the whole film, not just the intro")
+    p.set_defaults(fn=cmd_tsheet)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
     a = ap.parse_args()

@@ -1419,6 +1419,109 @@ class CounterHero(unittest.TestCase):
         self.assertTrue(x > 1500 and y < 200, out[4.5])  # "hero": false keeps it in the corner
 
 
+class SpokenNumbers(unittest.TestCase):
+    """Every spoken amount is on screen at its word (editing-quality study, 2026-11-27: 6 of 83 were)."""
+    def test_parse(self):
+        import numbersync as n
+        w = [[x, i * 0.3, 0] for i, x in enumerate("In 2024 we made $4,860 from forty porta-potties, two of them broke, "
+                                                    "one day it hit $4.3M and 62% over three months".split())]
+        self.assertEqual([(a["text"].strip(","), a["value"]) for a in n.spoken(w)],
+                         [("$4,860", 4860.0), ("forty porta-potties", 40.0), ("$4.3M", 4.3e6), ("62%", 62.0), ("three months", 3.0)])
+        self.assertTrue(n.matches(-3925, n.on_screen(["−$3,925"])))
+        self.assertTrue(n.matches(4.3e6, n.on_screen(["$4.3M"])))
+        self.assertFalse(n.matches(4800, n.on_screen(["$4,860"])))
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_check(self):
+        import json, longform
+        def words(text, t0):
+            return [[x, round(t0 + 0.3 * i, 3), round(t0 + 0.3 * i + 0.25, 3)] for i, x in enumerate(text.split())]
+        segs = [{"id": "a", "type": "statement", "t0": 0, "t1": 4, "data": {"text": "Cash after season one"},
+                 "words": words("We made $4,860 this season", 0.5), "counter": {"value": "$4,860", "label": "Cash", "t": 1.05}},
+                {"id": "b", "type": "statement", "t0": 4, "t1": 8, "data": {"text": "Then the fair"},
+                 "words": words("We bought forty porta-potties", 4.5)},
+                {"id": "c", "type": "statement", "t0": 8, "t1": 12, "data": {"text": "About $900 a month"},
+                 "words": words("And then it costs about $900 a month", 8.5)},
+                {"id": "d", "type": "statement", "t0": 12, "t1": 15, "data": {"text": "Roughly"},
+                 "words": words("Roughly ten trucks", 12.5), "unshown": "a rough count", "counter": {"value": "$5,000"}}]
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 15, "segments": segs}) + ";\n")
+            rows = {r["seg"]: r["state"] for r in longform.number_sync(film, segs)}
+            line, fl = longform.number_flags(film, segs)
+        self.assertEqual(rows, {"a": "ok", "b": "missing", "c": "early", "d": "opted out"})
+        self.assertIn("1 of 3", line)
+        self.assertTrue(any(x.startswith("d: the counter card changes at the segment's start") for x in fl), fl)
+
+
+class SameStillRun(unittest.TestCase):
+    """Adjacent panels on one still are one camera move, not a cut back to the same picture (owner's note, 2026-11-27)."""
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_one_move(self):
+        import json, longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            Image.new("RGB", (1920, 1080), (120, 140, 160)).save(film / "panels" / "yard.png")
+            Image.new("RGB", (1920, 1080), (160, 140, 120)).save(film / "panels" / "lot.png")
+            segs = [{"id": "a", "type": "panel", "t0": 0, "t1": 3, "data": {"image": "panels/yard.png", "camera": "slow-push"}},
+                    {"id": "b", "type": "panel", "t0": 3, "t1": 6, "data": {"image": "panels/yard.png", "camera": "pan-left"}},
+                    {"id": "c", "type": "panel", "t0": 6, "t1": 9, "data": {"image": "panels/lot.png", "camera": "slow-push"}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 9, "segments": segs}) + ";\n")
+            at = "([id, t]) => { const q = window.STUDIO.panelCam[id].at(t); return [q.z, q.cx, q.cy]; }"
+            with render.Film(film) as f:
+                f.seek(1.0)
+                a_end, b_start = f.page.evaluate(at, ["a", 2.99]), f.page.evaluate(at, ["b", 3.0])
+                b_end, c_start = f.page.evaluate(at, ["b", 6.0]), f.page.evaluate(at, ["c", 6.0])
+                self.assertFalse(f.errors)
+        for x, y in zip(a_end, b_start):
+            self.assertAlmostEqual(x, y, delta=0.01 * max(1, abs(x)))          # the cut is invisible: one move
+        self.assertAlmostEqual(a_end[0], 1.0 + 0.14 * 0.5, delta=0.02)         # halfway through a push over both panels
+        self.assertAlmostEqual(b_end[0], 1.14, places=3)                         # the push ends at the run's end
+        self.assertAlmostEqual(c_start[0], 1.0, places=3)                        # a new still starts its own move
+
+
+class TSheetAndHudOverlap(unittest.TestCase):
+    def test_tsheet_marks_numbers(self):
+        import argparse, json, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            (film / "script.json").write_text(json.dumps({"title": "T", "segments": [
+                {"id": "a", "chapter": "Intro", "type": "panel", "narration": "Forty porta-potties made $4,860.",
+                 "counter": {"value": "$4,860", "at": "$4,860"}, "data": {"image": "x.png"}},
+                {"id": "b", "chapter": "Year one", "type": "statement", "narration": "It costs $900 over three months.", "data": {"text": "Costs"}}]}))
+            longform.cmd_tsheet(argparse.Namespace(film=d, all=True))
+            out = (film / "review" / "tsheet.md").read_text()
+        self.assertIn("It costs **$900** over **three months**. (not on screen: $900, three months)", out)
+        self.assertIn("counter: **$4,860** at", out)
+        self.assertIn("3 spoken number(s) with nothing on screen", out)
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_hud_over_chart_text_is_caught(self):
+        # the HUD cards sit over every scene; the overlap check must see them covering a chart's own text (note #96)
+        import json, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            hook = ("<script>{const S = window.seek; window.seek = t => { S(t); const g = document.querySelector('#scenes > [data-seg=a]');"
+                    " if (!g.querySelector('#probe')) { const e = document.createElementNS('http://www.w3.org/2000/svg', 'text');"
+                    " e.id = 'probe'; e.setAttribute('x', 1600); e.setAttribute('y', 110); e.setAttribute('font-size', 40);"
+                    " e.setAttribute('fill', '#000'); e.setAttribute('data-aux', 1); e.textContent = 'Month 6 label'; g.appendChild(e); } };}</script>")
+            (film / "film.html").write_text(longform.TEMPLATE.read_text().replace("</body>", hook + "</body>"))
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            segs = [{"id": "a", "type": "chart", "t0": 0, "t1": 5, "data": {"series": [{"name": "x", "points": [[0, 1], [1, 2], [2, 3]]}]},
+                     "counter": {"value": "$1,000", "label": "Cash", "t": 0.3}}]
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 5, "segments": segs}) + ";\n")
+            hits = longform.overlaps(film, segs, 0.25)
+        self.assertIn(("a", "Month 6 label", 'covered by the shape holding "CASH"'), hits)
+
+
 class ClipPanel(unittest.TestCase):
     """A video clip in a panel: frames drawn exactly per render frame (Survive Year 1 intro, Wan clips, 2026-11-25)."""
     def seg(self, **kw):
