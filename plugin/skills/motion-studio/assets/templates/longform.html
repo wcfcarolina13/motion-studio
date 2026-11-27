@@ -584,6 +584,10 @@ function niceTicks(lo, hi, n = 5) {
 }
 B.chart = (s, g) => {
   const d = s.data, series = d.series || [], DRAW = d.draw || 1.6;
+  const chain = (() => { const i = SEGS.indexOf(s); let a = i, b = i;
+    while (a > 0 && SEGS[a].type === "chart" && (SEGS[a].data || {}).drawn && SEGS[a - 1].type === "chart") a--;
+    while (b + 1 < SEGS.length && SEGS[b + 1].type === "chart" && (SEGS[b + 1].data || {}).drawn) b++;
+    return [SEGS[a].t0, SEGS[b].t1]; })();
   const PAPERC = d.paper || (lumOf(C.BG) > 0.6 ? C.BG : "#F1EDE4"), INKC = d.ink || (lumOf(C.INK) < 0.5 ? C.INK : "#1f1d1a");
   const NEGC = C.NEG || "#B3261E", POSC = C.POS || "#2E7D32", MUTE = "#8c867a";
   const PALETTE = [INKC, C.ACCENT, "#2f5d8a", "#7b4b94", "#8a5a2b", "#3d7a74"];
@@ -643,11 +647,13 @@ B.chart = (s, g) => {
     e.len = e.path.getTotalLength();
     e.tip = K.el("circle", { r: 10, fill: e.col }, g);
     e.end = [X(pts[pts.length - 1][0]), Y(pts[pts.length - 1][1])];
-    e.t0 = cueT(e.sr, revealAt(s, k, series.length, 0.55, 0.6));
+    // "drawn": true starts with every line already drawn, for a chart held across two narration beats (no empty frames
+    // before its first cue, no wipe, and the camera push carries on from the chart before)
+    e.t0 = d.drawn ? s.t0 - DRAW - 1 : cueT(e.sr, revealAt(s, k, series.length, 0.55, 0.6));
     e.w = e.lab.getComputedTextLength();
     e.lead = K.el("line", { stroke: e.col, "stroke-width": 3 }, g);
     g.appendChild(e.plate); g.appendChild(e.lab);     // labels over every line
-    K.label(e.sr.label, e.t0 + DRAW, s.t1, "chart line label");
+    K.label(e.sr.label, Math.max(s.t0, e.t0 + DRAW), s.t1, "chart line label");
   });
   // end labels: at their line's end, pushed apart so plates never touch (a few relaxation passes, kept inside the plot)
   const PH = READ * 1.3, GAP = 10, order = ends.slice().sort((a, b) => a.end[1] - b.end[1]);
@@ -657,6 +663,54 @@ B.chart = (s, g) => {
       if (need > 0) { a.ly -= need / 2; b.ly += need / 2; } }
     order.forEach(e => { e.ly = Math.min(Math.max(e.ly, py0 + PH / 2), py1 - PH / 2); });
   }
+  // marks: a dot on a line at x with a plate label beside it ("paid back ~2 yrs"), popping in once the line has drawn
+  // past x (or on its own cue, whichever is later). data.marks: [{series: label or index, x, text, at?}]. Each plate
+  // takes the first spot beside its dot (above right, above left, below right, below left, then further out) that stays
+  // in the plot, clear of the other plates and the end labels, and covers the least of any line.
+  const lineAt = (pts, x) => { for (let i = 1; i < pts.length; i++) if (x <= pts[i][0]) { const [a, b] = [pts[i - 1], pts[i]];
+    return a[1] + (b[1] - a[1]) * (x - a[0]) / ((b[0] - a[0]) || 1); } return pts[pts.length - 1][1]; };
+  const endBoxes = ends.map(e => [e.end[0] + 20, e.ly - PH / 2, e.w + 28, PH]);
+  const linePts = ends.flatMap(e => Array.from({ length: 120 }, (_, j) => { const q = e.path.getPointAtLength(e.len * j / 119); return [q.x, q.y]; }));
+  const boxHit = (a, b) => a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+  const plates = [];
+  const marks = (d.marks || []).map(m => {
+    const e = typeof m.series === "number" ? ends[m.series] : ends.find(x => x.sr.label === m.series);
+    if (!e || m.x == null || !m.text) { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: chart mark needs a series (label or index), an x and a text`); return null; }
+    const pts = e.sr.points.slice().sort((a, b) => a[0] - b[0]), mx = X(m.x), my = Y(lineAt(pts, m.x));
+    // when the drawing tip passes mx
+    let tPass = e.t0 + DRAW;
+    for (let j = 0; j <= 200; j++) { const tt = e.t0 + DRAW * j / 200; if (e.path.getPointAtLength(e.len * K.eio(j / 200)).x >= mx - 0.5) { tPass = tt; break; } }
+    const at = d.drawn && m.t == null ? s.t0 - 1 : Math.max(tPass, cueT(m, -Infinity));   // a held chart starts with its marks up
+    const dot = K.el("circle", { cx: mx, cy: my, r: 0, fill: e.col, stroke: PAPERC, "stroke-width": 4 }, g);
+    const plate = K.el("rect", { fill: PAPERC, stroke: e.col, "stroke-width": 3, rx: 6 }, g);
+    const lab = T(m.text, { "font-weight": 600 });
+    const w = lab.getComputedTextLength() + 28, h = PH, o = 22;
+    // every spot on a grid around the dot, scored by how much line it covers and how far it sits from its dot (a plate
+    // set off from its dot is joined to it by a leader)
+    let best = null;
+    const ni = Math.ceil(w / o) + 4, nj = Math.ceil(h / o) + 6;
+    for (let i = -ni; i <= ni; i++) for (let j = -nj; j <= nj; j++) {
+      const r = [mx + i * o - w / 2, my + j * o - h / 2, w, h];
+      if (r[0] < px0 + 10 || r[1] < py0 - 10 || r[0] + r[2] > W - V(40, 20) || r[1] + r[3] > py1 - 6) continue;   // clear of the tick labels and axes
+      if (plates.some(b => boxHit(r, [b[0] - 8, b[1] - 8, b[2] + 16, b[3] + 16])) || endBoxes.some(b => boxHit(r, [b[0] - 8, b[1] - 8, b[2] + 16, b[3] + 16]))) continue;
+      const gx = Math.max(r[0] - mx, 0, mx - r[0] - w), gy = Math.max(r[1] - my, 0, my - r[1] - h), dist = Math.hypot(gx, gy);
+      if (dist < 14) continue;                                       // never on its own dot
+      const cover = linePts.filter(([x, y]) => x > r[0] - 6 && x < r[0] + r[2] + 6 && y > r[1] - 6 && y < r[1] + r[3] + 6).length;
+      const score = cover * 8 + dist / o * 3;
+      if (!best || score < best.score) best = { r, score, k: dist > o * 1.6 ? 2 : 1 };
+    }
+    if (!best) { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: chart mark "${m.text}" has no clear spot beside its dot; shorten it`);
+      best = { r: [mx + o, my - o - h, w, h] }; }
+    plates.push(best.r);
+    K.set(plate, { x: best.r[0], y: best.r[1], width: w, height: h });
+    K.set(lab, { x: best.r[0] + 14, y: best.r[1] + h / 2 + READ * 0.36 });
+    // a plate set off from its dot gets a leader to the plate's nearest edge
+    const lead = best.k > 1 ? K.el("line", { x1: mx, y1: my, x2: Math.min(Math.max(mx, best.r[0]), best.r[0] + w), y2: Math.min(Math.max(my, best.r[1]), best.r[1] + h),
+                                            stroke: e.col, "stroke-width": 3 }, g) : null;
+    if (lead) g.insertBefore(lead, plate);
+    K.label(m.text, Math.max(s.t0, at), s.t1, "chart mark");
+    return { dot, plate, lab, lead, at };
+  }).filter(Boolean);
   if (title) K.label(d.title, s.t0, s.t1, "chart title");
   xt.forEach(([, l]) => K.label(String(l), s.t0, s.t1, "chart axis"));
   yt.forEach(v => K.label(chartFmt(v, yf), s.t0, s.t1, "chart axis"));
@@ -675,9 +729,15 @@ B.chart = (s, g) => {
       K.set(e.lab, { x: lx, y: e.ly + READ * 0.36, opacity: la });
       K.set(e.lead, { x1: e.end[0] + 12, y1: e.end[1], x2: lx - 14, y2: e.ly, opacity: moved ? la : 0 });
     });
+    marks.forEach(mk => {
+      const a = K.prog(t, mk.at, mk.at + 0.25), shown = t >= mk.at;
+      K.set(mk.dot, { r: shown ? 12 * (1 + 0.35 * Math.sin(Math.PI * a)) : 0 });
+      const la = K.eout(K.prog(t, mk.at + 0.1, mk.at + 0.35));
+      [mk.plate, mk.lab, mk.lead].forEach(el => el && el.setAttribute("opacity", la.toFixed(3)));
+    });
     // a slow push on the plot's centre, so a chart held after its last line still moves (the owner prefers slow centred
-    // pushes to strong ones, 2026-11-26)
-    g.__cam = { cx: W / 2, cy: H / 2, z: 1 + (ZMAX - 1) * K.prog(t, s.t0, s.t1), frac: 1 };
+    // pushes to strong ones, 2026-11-26). A run of charts joined by "drawn" shares one push, so the zoom doesn't jump back
+    g.__cam = { cx: W / 2, cy: H / 2, z: 1 + (ZMAX - 1) * K.prog(t, chain[0], chain[1]), frac: 1 };
   };
 };
 
@@ -1827,7 +1887,7 @@ const built = SEGS.map((s, i) => {
     const id = "wipe" + i; wipe = K.clipRect(id, 0, -50, 0, H + 100); g.setAttribute("clip-path", `url(#${id})`);
     g.insertBefore(K.el("rect", { x: -400, y: -400, width: W + 800, height: H + 800, fill: C.BG }, g), g.firstChild);   // paints every pixel
   }
-  return { s, g, fn, wipe, next: SEGS[i + 1] };
+  return { s, g, fn, wipe, next: SEGS[i + 1], prev: SEGS[i - 1] };
 });
 const WIPE = 0.45;
 
@@ -1981,7 +2041,10 @@ const HUD = (() => {
     counterOn: t => { const c = at(cs, t); return !!(c && !c.off); },
     frame(t) {
       const c = at(cs, t);
-      const on = c && !c.off, last = on ? c : (c && c.off ? cs[cs.indexOf(c) - 1] : null);
+      // after an "off", the card fades out only if a value was showing: a second "counter": null in a row has nothing to
+      // fade (it read the first null's state, which has no label, and threw; Survive Year 1, 2026-11-27)
+      const before = c && c.off ? cs[cs.indexOf(c) - 1] : null;
+      const on = c && !c.off, last = on ? c : (before && !before.off ? before : null);
       // in over 0.25 s from nothing, out over 0.25 s to nothing; between values the card stays and the number counts
       const fresh = on && !c.prev, aIn = on ? (fresh ? K.eout(K.prog(t, c.t, c.t + 0.25)) : 1) : 0;
       const aOut = c && c.off && last ? 1 - K.ein(K.prog(t, c.t, c.t + 0.25)) : 0;
@@ -2055,7 +2118,8 @@ K.run(t => {
       if (b.wipe) {
         // the wipe is laid out on the frame and mapped into the scene's own coordinates, which the camera moves: drawn in scene
         // coordinates, a pan wider than its pad left a strip at the frame's edge unpainted
-        const inn = K.eio(K.prog(t, b.s.t0, b.s.t0 + WIPE)), out = !b.next || !OPAQUE.has(b.next.type) ? K.eio(K.prog(t, b.s.t1, b.s.t1 + WIPE)) : 0;
+        const cont = b.s.type === "chart" && (b.s.data || {}).drawn && b.prev && b.prev.type === "chart";
+        const inn = cont ? 1 : K.eio(K.prog(t, b.s.t0, b.s.t0 + WIPE)), out = !b.next || !OPAQUE.has(b.next.type) ? K.eio(K.prog(t, b.s.t1, b.s.t1 + WIPE)) : 0;
         const pad = 200, sx = -pad + out * (W + 2 * pad), sw = Math.max(0, (W + 2 * pad) * (inn - out)), sy = -pad, sh = H + 2 * pad;
         K.set(b.wipe, z === 1 ? { x: sx - tx, width: sw, y: sy - ty, height: sh }
                               : { x: (sx - W / 2) / z + cx, width: sw / z, y: (sy - H / 2) / z + cy, height: sh / z });

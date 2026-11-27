@@ -1049,6 +1049,57 @@ class PanelCallouts(unittest.TestCase):
         self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
 
 
+class ChartMarksAndHold(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_marks_pop_when_drawn_past_and_a_drawn_chart_holds_without_a_blink(self):
+        import io, longform, render, readcheck
+        from PIL import Image
+        yrs = list(range(0, 61, 6))
+        ys = {"Baseline": [-25 + 1.1 * x for x in yrs], "Dense town": [-25 + 2.2 * x for x in yrs], "Heavy competition": [-25 + 0.6 * x for x in yrs]}
+        series = [{"label": k, "points": [[x, round(y * 1000)] for x, y in zip(yrs, v)], "t": 0.5 + 0.5 * i} for i, (k, v) in enumerate(ys.items())]
+        marks = [{"series": "Baseline", "x": 23, "text": "paid back ~2 yrs"}, {"series": 1, "x": 11, "text": "paid back ~1 yr"},
+                 {"series": "Heavy competition", "x": 42, "text": "paid back 3.5 yrs"}]
+        base = {"title": "Five years, three ways", "series": series, "x": {"label": "Months"}, "y": {"label": "Cash", "format": "money"}}
+        segs = [{"id": "c1", "type": "chart", "t0": 0.0, "t1": 5.0, "counter": None, "data": dict(base, marks=marks)},
+                {"id": "c2", "type": "chart", "t0": 5.0, "t1": 9.0, "counter": None, "data": dict(base, marks=marks, drawn=True)}]
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 9.0, "segments": segs}) + ";\n")
+            plates = """(id) => { const st = document.querySelector('#stage').getBoundingClientRect();
+              return [...document.querySelectorAll(`[data-seg=${id}] rect[rx="6"]`)].filter(r => +(r.getAttribute('opacity') ?? 1) > 0.5)
+                .map(r => { const b = r.getBoundingClientRect(); return [b.left - st.left, b.top - st.top, b.right - st.left, b.bottom - st.top]; }); }"""
+            marksOn = """(id) => [...document.querySelectorAll(`[data-seg=${id}] text`)].filter(e => /paid back/.test(e.textContent) && +e.getAttribute('opacity') > 0.5).map(e => e.textContent)"""
+            zoom = "(id) => { const m = document.querySelector(`#scenes > [data-seg=${id}]`).getCTM(); return m.a; }"
+            with render.Film(film) as f:
+                f.seek(1.0); early = f.page.evaluate(marksOn, "c1")
+                f.seek(4.9); full = f.page.evaluate(marksOn, "c1"); boxes = f.page.evaluate(plates, "c1"); sizes = f.page.evaluate(longform.MEASURE_TEXT)
+                z1 = f.page.evaluate(zoom, "c1")
+                f.seek(5.03); held = f.page.evaluate(marksOn, "c2"); z2 = f.page.evaluate(zoom, "c2")
+                lines2 = f.page.evaluate("[...document.querySelectorAll('[data-seg=c2] path[stroke-linecap=round]')].map(p => [+p.getAttribute('opacity'), +p.getAttribute('stroke-dashoffset')])")
+                frames = []
+                for i in range(30):
+                    f.seek(4.6 + i / 30)
+                    frames.append(np.asarray(Image.open(io.BytesIO(f.page.locator("#stage").screenshot())).convert("RGB").resize((320, 180))))
+                warns = f.page.evaluate("window.STUDIO.warnings || []")
+                self.assertFalse(f.errors)                                    # two "counter": null in a row no longer throw
+        self.assertEqual(early, [])                                           # no line has drawn past its mark yet
+        self.assertEqual(sorted(full), sorted(m["text"] for m in marks))
+        self.assertEqual(sorted(held), sorted(full))                         # the held chart starts with its marks
+        self.assertTrue(all(o == 1 and off < 1 for o, off in lines2), lines2)   # and its lines already drawn
+        self.assertLess(abs(z2 - z1), 0.004)                                  # one push across both: no zoom jump at the join
+        self.assertEqual(len(boxes), 6)                                       # three end labels, three marks
+        for i, a in enumerate(boxes):
+            self.assertTrue(a[0] >= 0 and a[1] >= 0 and a[2] <= 1920 and a[3] <= 1080, a)
+            for b in boxes[i + 1:]:
+                self.assertFalse(a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3], (a, b))
+        self.assertGreater(min(px for w, px, aux in sizes if "paid" in w or "back" in w), 50)
+        self.assertEqual(warns, [])
+        self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
+
+
 class ChartScene(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
     def test_lines_draw_on_cue_labels_fit_and_no_flash(self):
