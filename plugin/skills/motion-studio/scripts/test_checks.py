@@ -745,6 +745,42 @@ im.save("image.png")
             for f in ("report.md", "blind.png", "compare.png"):
                 self.assertTrue((ab / f).exists(), f)
 
+    def test_default_runs_markup_and_whole_and_sharpens_soft_redraws(self):
+        import panelqa
+        fake = r"""
+import os, sys
+from PIL import Image, ImageFilter
+args = sys.argv[1:-1]
+open(os.environ["FAKE_LOG"], "a").write(" ".join(args) + "\n")
+im = Image.open([a.split("=", 1)[1] for a in args if a.startswith("--image=")][0]).convert("RGB")
+im.filter(ImageFilter.GaussianBlur(0.7)).save("image.png")        # a soft answer, as ChatGPT's were
+"""
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as d:
+            film = self.film(d)
+            im = Image.open(film / "panels" / "p1.png"); dr = ImageDraw.Draw(im)
+            for i in range(0, 1600, 24):
+                dr.line((i, 0, i + 200, 900), fill=(40, 30, 20), width=2)
+            im.save(film / "panels" / "p1.png")
+            env = dict(os.environ, **self.env(d)); env.pop("CODEX_STILLS_OK", None)
+            Path(d, "fake.py").write_text(fake)
+            r = subprocess.run(["python3", str(Path(__file__).with_name("longform.py")), "repair", str(film), "--image", "panels/p1.png",
+                                "--box", "600,300,200,200", "--prompt", "fix the hand", "--allow-codex", "--min-change", "0"],
+                               capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            log = json.loads((film / "repairs" / "log.json").read_text())
+            self.assertEqual([(e["method"], e["seeds"]) for e in log], [("markup", [1]), ("whole", [1])])   # 2 Codex images
+            self.assertEqual(len(Path(d, "log").read_text().splitlines()), 2, Path(d, "log").read_text())
+            for e in log:
+                c = e["checks"]["1"]
+                self.assertGreater(c["sharpen"], 0)                        # the soft redraw was sharpened
+                self.assertGreater(c["sharpness"], 0.7, c)                 # to near the panel's detail
+            # accept pastes the same sharpened redraw the candidate showed
+            panelqa.accept(film, log[1]["id"])
+            a = np.asarray(Image.open(film / "panels" / "p1.png").convert("RGB")).astype(int)
+            b = np.asarray(Image.open(film / "repairs" / "panels" / "p1" / "r02" / "candidate_1.png").convert("RGB")).astype(int)
+            self.assertLessEqual(int(np.abs(a - b).max()), 1)
+
     def test_local_models_are_drafts_only_and_render_refuses_them(self):
         import panelqa, longform
         with tempfile.TemporaryDirectory() as d:
