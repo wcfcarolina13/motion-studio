@@ -2905,6 +2905,9 @@ def map_motion(film, segs):
     return out
 
 
+STAT_STILL = {}      # "<id> stat": True when the page never moved the scene (filled by stat_motion)
+
+
 def stat_motion(film, segs):
     """{"<segment> stat": per-window motion} for every stat scene of 2 s or more, measured on the page's own frames the
     way final measures the video (as map_motion does). A stat scene is a count-up and then words on a plain ground: a
@@ -2925,6 +2928,14 @@ def stat_motion(film, segs):
             f.page.evaluate(f"window.seek({k * step:.6f})")
             im = Image.open(io.BytesIO(f.page.screenshot(type="jpeg", quality=95))).convert("L")
             return np.asarray(im.resize((ow, oh), Image.BICUBIC), dtype=np.int16)
+        # whether this film's page drifts its stat scenes at all: a film keeps the film.html `init` copied in, and one
+        # copied before stat drift existed (#141) measures as a still whatever the timeline says (Survive Year 1 read
+        # 0.034-0.036 on three stats with drift 14 set, 2026-11-27)
+        cam = "(id) => { const g = document.querySelector(`#scenes > [data-seg=${id}]`); return g ? g.getAttribute('transform') : null; }"
+        for sg in stats:
+            f.page.evaluate(f"window.seek({sg['t0'] + 1.5:.3f})"); a = f.page.evaluate(cam, sg["id"])
+            f.page.evaluate(f"window.seek({sg['t1'] - 0.1:.3f})"); b = f.page.evaluate(cam, sg["id"])
+            STAT_STILL[f"{sg['id']} stat"] = a == b
         for sg in stats:
             w0, wins = math.ceil(sg["t0"] / motioncheck.WINDOW - 1e-9) * motioncheck.WINDOW, []
             while w0 + motioncheck.WINDOW <= sg["t1"] + 1e-9:
@@ -3804,6 +3815,11 @@ def _check(a, film):
             report.append(f"stat scenes (rendered and measured like final): {len(sest)}, {len(slow)} at or near the floor {sfloor:.3f}")
         for sid, m in slow:
             how = "too little" if m < sfloor else "barely above it"
+            if STAT_STILL.get(sid):
+                flags.append(f"{sid.split()[0]}: stat scene moves {how} (quietest 2 s {m:.3f}, floor {sfloor:.3f}) because this "
+                             f"film's page never drifts it: its film.html is older than the engine's stat drift, so drift settings "
+                             f"do nothing. Run `longform.py init {film}` to refresh the engine files (script.json is kept), then timeline and check")
+                continue
             flags.append(f"{sid.split()[0]}: stat scene moves {how} (quietest 2 s {m:.3f}, floor {sfloor:.3f}); turn on "
                          f"\"stat_drift\": true in engine.json (the scene drifts slowly from its count), raise \"drift\" (px/s, "
                          f"on the segment or in its data; 14 is the default, 20 for a sparse stat), add \"notes\" that land on "

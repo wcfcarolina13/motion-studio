@@ -1202,6 +1202,19 @@ class StatScene(unittest.TestCase):
         _, low = longform.motion_flags(est, floor=0.2)
         self.assertEqual(low, [], est)
         self.assertEqual(hits, [])
+        self.assertFalse(longform.STAT_STILL["v35f stat"])
+        # a film whose own film.html predates stat drift: check must say so rather than tell it to raise "drift"
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            html = longform.TEMPLATE.read_text()
+            old = html.replace("g.__cam = dx || dy ? { cx: W / 2 - dx, cy: H / 2 - dy, z: 1, frac: 1 } : null;", "g.__cam = null;")
+            self.assertNotEqual(old, html)
+            (film / "film.html").write_text(old)
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 18.0, "segments": [seg]}) + ";\n")
+            longform.stat_motion(film, [seg])
+        self.assertTrue(longform.STAT_STILL["v35f stat"])
 
 
 class ClipPanel(unittest.TestCase):
