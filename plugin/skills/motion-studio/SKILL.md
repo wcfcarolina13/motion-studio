@@ -76,6 +76,10 @@ To pick topics, `scripts/trends.py` finds TikTok and YouTube videos that broke o
 
 When a change proves out in a run (a faster route, a better default, a fix that held), fold it into this skill at once, unasked: the reference page that owns it, the engine default, or a check. Then tell the owner in one line. A lesson left in a thread or a log is lost to the next film. Also look for work that can run in parallel (two Colab lanes, the Mac alongside Colab, independent reviews) before running steps one after another.
 
+## Dead space gets the facts (owner's house rule, 2026-11-27)
+
+When a still has quiet room and the voice says a number, a quote or a named source, put it in the shot with panel callouts (longform.md). Run `longform.py deadspace <film>` after `timeline` and paste its suggestions. `check` flags any beat that still has room and an unshown fact; a beat opts out only with `"deadspace": "<why>"`. Numbers that belong on a screen in the picture go on the screen (`screen`), not in a card.
+
 ## When something breaks
 
 `references/review.md` lists every trap hit so far (shell globbing, literal characters, clipped descenders, captions too wide, a preview that won't launch from an unattended session, and more). Check it before debugging from scratch.
