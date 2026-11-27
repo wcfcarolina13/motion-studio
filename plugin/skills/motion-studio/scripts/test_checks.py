@@ -1205,6 +1205,19 @@ class StatScene(unittest.TestCase):
         self.assertFalse(longform.STAT_STILL["v35f stat"])
         px, secs = longform.STAT_TRAVEL["v35f stat"]
         self.assertGreater(px / secs, 10, (px, secs))      # the page holds its speed over a long hold
+        # a number cued to a late word: the scene drifts from its own start, not from the count (an 18 s stat cued 15 s in
+        # measured 0.037 whatever its drift, Survive Year 1, 2026-11-27)
+        late = dict(seg, drift=24, data=dict(seg["data"], t=15.0))
+        late.pop("counter")
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 18.0, "segments": [late],
+                "palette": {"BG": "#E6DAC3", "INK": "#1D1C20", "GREY": "#4a4740", "ACCENT": "#9A6614"}}) + ";\n")
+            est = longform.stat_motion(film, [late])
+        self.assertEqual(longform.motion_flags(est, floor=0.2)[1], [], est)
         # a film whose own film.html predates stat drift: check must say so rather than tell it to raise "drift"
         with tempfile.TemporaryDirectory() as d:
             film = Path(d)
