@@ -2082,9 +2082,28 @@ const HUD = (() => {
   ev.counter.forEach(e => {
     if (e.v == null) { cs.push({ t: e.t, off: true }); return; }
     label = e.v.label != null ? e.v.label : label; note = e.v.note != null ? e.v.note : note;
-    cs.push({ t: e.t, value: String(e.v.value), label, note, p: num(e.v.value), delta: e.v.delta !== false, dlab: e.v.delta_label || "" });
+    cs.push({ t: e.t, value: String(e.v.value), label, note, p: num(e.v.value), delta: e.v.delta !== false, dlab: e.v.delta_label || "",
+              heroOpt: e.v.hero, chap: e.s.chapter || "" });
   });
   cs.forEach((c, i) => { c.t1 = i + 1 < cs.length ? cs[i + 1].t : TL.duration; c.prev = i && !cs[i - 1].off ? cs[i - 1] : null; });
+  // the hero: a change lands big near the centre on its word, counts there, holds, then flies and shrinks into the card
+  // with its chip (owner, 2026-11-27: a cash change sat "in the corner with very little connection to what's being said.
+  // It should have better animation to grab attention before it gets shoved over here in the corner"). On "hero": true,
+  // and by default on the first change in each chapter ("hero": false turns it off). Times scale down to fit before the
+  // next change; under HERO_MIN s there is no hero. The corner card keeps the old value until the hero lands on it.
+  const HIN = 0.3, HHOLD = 1.0, HFLY = 0.6, HERO_MIN = 1.4, HERO_DIM = 0.3;
+  { const seen = new Set();
+    cs.forEach(c => {
+      if (c.off) return;
+      const change = !!(c.prev && c.p && c.prev.p && c.p.n !== c.prev.p.n), first = change && !seen.has(c.chap);
+      if (change) seen.add(c.chap);
+      if (!(c.heroOpt === true || (c.heroOpt !== false && first))) return;
+      const want = 0.6 + HHOLD + HFLY, room = c.t1 - c.t - 0.2;
+      if (room < HERO_MIN) return;
+      const k = Math.min(1, room / want);
+      c.hero = { t0: c.t, count: 0.6 * k, fly: c.t + (0.6 + HHOLD) * k, land: c.t + want * k };
+      K.label(c.value, c.t, c.hero.land, "counter hero");
+    }); }
   // the change chip: "+$1,073" in green or "−$3,925" in red under the card, popping in as the count starts, held about
   // 2 s, then fading (owner, 2026-11-27: "flash a green change showing how much it changed by"). Only between two values
   // of the same unit; "delta": false hides it (a reset), "delta_label" adds a small line under it ("this month").
@@ -2093,7 +2112,8 @@ const HUD = (() => {
     if (c.off || !c.delta || !c.prev || !c.p || !c.prev.p || c.p.pre !== c.prev.p.pre || c.p.post !== c.prev.p.post) return;
     const d = +(c.p.n - c.prev.p.n).toFixed(c.p.dec);
     if (!d) return;
-    c.d = { n: d, text: (d > 0 ? "+" : "") + fmt(c.p, d), t1: Math.min(c.t + DIN + DHOLD + DOUT, c.t1) };
+    const t0 = c.hero ? c.hero.land : c.t;        // after a hero, the chip stays under the card from the landing
+    c.d = { n: d, text: (d > 0 ? "+" : "") + fmt(c.p, d), t0, t1: Math.min(t0 + DIN + DHOLD + DOUT, c.t1) };
   });
   const cG = K.el("g", {}, hudG), cShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, cG), cCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, cG);
   const cLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4, fill: INK, "text-anchor": "end" }, cG);
@@ -2109,8 +2129,26 @@ const HUD = (() => {
     c.w = Math.max(...vals.map(v => { meas.textContent = v + "0"; return meas.getComputedTextLength(); }), c.label.length * 17, c.note.length * 10) + 56;
     K.label(c.value, c.t, c.t1, "counter");
     if (c.d) { meas.textContent = c.d.text; c.d.w = meas.getComputedTextLength() + 44; K.label(c.d.text, c.t, c.d.t1, "counter"); } });
+  // the hero's widths, measured once here: measured each frame, a text under the flight's scale is hinted at another
+  // size and a frame drew differently depending on the frame before it
+  { const mv = K.text("", { "font-family": FONT, "font-size": Math.round(V(150, 120) * TS), "font-weight": 700 }, hudG);
+    const ml = K.text("", { "font-family": SANS, "font-size": 34, "font-weight": 700, "letter-spacing": 6 }, hudG);
+    cs.forEach(c => { if (!c.hero) return;
+      const vals = [c.value].concat(c.prev && c.p && c.prev.p ? [fmt(c.p, c.prev.p.n)] : []);
+      const vw = Math.max(...vals.map(v => { mv.textContent = v + "0"; return mv.getComputedTextLength(); }));
+      ml.textContent = c.label.toUpperCase(); const lw = c.label ? ml.getComputedTextLength() : 0;
+      meas.textContent = c.d ? c.d.text : ""; const dw = c.d ? meas.getComputedTextLength() + 56 : 0;
+      c.hero.w = Math.max(vw, lw, dw) + 96; c.hero.dw = dw; });
+    mv.remove(); ml.remove(); }
   meas.remove();
   const COUNT = 0.6;
+  // the hero's own card, label, number and chip: drawn at the centre, then moved and scaled onto the corner card
+  const HS = Math.round(V(150, 120) * TS), hG = K.el("g", {}, hudG), hShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, hG);
+  const hCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 3 }, hG);
+  const hLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 34, "font-weight": 700, "letter-spacing": 6, fill: INK, "text-anchor": "middle" }, hG);
+  const hVal = K.text("", { "font-family": FONT, "font-size": HS, "font-weight": 700, "text-anchor": "middle" }, hG);
+  const hChip = K.el("rect", { rx: 14 }, hG);
+  const hDel = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, fill: PAPER, "text-anchor": "middle" }, hG);
 
   // tag
   const ts = ev.tag.map((e, i) => ({ t: e.t, text: e.v == null ? null : String(e.v.text != null ? e.v.text : e.v) }));
@@ -2129,13 +2167,16 @@ const HUD = (() => {
       const before = c && c.off ? cs[cs.indexOf(c) - 1] : null;
       const on = c && !c.off, last = on ? c : (before && !before.off ? before : null);
       // in over 0.25 s from nothing, out over 0.25 s to nothing; between values the card stays and the number counts
-      const fresh = on && !c.prev, aIn = on ? (fresh ? K.eout(K.prog(t, c.t, c.t + 0.25)) : 1) : 0;
+      const hero = on && c.hero ? c.hero : null, landed = !hero || t >= hero.land;
+      const fresh = on && !c.prev, aIn = on ? (fresh ? (hero ? (landed ? 1 : 0) : K.eout(K.prog(t, c.t, c.t + 0.25))) : 1) : 0;
       const aOut = c && c.off && last ? 1 - K.ein(K.prog(t, c.t, c.t + 0.25)) : 0;
-      const a = on ? aIn : aOut, show = on ? c : last;
+      // while the hero flies onto it, the card's old value fades, so the two never draw on top of each other
+      const a = (on ? aIn : aOut) * (hero && !landed ? 1 - K.eio(K.prog(t, hero.fly, hero.fly + 0.25)) : 1), show = on ? c : last;
       K.show(cG, a > 0.01 && !!show);
       if (show && a > 0.01) {
         let n = show.p ? show.p.n : 0, txt = show.value;
-        if (on && show.prev && show.p && show.prev.p) {
+        if (on && hero && !landed && show.prev && show.p && show.prev.p) { n = show.prev.p.n; txt = fmt(show.p, n); }
+        else if (on && !hero && show.prev && show.p && show.prev.p) {
           const q = K.prog(t, show.t, show.t + COUNT);
           if (q < 1) { const step = Math.floor(q * 18) / 18; n = show.prev.p.n + (show.p.n - show.prev.p.n) * K.eout(step); txt = fmt(show.p, n); }
         }
@@ -2152,12 +2193,12 @@ const HUD = (() => {
         cG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
         // the change chip, under the card's right edge: in over DIN with a small rise, held, out over DOUT
         const dd = on && show.d && t < show.d.t1 ? show.d : null;
-        const da = dd ? Math.min(K.eout(K.prog(t, show.t, show.t + DIN)), 1 - K.ein(K.prog(t, dd.t1 - DOUT, dd.t1))) * a : 0;
+        const da = dd && t >= dd.t0 ? Math.min(K.eout(K.prog(t, dd.t0, dd.t0 + DIN)), 1 - K.ein(K.prog(t, dd.t1 - DOUT, dd.t1))) * a : 0;
         K.show(dG, da > 0.01);
         if (da > 0.01) {
           // the caption sits inside the chip, paper on the sign colour, so it reads on any scene behind
           const col = dd.n < 0 ? NEG : POS, lh = show.dlab ? 30 : 0, ch = READ * 1.2 + lh;
-          const cy = y + h + 16 + (1 - K.eout(K.prog(t, show.t, show.t + DIN))) * 10;
+          const cy = y + h + 16 + (hero ? 0 : (1 - K.eout(K.prog(t, dd.t0, dd.t0 + DIN))) * 10);
           K.set(dChip, { x: right - Math.max(dd.w, show.dlab.length * 15 + 44), y: cy, width: Math.max(dd.w, show.dlab.length * 15 + 44), height: ch, fill: col });
           dLab.textContent = show.dlab.toUpperCase(); K.set(dLab, { x: right - 22, y: cy + 30, fill: PAPER });
           dVal.textContent = dd.text; K.set(dVal, { x: right - 22, y: cy + lh + READ * 0.95 });
@@ -2165,6 +2206,43 @@ const HUD = (() => {
           dG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
         }
       } else K.show(dG, false);
+      // the hero, from its word to its landing
+      const hh_ = on && c.hero && t >= c.hero.t0 && t < c.hero.land ? c.hero : null;
+      K.show(hG, !!hh_);
+      if (hh_) {
+        const q = K.prog(t, hh_.t0 + 0.1, hh_.t0 + 0.1 + hh_.count);
+        let n = c.p.n;
+        if (c.prev && c.prev.p && q < 1) n = c.prev.p.n + (c.p.n - c.prev.p.n) * K.eout(Math.floor(q * 18) / 18);
+        hVal.textContent = fmt(c.p, n); K.set(hVal, { fill: n < 0 ? NEG : n > 0 ? POS : INK });
+        hLab.textContent = c.label.toUpperCase();
+        const dd = c.d, dw = hh_.dw, w = hh_.w, lh = c.label ? 50 : 0, h = 30 + lh + HS * 1.05 + 30;
+        const cx = W / 2, y0 = V(H * 0.42, SMID) - h / 2, x0 = cx - w / 2;
+        K.set(hShadow, { x: x0 + 7, y: y0 + 10, width: w, height: h });
+        K.set(hCard, { x: x0, y: y0, width: w, height: h });
+        K.set(hLab, { x: cx, y: y0 + 30 + 34 });
+        K.set(hVal, { x: cx, y: y0 + 30 + lh + HS * 0.85 });
+        const ca = K.eout(K.prog(t, hh_.t0 + 0.1 + hh_.count * 0.8, hh_.t0 + 0.3 + hh_.count));   // the chip once the count lands
+        K.show(hChip, !!dd && ca > 0.01); K.show(hDel, !!dd && ca > 0.01);
+        if (dd) {
+          hDel.textContent = dd.text;
+          const chy = y0 + h + 18;
+          K.set(hChip, { x: cx - dw / 2, y: chy, width: dw, height: READ * 1.25, fill: dd.n < 0 ? NEG : POS, opacity: ca.toFixed(3) });
+          K.set(hDel, { x: cx, y: chy + READ * 0.98, opacity: ca.toFixed(3) });
+        }
+        // in: a short rise and settle; out: the whole hero moves its top-right corner onto the card's and shrinks to its width
+        const pin = K.eout(K.prog(t, hh_.t0, hh_.t0 + HIN)), f = K.eio(K.prog(t, hh_.fly, hh_.land));
+        // a point P draws at T + sc * P: while flying, the hero's top-right corner C goes from where it is to the card's
+        const sc = f > 0 ? 1 + (c.w / w - 1) * f : 0.92 + 0.08 * pin, Cx = x0 + w, Cy = y0;
+        const T = f > 0 ? [Cx + (right - Cx) * f - sc * Cx, Cy + (top - Cy) * f - sc * Cy]
+                        : [cx * (1 - sc), (y0 + h / 2) * (1 - sc) + (1 - pin) * 30];
+        hG.setAttribute("transform", `translate(${T[0].toFixed(2)} ${T[1].toFixed(2)}) scale(${sc.toFixed(4)})`);
+        // the scene steps back first (0.12 s) and the hero fades in after it, so the hero never lands on full-strength words
+        const back = K.smooth(K.prog(t, hh_.t0, hh_.t0 + 0.12)), hin = K.eout(K.prog(t, hh_.t0 + 0.1, hh_.t0 + HIN));
+        hG.setAttribute("opacity", (hin * (1 - K.ein(K.prog(t, hh_.land - 0.12, hh_.land)))).toFixed(3));
+        // the scene steps back while the hero holds the frame, and comes back as it flies away
+        // (only once the hero is most of the way to the corner, so it never crosses the scene's words at full strength)
+        sceneG.setAttribute("opacity", (1 - (1 - HERO_DIM) * Math.min(back, 1 - K.prog(f, 0.7, 1))).toFixed(3));
+      } else sceneG.removeAttribute("opacity");
       const g = at(ts, t), gl = g && !g.text ? ts[ts.indexOf(g) - 1] : null;
       const ta = g && g.text ? (g.t === ts[0].t || !ts[ts.indexOf(g) - 1] || !ts[ts.indexOf(g) - 1].text ? K.eout(K.prog(t, g.t, g.t + 0.25)) : 1)
                              : gl && gl.text ? 1 - K.ein(K.prog(t, g.t, g.t + 0.25)) : 0;

@@ -810,8 +810,10 @@ def cmd_align(a):
     methods, sc = {}, load_script(film)
     for s in sc["segments"]:
         sm = say_map(sc, s)
+        # kept when its text is unchanged and it was really aligned: a spread (estimated) segment is tried again, so
+        # installing an aligner fixes an old film on its next `align`
         if not s.get("narration") or (s["id"] in words and words[s["id"]].get("text") == s["narration"]
-                                      and (words[s["id"]].get("say") or {}) == sm):
+                                      and (words[s["id"]].get("say") or {}) == sm and words[s["id"]].get("method") != "spread"):
             continue
         clip = film / "narration" / f"{s['id']}.mp3"
         if not clip.exists():
@@ -821,6 +823,37 @@ def cmd_align(a):
         methods[method] = methods.get(method, 0) + 1
     out_path.write_text(json.dumps(words, indent=1, ensure_ascii=False))
     print(f"words -> {out_path} ({', '.join(f'{v} {k}' for k, v in methods.items()) or 'nothing new'})")
+    allm = {}
+    for v in words.values():
+        allm[v.get("method", "?")] = allm.get(v.get("method", "?"), 0) + 1
+    print("aligners, whole film: " + ", ".join(f"{k} {v}" for k, v in sorted(allm.items())))
+    if allm.get("spread"):
+        print(f"WARN {allm['spread']} segment(s) spread by weight (estimated times, off by up to 0.5 s): install an aligner "
+              f"(pipx install mlx-whisper on the Mac, or pip install pocketsphinx) and run align again; check fails on them")
+
+
+def alignment_flags(film, sc):
+    """(report line, flags): which aligner timed each narrated segment, and a flag for every one left "spread" (word
+    times estimated, not heard) or never aligned. Cue words, callouts, map tags, cuts and counters all key off these
+    times, so an estimate moves them all (owner's out-of-sync notes, Survive Year 1, 2026-11-27)."""
+    wp = film / "narration" / "words.json"
+    words = json.loads(wp.read_text()) if wp.exists() else {}
+    narrated = [x for x in sc.get("segments", []) if x.get("narration")]
+    if not narrated:
+        return None, []
+    count, bad = {}, []
+    for x in narrated:
+        m = (words.get(x["id"]) or {}).get("method", "none")
+        count[m] = count.get(m, 0) + 1
+        if m in ("spread", "none"):
+            bad.append(x["id"])
+    line = "word timing: " + ", ".join(f"{k} {v}" for k, v in sorted(count.items())) + f" of {len(narrated)} narrated segment(s)"
+    flags = []
+    if bad:
+        flags.append(f"word timing: {len(bad)} narrated segment(s) have estimated word times ({', '.join(bad[:8])}"
+                     f"{', ...' if len(bad) > 8 else ''}), so every cue on them can land up to 0.5 s off. Install an aligner "
+                     f"(pipx install mlx-whisper on the Mac, or pip install pocketsphinx), then `align` and `timeline` again")
+    return line, flags
 
 
 def norm(w):
@@ -1630,6 +1663,10 @@ def _render(a, film, st):
     drafts = draft_stills(film, tl["segments"])
     if drafts:
         raise SystemExit("render stopped: draft stills can't ship:\n" + "\n".join(drafts))
+    # estimated word times move every cue keyed to a word, so a film isn't rendered on them
+    spread_ = alignment_flags(film, load_script(film))[1]
+    if spread_ and not getattr(a, "allow_spread", False):
+        raise SystemExit("render stopped: " + spread_[0] + " (or --allow-spread for a rough draft)")
     # a render is only started on a version of the film that a check passed (its page ran clean), and on a page that
     # is clean now: a JavaScript error never heals on a retry, and a render is the most expensive place to find one
     passed = film / "review" / "check-gate.json"
@@ -3953,6 +3990,10 @@ def _check(a, film):
         (film / "review" / "check.txt").write_text(f"page: {len(problems)} problem(s)\n" + "\n".join(problems) + "\n")
         raise SystemExit(f"check stopped: the page is not clean ({len(problems)} problem(s)):\n" + "\n".join(problems))
     flags += draft_stills(film, segs)
+    aline, aflags = alignment_flags(film, load_script(film))
+    if aline:
+        report.append(aline); print(aline)
+    flags += aflags
     pk, tj = film / "picks.json", film / "timeline.js"
     if pk.exists() and pk.stat().st_mtime > tj.stat().st_mtime:
         write_gate(film, False, 1)
@@ -4384,6 +4425,7 @@ def main():
     p = sp.add_parser("render"); p.add_argument("film"); p.add_argument("--workers", type=int, help="pages rendering at once (default 4; 1 for set3d films on a Mac, references/set3d.md)"); p.add_argument("--scale", type=float, default=1.0)
     p.add_argument("--retries", type=int, default=2, help="re-runs of a failed chunk before render stops (finished chunks are kept)")
     p.add_argument("--skip-gate", action="store_true", help="render without a passing check on this version of the film (noted in out/render.status.json)")
+    p.add_argument("--allow-spread", action="store_true", help="render although some narrated segments have estimated (spread) word times")
     p.add_argument("--fresh", action="store_true", help="discard finished chunks and render every frame again")
     p.add_argument("--only", help="re-render only these segments (comma-separated ids) and splice them into the last render")
     p.add_argument("--from", dest="seg_from", help="with --to: re-render this run of segments only (inclusive)")

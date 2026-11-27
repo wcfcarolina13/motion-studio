@@ -880,7 +880,7 @@ class HudDelta(unittest.TestCase):
         segs = [{"id": "a", "type": "title", "t0": 0.0, "t1": 3.0, "data": {"text": "Month one"},
                  "counter": {"value": "−$25,375", "label": "Cash"}},
                 {"id": "b", "type": "title", "t0": 3.0, "t1": 7.0, "data": {"text": "Month two"},
-                 "counter": {"value": "−$24,302", "delta_label": "this month"}},
+                 "counter": {"value": "−$24,302", "delta_label": "this month", "hero": False}},   # the corner chip itself (CounterHero covers the hero)
                 {"id": "c", "type": "title", "t0": 7.0, "t1": 10.0, "data": {"text": "Reset"},
                  "counter": {"value": "−$28,227", "delta": False}}]
         with tempfile.TemporaryDirectory() as d:
@@ -1336,6 +1336,87 @@ class IntroRules(unittest.TestCase):
             (film / "script.json").write_text('{"title": "t", "segments": []}')
             _, fl = longform.intro_flags(film, tl, longform.load_script(film))
             self.assertIn("no \"subject\"", " ".join(fl))
+
+
+class WordTiming(unittest.TestCase):
+    """Whisper word times matched to the script, and estimated times failing check (owner's out-of-sync notes, 2026-11-27)."""
+    def test_match_words(self):
+        import align
+        toks = align.tokens("We made $4,860 in the first season, mostly from forty porta-potties.")
+        heard = [("We", 0, .2), (" made", .2, .5), (" $4,860", .5, 1.6), (" in", 1.6, 1.7), (" the", 1.7, 1.8),
+                 (" first", 1.8, 2.1), (" season,", 2.1, 2.6), (" mostly", 2.8, 3.2), (" from", 3.2, 3.4),
+                 (" 40", 3.4, 3.8), (" porta", 3.8, 4.1), (" potties.", 4.1, 4.6)]
+        ws = align.match_words(toks, heard, 5.0)
+        self.assertEqual([w["w"] for w in ws], [t["w"] for t in toks])          # the script's words, Whisper's times
+        self.assertEqual((ws[2]["t0"], ws[2]["t1"]), (0.5, 1.6))
+        self.assertEqual((ws[9]["t0"], ws[9]["t1"]), (3.4, 3.8))
+        # a word Whisper misheard shares the gap between its neighbours
+        miss = [h if h[0] != " mostly" else (" Most", 2.8, 3.2) for h in heard]
+        ws = align.match_words(toks, miss, 5.0)
+        self.assertTrue(2.6 <= ws[7]["t0"] < ws[7]["t1"] <= 3.2, ws[7])
+        with self.assertRaises(RuntimeError):                                   # the wrong clip
+            align.match_words(toks, [("Something", 0, 1), (" else", 1, 2)], 2.0)
+
+    def test_check_flags_spread(self):
+        import json, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "narration").mkdir()
+            sc = {"segments": [{"id": "a", "narration": "One."}, {"id": "b", "narration": "Two."}, {"id": "c"}]}
+            (film / "narration" / "words.json").write_text(json.dumps({"a": {"method": "whisper"}, "b": {"method": "spread"}}))
+            line, fl = longform.alignment_flags(film, sc)
+            self.assertIn("spread 1", line); self.assertIn("whisper 1", line)
+            self.assertEqual(len(fl), 1); self.assertIn("(b)", fl[0])
+            (film / "narration" / "words.json").write_text(json.dumps({"a": {"method": "whisper"}, "b": {"method": "align"}}))
+            self.assertEqual(longform.alignment_flags(film, sc)[1], [])
+
+
+class CounterHero(unittest.TestCase):
+    """A counter change lands big at the centre, then flies into the card (owner's note on the cash card, 2026-11-27)."""
+    SEGS = [{"id": "a", "type": "statement", "chapter": "One", "t0": 0, "t1": 3, "data": {"text": "The first season"}, "counter": {"value": "$1,000", "label": "CASH", "t": 0.3}},
+            {"id": "b", "type": "statement", "chapter": "One", "t0": 3, "t1": 8, "data": {"text": "Then the fair paid out"}, "counter": {"value": "$2,073", "t": 3.5}},
+            {"id": "c", "type": "statement", "chapter": "One", "t0": 8, "t1": 11, "data": {"text": "And a repair"}, "counter": {"value": "$1,500", "t": 8.5}}]
+
+    def where(self, segs):
+        import io, json, longform, render
+        import numpy as np
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 11, "segments": segs, "chapters": [{"title": "One", "t0": 0, "t1": 11}]}) + ";\n")
+            pos = """(v) => [...document.querySelectorAll('#hud text')].filter(e => e.textContent === v && getComputedStyle(e.parentNode).display !== 'none'
+                       && +(e.parentNode.getAttribute('opacity') || 1) > 0.5).map(e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width]; })"""
+            out, bad = {}, []
+            with render.Film(film) as f:
+                for t, v in ((4.5, "$2,073"), (6.5, "$2,073"), (9.5, "$1,500")):
+                    f.seek(t); out[t] = f.page.evaluate(pos, v)
+                for k in range(90, 240, 3):
+                    f.seek(k / 30)
+                    h = f.page.evaluate(longform.OVERLAP) + f.page.evaluate(longform.EDGE)
+                    if h: bad.append((k / 30, h[0]))
+                g = lambda: np.asarray(Image.open(io.BytesIO(f.page.screenshot())).convert("L"))
+                f.seek(5.3); a = g(); f.seek(9.0); f.seek(5.3); b = g()
+                self.assertFalse(f.errors)
+            return out, bad, bool((a != b).any())
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_hero(self):
+        out, bad, differs = self.where(self.SEGS)
+        self.assertEqual(bad, [])
+        self.assertFalse(differs)                       # a pure function of t: the same frame however it is reached
+        (x, y, w), = out[4.5]
+        self.assertTrue(700 < x + w / 2 < 1220 and 250 < y < 600 and w > 300, out[4.5])   # big, near the centre
+        (x, y, w), = out[6.5]
+        self.assertTrue(x > 1500 and y < 200, out[6.5])  # landed in the corner card
+        (x, y, w), = out[9.5]
+        self.assertTrue(x > 1500 and y < 200, out[9.5])  # a second change in the chapter goes straight to the card
+        segs = [dict(s) for s in self.SEGS]
+        segs[1] = dict(segs[1], counter=dict(segs[1]["counter"], hero=False))
+        out, _, _ = self.where(segs)
+        (x, y, w), = out[4.5]
+        self.assertTrue(x > 1500 and y < 200, out[4.5])  # "hero": false keeps it in the corner
 
 
 class ClipPanel(unittest.TestCase):
