@@ -541,6 +541,20 @@ class CodexEdit(unittest.TestCase):
             self.assertIn("a2\tresized 768x512", rv); self.assertIn("z\tedit base nope not found", rv)
 
 
+    def test_frame_snaps_to_its_base_frame(self):
+        # episode thread, 2026-11-27: a 1672x940 base came back cropped to 1671x940 and timeline stopped on
+        # "flipbook frames differ in size"
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("RGB", (1672, 940), (90, 90, 90)).save(f"{d}/base.png")
+            shots = {"style": "ink.", "shots": [{"id": "b2", "edit_from": f"{d}/base.png", "change": "the lid is open"}]}
+            r = self.run_it(d, "1672x940", "", shots=shots)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            im = Image.open(f"{d}/out/b2.png")
+            self.assertEqual(im.size, (1672, 940))
+            self.assertTrue(im.text.get("motion-studio-original"))                # its PNG text survives the snap
+            self.assertIn("b2\tsnapped 1671x940 to its base frame's 1672x940", Path(d, "out", "review.tsv").read_text())
+
 class PanelFx(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
     def test_effects_draw_and_never_flash(self):
