@@ -1286,6 +1286,58 @@ class PaletteAndFades(unittest.TestCase):
             self.assertLess(b["contrast"], 3.0, b)
 
 
+class IntroRules(unittest.TestCase):
+    """The intro runs 45 s at most and its first 5 s name the subject with the sound off (owner's intro rules, 2026-11-27)."""
+    def film(self, d, segs, chapters, sc):
+        import json, longform
+        from PIL import Image
+        film = Path(d); (film / "panels").mkdir()
+        Image.new("RGB", (1920, 1080), (120, 140, 160)).save(film / "panels" / "yard.png")
+        shutil.copy(longform.TEMPLATE, film / "film.html")
+        for f in longform.ENGINE_FILES:
+            shutil.copy(longform.HERE / f, film / f)
+        dur = segs[-1]["t1"]
+        tl = {"duration": dur, "segments": segs, "chapters": chapters, "format": "16x9"}
+        (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+        (film / "script.json").write_text(json.dumps(dict(sc, title="t", segments=[{"id": x["id"]} for x in segs])))
+        return film, tl
+
+    def test_span(self):
+        import longform
+        segs = [{"id": "a", "t0": 0, "t1": 30}, {"id": "b", "t0": 30, "t1": 50, "intro": True}]
+        self.assertEqual(longform.intro_span(segs, [])[:2], (30, 50))
+        self.assertEqual(longform.intro_span(segs[:1], [{"title": "Cold open", "t0": 0, "t1": 30}])[:2], (0, 30))
+        self.assertIsNone(longform.intro_span(segs[:1], [{"title": "All of it", "t0": 0, "t1": 30}]))
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_length_and_mute_test(self):
+        import longform
+        chapters = [{"title": "Intro", "t0": 0, "t1": 50}, {"title": "Year one", "t0": 50, "t1": 60}]
+        words = [{"id": "w", "type": "statement", "t0": 0, "t1": 50, "data": {"text": "Nobody tells you this"}},
+                 {"id": "z", "type": "statement", "t0": 50, "t1": 60, "data": {"text": "Next"}}]
+        with tempfile.TemporaryDirectory() as d:
+            film, tl = self.film(d, words, chapters, {"subject": ["porta-potty", "portable toilet"]})
+            _, fl = longform.intro_flags(film, tl, longform.load_script(film))
+            self.assertTrue((film / "review" / "mute-0-5s.jpg").exists())
+        joined = " | ".join(fl)
+        self.assertIn("intro runs 50.0 s", joined)
+        self.assertIn("words on a background", joined)
+        self.assertIn("names the subject", joined)
+        # a picture that says what it shows, in a 40 s intro: clean
+        pic = [{"id": "p", "type": "panel", "t0": 0, "t1": 40, "shows": "a row of blue porta potties at a fair",
+                "data": {"image": "panels/yard.png", "camera": "slow-push"}},
+               {"id": "z", "type": "statement", "t0": 40, "t1": 50, "data": {"text": "Next"}}]
+        with tempfile.TemporaryDirectory() as d:
+            film, tl = self.film(d, pic, [{"title": "Intro", "t0": 0, "t1": 40}, {"title": "Year one", "t0": 40, "t1": 50}],
+                                 {"subject": ["porta-potty"]})
+            r, fl = longform.intro_flags(film, tl, longform.load_script(film))
+            self.assertEqual(fl, [], r)
+            # no subject set: say so rather than pass
+            (film / "script.json").write_text('{"title": "t", "segments": []}')
+            _, fl = longform.intro_flags(film, tl, longform.load_script(film))
+            self.assertIn("no \"subject\"", " ".join(fl))
+
+
 class ClipPanel(unittest.TestCase):
     """A video clip in a panel: frames drawn exactly per render frame (Survive Year 1 intro, Wan clips, 2026-11-25)."""
     def seg(self, **kw):
