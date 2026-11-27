@@ -1181,6 +1181,29 @@ class StatScene(unittest.TestCase):
                     self.assertEqual(changed, {k for k in longform.stat_ticks([self.SEG]) if 21 <= k < 100})
 
 
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_long_hold_keeps_its_speed_and_stays_clear_of_the_hud(self):
+        # an 18 s stat with drift on measured 0.03-0.17 (its speed fell with the hold: travel was capped at 12% of the
+        # frame); segment-level "drift" was not copied into the timeline (Survive Year 1, 2026-11-27)
+        import json, longform, render
+        seg = {"id": "v35f", "type": "stat", "t0": 0.0, "t1": 18.0, "drift": 14, "counter": {"value": "$4,860", "label": "CASH", "t": 0.2},
+               "data": {"prefix": "$", "value": 4860, "label": "cash after the first season", "t": 0.5}}
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 18.0, "segments": [seg], "grade": {"vignette": 0.35}}) + ";\n")
+            est = longform.stat_motion(film, [seg])
+            with render.Film(film) as f:
+                f.seek(17.9)
+                hits = f.page.evaluate(longform.OVERLAP) + f.page.evaluate(longform.EDGE)
+                self.assertFalse(f.errors)
+        _, low = longform.motion_flags(est, floor=0.2)
+        self.assertEqual(low, [], est)
+        self.assertEqual(hits, [])
+
+
 class ClipPanel(unittest.TestCase):
     """A video clip in a panel: frames drawn exactly per render frame (Survive Year 1 intro, Wan clips, 2026-11-25)."""
     def seg(self, **kw):
@@ -1223,6 +1246,36 @@ class ClipPanel(unittest.TestCase):
         self.assertTrue(any("b.png: 1 take" in x for x in p))
 
     @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_clip_fit_lands_the_last_frame_on_the_cut(self):
+        # Survive Year 1, 2026-11-27: slow a short clip to fill its beat (floor 0.45x), play a long clip's end at 0.75x;
+        # no engine rain over a clip
+        import longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "clips").mkdir()
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:size=832x480:rate=16", "-frames:v", "49",
+                            "-pix_fmt", "yuv420p", str(film / "clips" / "c1.mp4")], check=True)     # 3.0 s to its last frame
+            def fit(beat, **kw):
+                seg, probs = {"id": "p", "type": "panel", "t0": 0.0, "t1": beat, "data": dict({"clip": "clips/c1.mp4", "clip_fit": True}, **kw)}, []
+                longform.clip_prepare(film, seg, "16x9", probs)
+                return seg["data"], probs
+            dd, probs = fit(4.0)
+            self.assertEqual((dd["clip_speed"], dd["clip_start"], probs), (0.75, 0.0, []))
+            sch = dd["clip_sched"]
+            self.assertEqual(sch[-1][0], 48); self.assertLess(sch[-3][0], 48)                # the last frame arrives at the cut
+            dd, probs = fit(2.0)
+            self.assertEqual((dd["clip_speed"], dd["clip_start"]), (0.75, 1.5))               # a long clip plays its end
+            self.assertEqual(dd["clip_sched"][-1][0], 48); self.assertLess(dd["clip_sched"][-3][0], 48)
+            self.assertEqual(dd["clip_sched"][0][0], 24)
+            dd, probs = fit(8.0)
+            self.assertEqual(dd["clip_speed"], 0.45)
+            self.assertTrue(any("ends 1.3 s early" in p for p in probs), probs)              # under the floor: said, and holds
+            dd, probs = fit(4.0, clip_speed=0.5)
+            self.assertTrue(any("drop one or the other" in p for p in probs))
+            dd, probs = fit(4.0, fx=[{"type": "rain"}])
+            self.assertTrue(any("rain over a clip" in p for p in probs))
+            dd, probs = fit(4.0, fx=[{"type": "rain", "over_clip": True}])
+            self.assertEqual(probs, [])
+
     def test_every_frame_shows_its_clip_frame(self):
         import io, json, longform, render
         from PIL import Image

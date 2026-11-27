@@ -76,9 +76,14 @@ To pick topics, `scripts/trends.py` finds TikTok and YouTube videos that broke o
 
 When a change proves out in a run (a faster route, a better default, a fix that held), fold it into this skill at once, unasked: the reference page that owns it, the engine default, or a check. Then tell the owner in one line. A lesson left in a thread or a log is lost to the next film. Also look for work that can run in parallel (two Colab lanes, the Mac alongside Colab, independent reviews) before running steps one after another.
 
+## Working with the owner (2026-11-27)
+
+- Every choice goes to him as a click card (a decision card with 2 to 4 options), recommended option first, never as a question buried in prose.
+- His call line (the soft invitation for business owners to book a call) is standing house material, kept in the studio's house file (`_studio/house.md` on the Mac). Reuse it as written in every episode that has a call; don't rewrite it per film.
+
 ## Dead space gets the facts (owner's house rule, 2026-11-27)
 
-When a still has quiet room and the voice says a number, a quote or a named source, put it in the shot with panel callouts (longform.md). Run `longform.py deadspace <film>` after `timeline` and paste its suggestions. `check` flags any beat that still has room and an unshown fact; a beat opts out only with `"deadspace": "<why>"`. Numbers that belong on a screen in the picture go on the screen (`screen`), not in a card.
+When a still has quiet room and the voice says a number, a quote or a named source, put it in the shot with panel callouts (longform.md). Run `longform.py deadspace <film>` after `timeline` and paste its suggestions. `check` flags any beat that still has room and an unshown fact; a beat opts out only with `"deadspace": "<why>"`. Numbers that belong on a screen in the picture go on the screen (`screen`), not in a card. Callouts are lettered into the picture by default (`"style": "ink"`), because boxed cards read to him as "plastered-on". Point one at what it's about with `"point"`.
 
 ## When something breaks
 
