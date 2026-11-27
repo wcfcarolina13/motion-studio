@@ -83,6 +83,7 @@ const HC = HO ? HO.clock(TL.fps || 30) : null;
 // a warm palette often makes a dark ochre that ink can't be read on
 const HY = (TL.palette || {}).HIGHLIGHT || (HO ? HO.PAL.yellow : "#EDBD2E");
 const HF = COLLAGE ? HO.FAM : null;
+const PRICE_PAPER = "#E7D3A1";      // manila, for price tags
 // one soft shadow under every paper piece, made once
 const houseShadow = () => { if (!document.getElementById("hshadow")) { const f = K.el("filter", { id: "hshadow", x: "-20%", y: "-20%", width: "140%", height: "140%" }, K.defs); K.el("feGaussianBlur", { stdDeviation: 4 }, f); } return "hshadow"; };
 // "paper_grain": true in script.json lays a fibre grain over the paper pieces (multiplied, so it only darkens). Off by
@@ -1681,7 +1682,7 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     return out;
   };
   const signed = v => { const m = String(v).match(/^\s*([−+-])?\s*\$?\s*\d/); return m && m[1] ? (m[1] === "+" ? 1 : -1) : 0; };
-  const PAD = 26, MAXW = V(640, 560);
+  const PAD = 26, MAXW = V(640, 560), PRICE_NOTCH = 40;
   const VAL = { "font-family": FONT, "font-size": Math.round(READ * 1.2), "font-weight": 700 };
   const TXT = { "font-family": SANS, "font-size": READ, "font-weight": 600 };
   const NOTE = { "font-family": FONT, "font-size": READ, "font-style": "italic" };
@@ -1718,7 +1719,10 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     }
     if (kind === "icon" && !CALLOUT_ICONS[c.icon]) warn(`callout icon "${c.icon}" is not one of ${Object.keys(CALLOUT_ICONS).join(", ")}`);
     const c0 = cueT(c, s.t0 + 0.3 + i * 0.5), c1 = Math.min(s.t1, c.hold ? c0 + c.hold : s.t1);
-    return { c, i, kind, style: tag ? "tag" : style, rows, w, h, iconW, frac, c0, c1 };
+    // a price tag's pointed end, where its string is tied, adds room on one side
+    const pt = Array.isArray(c.point) ? [c.point[0] * IW, c.point[1] * IH] : null;
+    if (kind === "price" && !pt) warn(`price tag "${c.value}" needs a "point" (the thing it prices)`);
+    return { c, i, kind, style: tag ? "tag" : style, rows, w: w + (kind === "price" && tag ? PRICE_NOTCH : 0), h, iconW, frac, c0, c1, pt };
   }).filter(Boolean);
   meas.remove();
   // 2. place them
@@ -1728,6 +1732,7 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     const r = [];
     if (counterSpans.some(sp => sp.t0 <= t && t <= sp.t1)) r.push([V(W - 56, SAFE.x1 - 20) - 600, TAG_TOP - 12, 612, 330]);
     if (tagSpans.some(sp => sp.t0 <= t && t <= sp.t1)) r.push([TAG_LEFT - 12, TAG_TOP - 12, 760, Math.round(READ * 1.45) + 44]);
+    { const b = TALLY ? TALLY.box(t) : null; if (b) r.push(b); }
     if (card && card.c0 <= t && t <= card.c1) { const b = card.g.getBBox(); r.push([b.x - 12, b.y - 12, b.width + 24, b.height + 24]); }
     if (s.source || s.source_plate) r.push([0, V(H - 90, SAFE.y0 - 90), W * 0.6, 90]);
     if (TL.captions) r.push([0, VERT ? SAFE.y1 - 20 : H - 230, W, 230]);
@@ -1764,6 +1769,7 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
       }
       const f = foot(ax, ay, zmin, 0.03 * IW);
       if (focus && focus[0] > f[0] && focus[0] < f[0] + f[2] && focus[1] > f[1] && focus[1] < f[1] + f[3]) return null;
+      if (k.pt && k.pt[0] > f[0] && k.pt[0] < f[0] + f[2] && k.pt[1] > f[1] && k.pt[1] < f[1] + f[3]) return null;   // never over what it points at
       if (keep.some(b => hit(foot(ax, ay, zmin), b))) return null;
       if (placed.some(p => p.k.c0 < k.c1 && k.c0 < p.k.c1 && hit(foot(ax, ay, zmin, 40), p.foot))) return null;
       return { worst, mean };
@@ -1782,7 +1788,9 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
         // among quiet places, the highest one nearest the subject: cards stack down a column beside what they're about,
         // in cue order, which leaves the rest of the quiet room for the next card (the middle of the room would split it)
         const [sx, sy] = proj(cams[0], ax, ay), fx = focus ? proj(cams[0], focus[0], focus[1])[0] : W / 2;
-        const score = r.worst * 100 + 0.5 * r.mean + (sy - k.h / 2 - fr.y0) / H + 0.5 * Math.abs(sx - fx) / W;
+        let score = r.worst * 100 + 0.5 * r.mean + (sy - k.h / 2 - fr.y0) / H + 0.5 * Math.abs(sx - fx) / W;
+        // a price tag hangs by its string beside the thing it prices: nearness to its point outweighs height
+        if (k.kind === "price" && k.pt) { const [px, py] = proj(cams[0], k.pt[0], k.pt[1]); score = r.worst * 100 + 0.5 * r.mean + 4 * Math.hypot(sx - px, sy - py) / W; }
         if (!best || score < best.score) best = { ax, ay, worst: r.worst, mean: r.mean, score };
       }
       if (!best) {
@@ -1872,13 +1880,30 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
   // (1.1, 0.98, 1 on twos, never a fade), boiling every 8 frames like the map's pieces; the value gets a yellow
   // highlighter stroke, and "point" a marker leader drawn on twos. It rides the camera smoothly: pinned to the picture,
   // the paper moves with it, while its own motion steps on twos.
+  // a price tag ("kind": "price"): a manila hang tag, its pointed end toward what it prices, tied to it by a string
+  function priceD(w, h, left, ox = 0, oy = 0) {
+    const N = PRICE_NOTCH, pts = left ? [[N, 0], [w, 0], [w, h], [N, h], [0, h / 2]] : [[0, 0], [w - N, 0], [w, h / 2], [w - N, h], [0, h]];
+    return "M" + pts.map(p => `${(p[0] + ox).toFixed(1)} ${(p[1] + oy).toFixed(1)}`).join("L") + "Z";
+  }
   function buildTag(k, n) {
-    const seed = (s.id.length * 31 + n * 17) % 997;
+    const seed = (s.id.length * 31 + n * 17) % 997, price = k.kind === "price";
     const g = K.el("g", { "data-callout": s.id }, s.ov), sg = K.el("g", {}, g), bg = K.el("g", { "data-boil": 1 }, sg);
-    K.el("path", { d: HO.paperD(4, 7, k.w, k.h, seed + 1), fill: "#000", opacity: 0.2, filter: `url(#${SHADOW})` }, bg);
-    K.el("path", { d: HO.paperD(0, 0, k.w, k.h, seed), fill: HO.PAL.beige }, bg);
-    if (GRAIN) K.el("path", { d: HO.paperD(0, 0, k.w, k.h, seed), fill: `url(#${GRAIN})`, style: "mix-blend-mode: multiply" }, bg);
-    const body = K.el("g", {}, bg);
+    const left = price && k.pt ? k.pt[0] < k.ax : false;
+    if (price) {
+      K.el("path", { d: priceD(k.w, k.h, left, 4, 7), fill: "#000", opacity: 0.2, filter: `url(#${SHADOW})` }, bg);
+      K.el("path", { d: priceD(k.w, k.h, left), fill: PRICE_PAPER }, bg);
+      if (GRAIN) K.el("path", { d: priceD(k.w, k.h, left), fill: `url(#${GRAIN})`, style: "mix-blend-mode: multiply" }, bg);
+      // the eyelet: a paper-white ring round a hole the picture shows through
+      const hx = left ? 18 : k.w - 18;
+      K.el("circle", { cx: hx, cy: k.h / 2, r: 9, fill: "none", stroke: "#fbf8f0", "stroke-width": 5 }, bg);
+      K.el("circle", { cx: hx, cy: k.h / 2, r: 6, fill: "#2a2520", opacity: 0.55 }, bg);
+      k.eye = [hx, k.h / 2];
+    } else {
+      K.el("path", { d: HO.paperD(4, 7, k.w, k.h, seed + 1), fill: "#000", opacity: 0.2, filter: `url(#${SHADOW})` }, bg);
+      K.el("path", { d: HO.paperD(0, 0, k.w, k.h, seed), fill: HO.PAL.beige }, bg);
+      if (GRAIN) K.el("path", { d: HO.paperD(0, 0, k.w, k.h, seed), fill: `url(#${GRAIN})`, style: "mix-blend-mode: multiply" }, bg);
+    }
+    const body = K.el("g", price && left ? { transform: `translate(${PRICE_NOTCH} 0)` } : {}, bg);
     let y = PAD - 4, bar = null, hl = null;
     if (k.kind === "icon") K.el("path", { d: CALLOUT_ICONS[k.c.icon] || CALLOUT_ICONS.check, transform: `translate(${PAD + 36} ${k.h / 2}) scale(1.3)`, fill: "none", stroke: HO.PAL.ink, "stroke-width": 4, "stroke-linecap": "round", "stroke-linejoin": "round" }, body);
     k.rows.forEach(([kind, text, attrs, rh]) => {
@@ -1899,14 +1924,20 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     });
     // tape across the top edge, off centre, at its own small angle
     const tx = k.w * (0.3 + 0.4 * HO.hash(seed, 2)), rot = (HO.hash(seed, 3) - 0.5) * 0.5;
-    K.el("path", { d: HO.tapeD(tx, 0, Math.min(150, k.w * 0.5), 38, rot, seed), fill: HO.PAL.tape, opacity: 0.78 }, bg);
+    if (!price) K.el("path", { d: HO.tapeD(tx, 0, Math.min(150, k.w * 0.5), 38, rot, seed), fill: HO.PAL.tape, opacity: 0.78 }, bg);
     // the leader is map ink, or paper where the picture under its middle is dark
     let lead = null;
     if (Array.isArray(k.c.point)) {
       const mid = { ax: (k.ax + k.c.point[0] * IW) / 2, ay: (k.ay + k.c.point[1] * IH) / 2, w: 40, h: 40 };
       lead = { p: [k.c.point[0] * IW, k.c.point[1] * IH], path: K.el("path", { fill: lightAt(mid) < 4.5 ? HO.PAL.beige : HO.PAL.ink }, g) };
+      // twine: cream over a thin dark edge, so it reads on a light or a dark patch
+      if (price) { lead.string = true; lead.path.remove();
+        lead.under = K.el("path", { fill: "none", stroke: "#2a231c", "stroke-opacity": 0.45, "stroke-width": 5.5, "stroke-linecap": "round" }, g);
+        lead.path = K.el("path", { fill: "none", stroke: "#f3ecd9", "stroke-width": 3, "stroke-linecap": "round" }, g);
+        g.insertBefore(lead.under, sg); g.insertBefore(lead.path, sg); }
     }
-    Object.assign(k, { g, sg, bg, bar, hl, lead, tilt: (HO.hash(seed, 4) - 0.5) * 3.2, seed, tagged: true });
+    // a price tag hangs a little askew from its string
+    Object.assign(k, { g, sg, bg, bar, hl, lead, tilt: price ? (left ? 1 : -1) * (3 + HO.hash(seed, 4) * 3) : (HO.hash(seed, 4) - 0.5) * 3.2, seed, tagged: true });
     K.show(g, false);
   }
   function drawTag(k, t) {
@@ -1926,7 +1957,19 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     const tw = HC.twos(t);
     if (k.hl) k.hl.setAttribute("width", (k.hl.__w * K.clamp01((tw - k.c0 - 0.15) / 0.4)).toFixed(1));
     if (k.bar) k.bar.setAttribute("width", (460 * k.frac * K.clamp01((tw - k.c0 - 0.2) / 0.7)).toFixed(1));
-    if (k.lead) {
+    if (k.lead && k.lead.string) {
+      // the string: from the eyelet to the thing, a sagging curve that pays out on twos with the slap
+      // the eyelet where the slap and tilt put it
+      const [px, py] = proj(cm, k.lead.p[0], k.lead.p[1]), r = k.tilt * Math.PI / 180, dx0 = k.eye[0] - cx, dy0 = k.eye[1] - cy;
+      const ex = cx + sc * (dx0 * Math.cos(r) - dy0 * Math.sin(r)), ey = cy + sc * (dx0 * Math.sin(r) + dy0 * Math.cos(r));
+      const p = K.clamp01((tw - k.c0 + 0.05) / 0.3), bx = px - ox, by = py - oy, L = Math.hypot(bx - ex, by - ey);
+      if (L > 12) {
+        const sag = Math.min(60, L * 0.25), pts = HO.quad([ex, ey], [bx, by], 0, 24).map((q, i, a) => [q[0], q[1] + sag * Math.sin(Math.PI * i / (a.length - 1))]);
+        const m = Math.max(2, Math.round(pts.length * p));
+        const sd = "M" + pts.slice(0, m).map(q => q[0].toFixed(1) + " " + q[1].toFixed(1)).join("L");
+        k.lead.path.setAttribute("d", sd); k.lead.under.setAttribute("d", sd);
+      } else k.lead.path.setAttribute("d", "");
+    } else if (k.lead) {
       // marker from the tag's edge nearest the point to just short of it, a slight bend, drawn on after the slap, then boiling
       const [px, py] = proj(cm, k.lead.p[0], k.lead.p[1]), lx = px - ox, ly = py - oy;
       const bx = Math.min(Math.max(lx, 0), k.w), by = Math.min(Math.max(ly, 0), k.h), dx = lx - bx, dy = ly - by, L = Math.hypot(dx, dy);
@@ -2150,6 +2193,115 @@ if (window.S3 && !window.S3.missing) B.set3d = (s, g) => {
 else if (SEGS.some(s => s.type === "set3d")) window.STUDIO.warnings.push("set3d segments need three.min.js and set3d.js in the film folder (longform.py init copies them)");
 
 // ── build every segment once ─────────────────────────────
+// ── napkin math: a running tally under the tag card (top left) that adds a line per cost as it is said ──
+// A segment's "tally": {"title"?: "Startup", "items": [{"label": "Truck", "value": "$9,500", "at": "truck", "cash"?: true}],
+// "total"?: true | "Total" | {"label", "at"}, "reset"?: true}. Items carry over into later segments' tallies until "tally":
+// null or "reset". "cash": true also ticks the counter card by the item (down for a cost, up for "+$..."). In the collage
+// it is a taped napkin: labels in marker, amounts in Caslon, each line slapped on at its word, a marker rule and the total
+// counting up under them. Owner's pick, 2026-11-27 ("napkin math": price tags, a running tally, a cash card that ticks).
+const TALLY = (() => {
+  const runs = [];
+  let cur = null;
+  SEGS.forEach(s => {
+    if (!("tally" in s)) return;
+    const v = s.tally;
+    if (v == null) { if (cur) { cur.t1 = s.t0; cur = null; } return; }
+    if (!cur || v.reset) { if (cur) cur.t1 = s.t0; cur = { t0: null, t1: TL.duration, title: "", items: [], total: null }; runs.push(cur); }
+    if (v.title != null) cur.title = String(v.title);
+    (v.items || []).forEach((it, i) => { if (it && it.value != null) cur.items.push({ label: String(it.label || ""), value: String(it.value), t: cueT(it, s.t0 + 0.3 + i * 0.6) }); });
+    if (v.total) {
+      const tv = v.total, last = cur.items.length ? cur.items[cur.items.length - 1].t : s.t0;
+      cur.total = { label: typeof tv === "string" ? tv : (tv.label || "Total"), t: typeof tv === "object" ? cueT(tv, last + 0.8) : last + 0.8 };
+    }
+  });
+  runs.forEach(r => { r.t0 = Math.min(...r.items.map(x => x.t), r.total ? r.total.t : Infinity) - 0.02;
+    if (r.items.length > 6) (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`tally "${r.title}": ${r.items.length} lines; six fit beside a picture, start a new tally ("reset": true)`); });
+  const live = runs.filter(r => r.items.length);
+  if (!live.length) return null;
+  const g = K.group("tally"), CL = COLLAGE, P = CL ? HO.PAL : null;
+  const LAB = { "font-family": CL ? HF.marker : SANS, "font-size": READ, fill: CL ? P.ink : "#1f1d1a" };
+  const VAL = { "font-family": CL ? HF.caslon : FONT, "font-size": READ, "font-weight": 700, "text-anchor": "end", fill: CL ? P.ink : "#1f1d1a" };
+  const TIT = { ...AUX, "font-family": CL ? HF.elite : SANS, "font-size": 24, "letter-spacing": 3, fill: CL ? P.ink : C.GREY };
+  const num = str => { const m = String(str).match(/^(.*?)(\d[\d,]*(?:\.\d+)?)(.*)$/); if (!m) return null;
+    return { pre: m[1].replace(/[−+-]/g, ""), n: (/[−-]/.test(m[1]) ? -1 : 1) * parseFloat(m[2].replace(/,/g, "")), dec: (m[2].split(".")[1] || "").length, post: m[3] }; };
+  const fmt = (p, n) => (n < 0 ? "−" : "") + p.pre + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: p.dec, maximumFractionDigits: p.dec }) + p.post;
+  const meas = K.text("", {}, g);
+  const width = (str, a) => { Object.entries(a).forEach(([k, v]) => meas.setAttribute(k, v)); meas.textContent = str; return meas.getComputedTextLength(); };
+  const LH = Math.round(READ * 1.25), PADX = 30, TOPH = 62, GAP = 48;
+  const top = t => TAG_TOP + (tagSpans.some(sp => sp.t0 <= t && t <= sp.t1) ? Math.round(READ * 1.45) + 34 : 0);
+  live.forEach((r, ri) => {
+    const ps = r.items.map(x => num(x.value)).filter(Boolean);
+    if (r.total && ps.length) { r.sum = ps.reduce((a, p) => a + p.n, 0); r.sumText = fmt(ps[0], r.sum); }
+    const rows = r.items.map(x => [x.label, x.value]).concat(r.total ? [[r.total.label, r.sumText || ""]] : []);
+    r.w = Math.ceil(Math.max(...rows.map(([l, v]) => width(l, LAB) + GAP + width(v, VAL)), r.title ? width(r.title.toUpperCase(), TIT) : 0) + 2 * PADX);
+    r.hFull = TOPH + r.items.length * LH + (r.total ? LH + 18 : 0) + 22;
+    r.y0 = top(r.t0);
+    r.g = K.el("g", {}, g);
+    r.shadow = K.el("path", { fill: "#000", opacity: 0.2, filter: `url(#${houseShadow()})` }, r.g);
+    r.card = K.el("path", { fill: CL ? P.beige : "#F1EDE4", ...(CL ? {} : { stroke: "#1f1d1a", "stroke-width": 2 }) }, r.g);
+    r.grain = CL && houseGrain() ? K.el("path", { fill: "url(#hgrain)", style: "mix-blend-mode: multiply" }, r.g) : null;
+    r.fold = CL ? K.el("line", { stroke: "#b9b2a2", "stroke-width": 1.5, opacity: 0.6 }, r.g) : null;
+    if (r.title) { r.tt = K.text(r.title.toUpperCase(), { ...TIT, x: PADX, y: 34 }, r.g); }
+    r.rows = r.items.map((x, i) => {
+      const rg = K.el("g", {}, r.g), y = TOPH + i * LH + READ * 0.95;
+      K.text(x.label, { ...LAB, x: PADX, y }, rg); K.text(x.value, { ...VAL, x: r.w - PADX, y }, rg);
+      K.label(x.label, x.t, r.t1, "tally"); K.label(x.value, x.t, r.t1, "tally");
+      return { g: rg, t: x.t, y };
+    });
+    if (r.total) {
+      const y = TOPH + r.items.length * LH + 18 + READ * 0.95;
+      r.rule = K.el("path", { fill: CL ? P.ink : "#1f1d1a" }, r.g);
+      r.tg = K.el("g", {}, r.g);
+      K.text(r.total.label, { ...LAB, x: PADX, y }, r.tg);
+      r.tv = K.text(r.sumText || "", { ...VAL, x: r.w - PADX, y }, r.tg);
+      r.ty = y; r.ruleY = y - READ * 0.95 - 6;
+      K.label(r.total.label, r.total.t, r.t1, "tally"); if (r.sumText) K.label(r.sumText, r.total.t, r.t1, "tally");
+    }
+    r.tape = CL ? K.el("path", { d: HO.tapeD(r.w - 36, 4, 96, 34, 0.5, 90 + ri), fill: P.tape, opacity: 0.8 }, r.g) : null;
+    r.seed = 90 + ri * 7;
+    K.show(r.g, false);
+  });
+  meas.remove();
+  const fr = t => HC ? HC.frameOf(t) : Math.floor(t * 30 + 1e-3);
+  const slapAt = (t, t0) => { const f = fr(t) - fr(t0); return f < 0 ? 0 : HO ? HO.slap(f - (f & 1)) : 1; };
+  return {
+    // the whole tally's box while it is up, for callouts to keep clear of
+    box: t => { const r = live.find(r => r.t0 <= t && t <= r.t1); return r ? [TAG_LEFT - 12, r.y0 - 12, r.w + 24, r.hFull + 24] : null; },
+    frame(t) {
+      live.forEach(r => {
+        const out = fr(r.t1) - fr(t), on = t >= r.t0 && out > 0;
+        K.show(r.g, on);
+        if (!on) return;
+        const a = out >= 6 ? 1 : Math.ceil(out / 2) / 3;
+        const shown = r.rows.filter(x => t >= x.t).length, tot = r.total && t >= r.total.t;
+        const h = TOPH + Math.max(1, shown) * LH + (tot ? LH + 18 : 0) + 22, k = String(h);
+        if (r.card.__k !== k) {
+          r.card.__k = k;
+          r.card.setAttribute("d", CL ? HO.paperD(0, 0, r.w, h, r.seed) : `M0 0H${r.w}V${h}H0Z`);
+          r.shadow.setAttribute("d", CL ? HO.paperD(4, 7, r.w, h, r.seed + 1) : `M4 7H${r.w + 4}V${h + 7}H4Z`);
+          if (r.grain) r.grain.setAttribute("d", HO.paperD(0, 0, r.w, h, r.seed));
+          if (r.fold) K.set(r.fold, { x1: r.w * 0.52, x2: r.w * 0.5, y1: 4, y2: h - 4 });
+        }
+        r.g.setAttribute("transform", `translate(${TAG_LEFT} ${r.y0}) rotate(${CL ? 0.8 : 0} 0 0)`);
+        r.g.setAttribute("opacity", a.toFixed(3));
+        r.rows.forEach(x => {
+          const sc = slapAt(t, x.t); K.show(x.g, sc > 0);
+          if (sc > 0) x.g.setAttribute("transform", sc === 1 ? "" : `translate(${PADX} ${x.y}) scale(${sc}) translate(${-PADX} ${-x.y})`);
+        });
+        if (r.total) {
+          K.show(r.tg, !!tot); K.show(r.rule, !!tot);
+          if (tot) {
+            const tw = HC ? HC.twos(t) : t, p = K.clamp01((tw - r.total.t) / 0.4), L = r.w - 2 * PADX;
+            const pts = [[PADX, r.ruleY], [PADX + L * 0.5, r.ruleY + 1.5], [PADX + L, r.ruleY - 1]];
+            r.rule.setAttribute("d", HO ? HO.strokeD(HO.jitter(pts, HC.boilSeed(t, r.seed), 0.6), 4.5, L * p, r.seed) : `M${PADX} ${r.ruleY - 2}h${L * p}v4h${-L * p}z`);
+            const q = K.clamp01((tw - r.total.t - 0.15) / 0.5), ps = num(r.items[0].value);
+            if (ps && r.sum != null) r.tv.textContent = q < 1 ? fmt(ps, Math.round(r.sum * K.eout(Math.floor(q * 12) / 12))) : r.sumText;
+          }
+        }
+      });
+    },
+  };
+})();
 const built = SEGS.map((s, i) => {
   // data-seg names the segment for check's text sheet; "payoff": true holds all of its text to the payoff minimum (3 s);
   // "steady": true marks it data-hold, a scene meant to stay on one beat, which check's beat-length test leaves be
@@ -2264,6 +2416,11 @@ const showLabel = (el, runs, t) => {
 const HUD = (() => {
   const ev = { counter: [], tag: [] };
   SEGS.forEach(s => ["counter", "tag"].forEach(k => { if (k in s) ev[k].push({ t: s[k] && s[k].t != null ? s[k].t - 0.05 : s.t0, v: s[k], s }); }));
+  // napkin math: a tally item with "cash": true ticks the counter on its word, down by a cost ("+$500" goes up), with the
+  // item's label on the change stub
+  SEGS.forEach(s => ((s.tally || {}).items || []).forEach(it => { if (it && it.cash)
+    ev.counter.push({ t: it.t != null ? it.t - 0.05 : s.t0, v: { __tick: it.value, dlab: it.label || "" }, s }); }));
+  ev.counter.sort((a, b) => a.t - b.t);
   if (!ev.counter.length && !ev.tag.length) return null;
   const hudG = K.group("hud");
   // the collage's ledger (house.js): the cards are torn paper strips held by tape, the cash card ruled like a ledger page
@@ -2290,6 +2447,13 @@ const HUD = (() => {
   let label = "", note = "";
   ev.counter.forEach(e => {
     if (e.v == null) { cs.push({ t: e.t, off: true }); return; }
+    if (e.v.__tick != null) {
+      const base = cs.length && !cs[cs.length - 1].off ? cs[cs.length - 1] : null, d = num(e.v.__tick);
+      if (!base || !base.p || !d) { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${e.s.id}: tally item "${e.v.__tick}" has "cash" but no counter is up to tick`); return; }
+      const delta = /^\s*\+/.test(String(e.v.__tick)) ? Math.abs(d.n) : -Math.abs(d.n), v = fmt(base.p, base.p.n + delta);
+      cs.push({ t: e.t, value: v, label, note, p: num(v), delta: true, dlab: e.v.dlab, heroOpt: false, chap: e.s.chapter || "", tick: true });
+      return;
+    }
     label = e.v.label != null ? e.v.label : label; note = e.v.note != null ? e.v.note : note;
     cs.push({ t: e.t, value: String(e.v.value), label, note, p: num(e.v.value), delta: e.v.delta !== false, dlab: e.v.delta_label || "",
               heroOpt: e.v.hero, chap: e.s.chapter || "" });
@@ -2399,7 +2563,7 @@ const HUD = (() => {
           const q = K.prog(t, show.t, show.t + COUNT);
           if (q < 1) { const step = Math.floor(q * 18) / 18; n = show.prev.p.n + (show.p.n - show.prev.p.n) * K.eout(step); txt = fmt(show.p, n); }
         }
-        const w = show.w, h = (show.label ? 30 : 0) + READ * 1.15 + (show.note ? 30 : 0) + 28;
+        const w = show.w, h = (show.label ? 30 : 0) + READ * 1.15 + (show.note ? (COLLAGE ? 36 : 30) : 0) + 28;
         const x0 = right - w, y = top + (1 - a) * -24;
         if (COLLAGE) {
           paperOf(cShadow, x0 + 4, y + 7, w, h, 41); paperOf(cCard, x0, y, w, h, 40);
@@ -2417,7 +2581,7 @@ const HUD = (() => {
         cLab.textContent = show.label.toUpperCase(); if (show.label) { yy += 24; K.set(cLab, { x: right - 24, y: yy }); }
         yy += READ * 1.0 + (show.label ? 8 : 4);
         cVal.textContent = txt; K.set(cVal, { x: right - 24, y: yy, fill: n < 0 ? NEG : n > 0 ? POS : INK });
-        cNote.textContent = show.note; if (show.note) K.set(cNote, { x: right - 24, y: yy + 30 });
+        cNote.textContent = show.note; if (show.note) K.set(cNote, { x: right - 24, y: yy + (COLLAGE ? 36 : 30) });
         cG.setAttribute("opacity", a.toFixed(3));
         cG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
         // the change chip, under the card's right edge: in over DIN with a small rise, held, out over DOUT
@@ -2426,7 +2590,7 @@ const HUD = (() => {
         K.show(dG, da > 0.01);
         if (da > 0.01) {
           // the caption sits inside the chip, paper on the sign colour, so it reads on any scene behind
-          const col = dd.n < 0 ? NEG : POS, lh = show.dlab ? 30 : 0, ch = READ * 1.2 + lh;
+          const col = dd.n < 0 ? NEG : POS, lh = show.dlab ? (COLLAGE ? 42 : 30) : 0, ch = READ * 1.2 + lh;
           const cy = y + h + 16 + (hero ? 0 : (1 - K.eout(K.prog(t, dd.t0, dd.t0 + DIN))) * 10);
           const cw = Math.max(dd.w, show.dlab.length * 15 + 44);
           if (COLLAGE) { paperOf(dShadow, right - cw + 3, cy + 5, cw, ch, 81); paperOf(dChip, right - cw, cy, cw, ch, 80); }
@@ -2529,6 +2693,7 @@ K.run(t => {
   showSource(t);
   showLabel(chapterT, chapRuns, t);
   if (HUD) { HUD.frame(t); if (HUD.counterOn(t)) chapterT.setAttribute("opacity", 0); }
+  if (TALLY) TALLY.frame(t);
   capPages.forEach(pg => {
     // a page leaves in the 0.18 s before the next one rises, so two pages never share the band
     const vis = t >= pg.t0 && t < pg.t1;
