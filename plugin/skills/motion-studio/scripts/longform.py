@@ -3855,15 +3855,18 @@ def pace_flags(segs, gap=PACE_GAP):
                          + (f"; land something on \"{g['suggest']}\"" if g["suggest"] else "") + ". `longform.py pace` lists them all")
         for u in pace.uncued(s):
             if u["match"]:
-                flags.append(f"{u['seg']}: {u['key']}[{u['index']}] (\"{u['text']}\") appears at a default time, but its words are "
+                flags.append(f"{u['seg']}: {pace.label(u['path'])} (\"{u['text']}\") appears at a default time, but its words are "
                              f"said: cue it with \"at\": \"{u['match']}\" (`longform.py pace --apply` does it)")
+        for e in pace.cued_early(s):
+            flags.append(f"{e['seg']}: {e['label']} (\"{e['text']}\") lands on \"{e['cue']}\" at {e['t']:.1f} s, before its number is "
+                         f"said (\"{e['number']}\" at {e['said_t']:.1f} s): cue it on \"{e['number']}\" unless the early landing is meant")
     return lines, flags
 
 
 def cmd_pace(a):
     """review/pace.md: every gap in the narration with nothing new on screen (with a suggested cue word) and every reveal
-    that isn't on a word. --apply writes the matched words into script.json as "at" (a copy goes to script.json.bak),
-    then run timeline."""
+    that isn't on a word, and every number cued to a word said before it. --apply writes the matched words into
+    script.json as "at" (a copy goes to script.json.bak), then run timeline; it leaves cues already set alone."""
     import pace
     film = Path(a.film).resolve()
     tl = load_timeline(film)
@@ -3876,25 +3879,31 @@ def cmd_pace(a):
            f"## Gaps over {a.gap:g} s ({len(gs)})\n", "| segment | from | to | s | said | cue on |", "|---|---|---|---|---|---|"]
     out += [f"| {g['seg']} | {g['t0']:.1f} | {g['t1']:.1f} | {g['len']:g} | {g['said'][:90]} | {g['suggest'] or ''} |" for g in gs]
     out += ["", f"## Reveals not on a word ({len(us)})\n", "| segment | item | text | said as |", "|---|---|---|---|"]
-    out += [f"| {u['seg']} | {u['key']}[{u['index']}] | {u['text']} | {u['match'] or '(not said)'} |" for u in us]
+    out += [f"| {u['seg']} | {pace.label(u['path'])} | {u['text']} | {u['match'] or '(not said)'} |" for u in us]
+    es = [e for s in segs for e in pace.cued_early(s)]
+    out += ["", f"## Numbers cued before they are said ({len(es)})\n", "| segment | item | text | cued on | at | number said | at |",
+            "|---|---|---|---|---|---|---|"]
+    out += [f"| {e['seg']} | {e['label']} | {e['text']} | {e['cue']} | {e['t']:.1f} | {e['number']} | {e['said_t']:.1f} |" for e in es]
     (film / "review").mkdir(exist_ok=True)
     (film / "review" / "pace.md").write_text("\n".join(out) + "\n")
     print("\n".join(out[:2]).strip())
-    print(f"{len(gs)} gap(s), {len(us)} uncued reveal(s): {film / 'review' / 'pace.md'}")
+    print(f"{len(gs)} gap(s), {len(us)} uncued reveal(s), {len(es)} number(s) cued early: {film / 'review' / 'pace.md'}")
     if a.apply:
         sp = film / "script.json"
         sc = json.loads(sp.read_text())
         by = {x["id"]: x for x in sc["segments"]}
         n = 0
         for u in us:
-            items = ((by.get(u["seg"]) or {}).get("data") or {}).get(u["key"])
-            if u["match"] and isinstance(items, list) and u["index"] < len(items) and isinstance(items[u["index"]], dict) \
-                    and "at" not in items[u["index"]]:
-                items[u["index"]]["at"] = u["match"]; n += 1
+            if u["match"] and pace.set_at((by.get(u["seg"]) or {}).get("data"), u["path"], u["match"]):
+                n += 1
         if n:
             shutil.copy(sp, film / "script.json.bak")
             sp.write_text(json.dumps(sc, indent=1, ensure_ascii=False) + "\n")
-        print(f"cued {n} reveal(s) in script.json (previous copy: script.json.bak); run timeline")
+            print(f"cued {n} reveal(s) in script.json (previous copy: script.json.bak); run timeline")
+        else:
+            print("nothing to cue: script.json unchanged")
+        if es:
+            print(f"{len(es)} number(s) land on a word said before them: not changed (pace.md lists them)")
 
 
 def number_flags(film, segs):

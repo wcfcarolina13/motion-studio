@@ -7,6 +7,7 @@ on a word (any data item with a word time, the counter, the tag, tally lines), a
     suggested cue word (a number first, then the longest content word near the middle);
   - uncued reveals: items that appear at a default time instead of on a word, with the word in the narration that
     matches their own text, which `pace --apply` writes into script.json as "at";
+  - numbers cued early: items cued to a word said well before their own number (reported only);
   - the film's rhythm: the median time between events while the voice runs, and the share of spoken time within AIM s
     of the last event.
 A clip panel counts as continuously new (moving footage), and so is skipped. Research behind the numbers: strong
@@ -15,6 +16,8 @@ nothing new reads as stalled.
 """
 import re
 import statistics
+
+import numbersync
 
 GAP = 4.0      # s of narration with nothing new on screen: flagged
 AIM = 3.0      # s: what "often enough" means for the rhythm line
@@ -102,47 +105,113 @@ def gaps(seg, gap=GAP):
     return out
 
 
-def _item_words(it):
-    txt = " ".join(str(it.get(k, "")) for k in ("value", "text", "label", "title") if it.get(k) is not None)
-    return [_clean(x) for x in re.split(r"\s+", txt) if _clean(x)]
+def _item_text(it, stat=False):
+    """The item's own visible text, raw (a stat shows prefix + value + suffix)."""
+    if stat:
+        return f"{it.get('prefix', '')}{it.get('value', '')}{it.get('suffix', '')} {it.get('label', '')}"
+    return " ".join(str(it.get(k, "")) for k in ("value", "text", "label", "title") if it.get(k) is not None)
+
+
+def sites(seg):
+    """(path, item, numbers_only) for every place in a segment's data that reveals on a word when given "at": the
+    REVEAL_KEYS lists (and a stat's notes, a breakdown's parts), a stat scene's number itself and a panel's caption card.
+    A stat's number is matched by its number only: its label's words are said around the number, not as its cue."""
+    d = seg.get("data") or {}
+    if seg.get("type") == "stat" and d.get("value") is not None:
+        yield (), d, True
+    if isinstance(d.get("caption_card"), (dict, str)):
+        cc = d["caption_card"]
+        yield ("caption_card",), cc if isinstance(cc, dict) else {"text": cc}, False
+    for key in REVEAL_KEYS + ("notes", "parts"):
+        items = d.get(key)
+        if not isinstance(items, list) or (key == "series" and d.get("drawn")):
+            continue                                    # a "drawn" chart starts with its lines up: nothing to reveal
+        for i, it in enumerate(items):
+            if isinstance(it, dict):
+                yield (key, i), it, False
+
+
+def _said_number(text, spoken_nums):
+    shown = numbersync.on_screen([text])
+    return next((sp for sp in spoken_nums if numbersync.matches(sp["value"], shown)), None)
 
 
 def uncued(seg, script_seg=None):
-    """[{seg, key, index, text, match}] for revealed items with no word time; match is the narration word (or phrase)
-    that says them, from their own text: a number in the item matched to the same number said, else a content word."""
-    import numbersync
-    d = seg.get("data") or {}
+    """[{seg, path, key, index, text, match}] for revealed items with no word time; match is the narration word (or
+    phrase) that says them, from their own text: a number in the item matched to the same number said, else a content
+    word. The number is read from the item's raw text ("$1,200/mo", "$15-25"), not from cleaned words."""
     ws = seg.get("words") or []
     if not ws:
         return []
     said = [(_clean(w[0]), w) for w in ws]
     spoken_nums = numbersync.spoken(ws)
     out = []
-    for key in REVEAL_KEYS:
-        items = d.get(key)
-        if not isinstance(items, list) or len(items) == 0 or (key == "series" and d.get("drawn")):
-            continue                                    # a "drawn" chart starts with its lines up: nothing to reveal
-        for i, it in enumerate(items):
-            if not isinstance(it, dict) or "t" in it or "at" in it:
-                continue
-            words = _item_words(it)
-            if not words:
-                continue
-            match = None
-            shown = numbersync.on_screen([" ".join(words)])
-            for sp in spoken_nums:
-                if numbersync.matches(sp["value"], shown):
-                    match = sp["text"].strip(".,;:")
-                    break
-            if not match:
-                for w in words:
-                    if len(w) >= 4 and w not in STOP:
-                        hit = next((orig for c, orig in said if c in (w, w + "s", w + "es") or w in (c + "s", c + "es")), None)
-                        if hit:
-                            match = hit[0].strip(".,;:!?\"'")
-                            break
-            out.append({"seg": seg["id"], "key": key, "index": i, "text": " ".join(words)[:60], "match": match})
+    for path, it, nums_only in sites(seg):
+        if "t" in it or "at" in it:
+            continue
+        text = _item_text(it, nums_only)
+        words = [_clean(x) for x in re.split(r"\s+", text) if _clean(x)]
+        if not words:
+            continue
+        sp = _said_number(text, spoken_nums)
+        match = sp["text"].strip(".,;:") if sp else None
+        if not match and not nums_only:
+            for w in words:
+                if len(w) >= 4 and w not in STOP:
+                    hit = next((orig for c, orig in said if c in (w, w + "s", w + "es") or w in (c + "s", c + "es")), None)
+                    if hit:
+                        match = hit[0].strip(".,;:!?\"'")
+                        break
+        out.append({"seg": seg["id"], "path": list(path), "key": path[0] if path else "data",
+                    "index": path[1] if len(path) > 1 else None, "text": " ".join(words)[:60], "match": match})
     return out
+
+
+def cued_early(seg, late=0.7):
+    """[{seg, path, label, text, cue, t, number, said_t}] for items cued to a word said before their own number, which
+    is said in this segment more than `late` s after the cue: the number shows before it is heard. Reported, not
+    changed: a price can fairly land on the thing it prices ("the truck ... nine thousand"), so the fix is a choice."""
+    ws = seg.get("words") or []
+    if not ws:
+        return []
+    spoken_nums = numbersync.spoken(ws)
+    out = []
+    for path, it, nums_only in sites(seg):
+        t = it.get("t")
+        if not isinstance(t, (int, float)) or not isinstance(it.get("at"), str):
+            continue
+        text = _item_text(it, nums_only)
+        shown = numbersync.on_screen([text])
+        if not shown:
+            continue
+        hits = [sp for sp in spoken_nums if numbersync.matches(sp["value"], shown)]
+        if hits and all(sp["t"] > t + late for sp in hits):
+            out.append({"seg": seg["id"], "path": list(path), "label": label(path), "text": text.strip()[:60],
+                        "cue": it["at"], "t": round(t, 2), "number": hits[0]["text"].strip(".,;:"), "said_t": round(hits[0]["t"], 2)})
+    return out
+
+
+def label(path):
+    return "data" if not path else path[0] if len(path) == 1 else f"{path[0]}[{path[1]}]"
+
+
+def set_at(data, path, at):
+    """Write "at" at a sites() path inside a script segment's data; False when the place is missing or already cued."""
+    if not isinstance(data, dict):
+        return False
+    if not path:
+        node = data
+    elif len(path) == 1:
+        node = data.get(path[0])
+        if isinstance(node, str):
+            node = data[path[0]] = {"text": node}
+    else:
+        items = data.get(path[0])
+        node = items[path[1]] if isinstance(items, list) and path[1] < len(items) else None
+    if not isinstance(node, dict) or "at" in node:
+        return False
+    node["at"] = at
+    return True
 
 
 def rhythm(segs, aim=AIM):

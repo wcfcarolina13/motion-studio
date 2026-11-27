@@ -1573,6 +1573,48 @@ class BeatSync(unittest.TestCase):
             self.assertIn("twelve", (film / "review" / "pace.md").read_text())
 
 
+    def test_numbers_read_raw_and_more_sites(self):
+        import pace
+        w = [[x, 0.5 + 0.3 * i, 0.75 + 0.3 * i] for i, x in enumerate(
+            "Rent runs twelve hundred dollars a month and the units are fifteen to twenty-five dollars each".split())]
+        s = {"id": "p", "type": "panel", "t0": 0, "t1": 6, "words": w, "data": {"image": "x.png",
+             "caption_card": "Rent: $1,200/mo", "callouts": [{"kind": "stat", "value": "$15–25", "text": "per unit"}]}}
+        got = {pace.label(u["path"]): u["match"] for u in pace.uncued(s)}
+        self.assertEqual(got["caption_card"], "twelve hundred dollars")          # "$1,200/mo" was read as 1 before
+        self.assertEqual(got["callouts[0]"], "twenty-five dollars")             # "$15–25": the en dash no longer joins them
+        st = {"id": "s", "type": "stat", "t0": 0, "t1": 6, "words": w, "data": {"prefix": "$", "value": 1200, "label": "a month in rent"}}
+        self.assertEqual([(u["path"], u["match"]) for u in pace.uncued(st)], [([], "twelve hundred dollars")])
+        st["data"]["label"] = "rent each month"                                  # a stat cues on its number only, never its label
+        st["words"] = [["Rent", 0.5, 0.8], ["each", 0.8, 1.0], ["month", 1.0, 1.3]]
+        self.assertEqual([u["match"] for u in pace.uncued(st)], [None])
+        data = {"caption_card": "Rent: $1,200/mo"}
+        self.assertTrue(pace.set_at(data, ["caption_card"], "twelve hundred dollars"))
+        self.assertEqual(data["caption_card"], {"text": "Rent: $1,200/mo", "at": "twelve hundred dollars"})
+        self.assertFalse(pace.set_at(data, ["caption_card"], "rent"))           # a cue already set is left alone
+
+    def test_cued_early(self):
+        import pace
+        s = self.seg(); s["data"]["callouts"][0].update(at="truck", t=0.3)        # $9,000 lands on "truck", said at 0.9
+        self.assertEqual(pace.cued_early(s), [])                                 # 0.6 s early: within the window
+        s["data"]["callouts"][0].update(at="The", t=0.0)
+        s["words"] = [["The", 0.0, 0.1]] + self.WORDS[1:]
+        e = pace.cued_early(s)
+        self.assertEqual([(x["label"], x["cue"], x["number"]) for x in e], [("callouts[0]", "The", "nine thousand dollars")])
+
+    def test_apply_with_nothing_to_cue(self):
+        import io, longform
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            (film / "script.json").write_text(json.dumps({"title": "t", "segments": [{"id": "a", "type": "panel", "narration": "x", "data": {}}]}))
+            seg = self.seg(); seg["data"]["callouts"] = seg["data"]["callouts"][:1]
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 8, "segments": [seg]}) + ";\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                longform.cmd_pace(type("A", (), {"film": str(film), "gap": 4.0, "apply": True})())
+            self.assertIn("nothing to cue", buf.getvalue())
+            self.assertNotIn("script.json.bak", buf.getvalue())
+            self.assertFalse((film / "script.json.bak").exists())
+
 class SpokenNumbers(unittest.TestCase):
     """Every spoken amount is on screen at its word (editing-quality study, 2026-11-27: 6 of 83 were)."""
     def test_parse(self):
