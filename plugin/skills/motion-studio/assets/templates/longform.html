@@ -343,7 +343,7 @@ B.cutaway = (s, g) => {
   };
 };
 
-// a stat scene's drift: from the count's start the whole scene rises slowly, so a long stat hold never sits still (a 7.5 s
+// a stat scene's drift: from the scene's start the whole scene rises slowly, so a long stat hold never sits still (a 7.5 s
 // stat scene held still after its 2 s count and failed final's 2 s motion check, 2026-11-25). A pan, not a push: text
 // re-rasterised at a new scale every frame shimmers, and a pan on fractional pixels keeps its shape. The speed eases in over
 // 0.6 s, is STAT_DRIFT px/s at 1080 lines, and slows so the scene
@@ -396,7 +396,9 @@ B.stat = (s, g) => {
     notes.forEach((n, k) => { const tk = cueT(n.x, revealAt(s, k + 1, notes.length + 1, 0.8, 0.4));
       n.ms.forEach(m => { placeMask(m, W / 2, ny, K.eout(K.prog(t, tk, tk + 0.35)) * o); ny += pitch(NS); }); });
     const bigFS = big.size, room = { up: by - bigFS * 0.8 - topM, side: (V(W, SAFE.x1 - SAFE.x0) - wid) / 2 - sideM };
-    const [dx, dy] = statDrift(t, statRate(s, d, c0), c0, s, room);
+    // from the scene's start, not the count's: a number cued to a late word left the scene still until it (an 18 s stat
+    // cued 15 s in drifted 37 px and measured 0.037 whatever its drift, Survive Year 1, 2026-11-27)
+    const [dx, dy] = statDrift(t, statRate(s, d, c0), s.t0, s, room);
     g.__cam = dx || dy ? { cx: W / 2 - dx, cy: H / 2 - dy, z: 1, frac: 1 } : null;
   };
 };
