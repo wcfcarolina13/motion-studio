@@ -208,6 +208,28 @@ def cmd_notes(a):
         preview.list_notes(film, show_all=a.all)
 
 
+def cmd_gate(a):
+    import gate, preview
+    film = film_dir(a.film)
+    if a.list or not a.take:
+        left = gate.waiting(film, preview.review(film)["groups"])
+        for shot, path in left:
+            print(f"  {shot}: {path}")
+        print(f"{len(left)} take(s) waiting for the check; the dashboard shows them to him once they pass")
+        return
+    r = [float(x) for x in a.ruler.split(",")] if a.ruler else None
+    if r and len(r) != 4:
+        raise SystemExit("--ruler x,ground_y,ref_y,ref_ft (pixels, pixels, pixels, feet)")
+    if r:
+        print("ruler:", gate.ruler(film, a.take, *r))
+    if a.ok is None:
+        if not r:
+            raise SystemExit("--pass or --fail (after looking at the take at full size against --question)")
+        return
+    e = gate.record(film, a.take, a.question, a.ok, a.why, r)
+    print(f"{a.take}: {'PASS' if e['ok'] else 'FAIL'} on \"{e['question']}\"" + (f" ({e['why']})" if e["why"] else ""))
+
+
 def cmd_search(a):
     import audio
     for mid, title in audio.mixkit_search(a.kind, a.query):
@@ -348,6 +370,12 @@ def main():
     p = sp.add_parser("notes"); p.add_argument("film"); p.add_argument("--all", action="store_true"); p.add_argument("--resolve", type=int)
     p.add_argument("--ack", type=int, help="mark a note in progress (stays open) with --reply saying what is being done")
     p.add_argument("--reply"); p.set_defaults(fn=cmd_notes)
+    p = sp.add_parser("gate"); p.add_argument("film"); p.add_argument("take", nargs="?", help="the take's path in the film folder")
+    p.add_argument("--question", help="the note's own question"); p.add_argument("--why", default="")
+    v = p.add_mutually_exclusive_group(); v.add_argument("--pass", dest="ok", action="store_true", default=None)
+    v.add_argument("--fail", dest="ok", action="store_false")
+    p.add_argument("--ruler", help="x,ground_y,ref_y,ref_ft: draw a foot ruler on a full-size copy")
+    p.add_argument("--list", action="store_true"); p.set_defaults(fn=cmd_gate)
     p = sp.add_parser("search"); p.add_argument("kind", choices=["music", "sfx"]); p.add_argument("query"); p.set_defaults(fn=cmd_search)
     p = sp.add_parser("fetch"); p.add_argument("kind", choices=["music", "sfx", "kenney"]); p.add_argument("ids", nargs="*"); p.set_defaults(fn=cmd_fetch)
     p = sp.add_parser("measure"); p.add_argument("track"); p.set_defaults(fn=cmd_measure)

@@ -454,10 +454,12 @@ MARK_W = 6
 def repair_markup_ask(prompt, W, H, ref=False, faceless=False):
     """The ChatGPT instruction for a markup repair: the whole panel with the fault outlined in red, plus the clean panel."""
     import codex_stills
-    parts = ["Image 1 is an illustration with a red rectangle drawn on it. Image 2 is the same illustration without the "
-             "rectangle. Edit the illustration: change only what is inside the red rectangle, and keep everything outside it "
-             "exactly as it is, with the same composition, framing, line work, colours, paper texture and light. The change: "
-             + prompt.strip().rstrip(".") + ". Remove the red rectangle completely; it is only a marker."]
+    # the clean panel goes first: only the first input gets the model's extra fidelity (OpenAI's image guide), and the
+    # finished picture must not carry the marker; image 2 only says where
+    parts = ["Image 1 is the illustration to edit. Image 2 is the same illustration with a red rectangle drawn on it to "
+             "show where the change goes. Edit image 1: change only what lies inside the area the red rectangle marks, and "
+             "keep everything outside it exactly as it is, with the same composition, framing, line work, colours, paper "
+             "texture and light. The change: " + prompt.strip().rstrip(".") + ". The finished picture has no red rectangle."]
     if ref:
         parts.append("Image 3 is a reference for how that part should look. Do not copy it in whole.")
     parts.append(f"Make exactly one image, {W}x{H}, the same size and shape as image 2, and save it as image.png in the "
@@ -586,7 +588,7 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
         ask = repair_markup_ask(prompt, W, H, ref=bool(ref), faceless=faceless)
         for x in seeds:
             full = rdir / f"full_{x}.png"
-            why = codex_stills.edit_image(ask, [str(mark), str(src)] + ([str(Path(ref).resolve())] if ref else []), full)
+            why = codex_stills.edit_image(ask, [str(src), str(mark)] + ([str(Path(ref).resolve())] if ref else []), full)
             if why:
                 print(f"  take {x}: {why}"); failures[str(x)] = why
                 continue

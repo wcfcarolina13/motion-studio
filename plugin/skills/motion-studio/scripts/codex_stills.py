@@ -45,6 +45,15 @@ flipped at 4 fps reads as jitter. So edits suit a deliberate cut to a new drawin
 motion over one still is the panel's "fx" layer (longform.md). Low scores are not re-rolled, since each try is a
 Codex call and the test suggests a re-roll rarely holds still either.
 
+How to redraw (picture-truth.md rule 16, 2026-11-27): a shot with "photo": path and "photo_licence" restyles that real
+photo, keeping its layout and changing setting, light and style (a photo with no licence recorded stops the run). A
+shot with "blockout": path paints over a to-scale blockout and then makes a second call, a style pass over its
+surfaces. "style_refs": [paths] (per shot, or for the file) are attached after the picture as style references. Every
+prompt names each image by number and role, with the picture to work from first, and codex takes at most 5 images.
+An edit that names a "note" is refused (a note is fixed with `longform.py repair --box` or a reframe), and so is an
+edit "change" of more than one sentence. A shot with two or more sized things and neither a photo nor a blockout is
+linted.
+
 The owner's review of the first 85 stills (picture-truth.md, rule 12) is built in: every prompt says each visible hand
 belongs to a person in the frame with exactly two hands, and that head, neck and limbs face and bend as a real body can;
 shots are linted before any call (money, hands with no body, tipped objects that don't say where their insides are,
@@ -55,7 +64,7 @@ finger counts, proportion, floating parts and, on a faceless shot, a face. A FAI
 the still as PNG text motion-studio-anatomy; a still failing its last try is kept and listed in review.tsv.
 
 Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
-import argparse, json, os, shlex, shutil, subprocess, sys, tempfile, time
+import argparse, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -134,6 +143,94 @@ def ask(shot, style, faceless, scale="", w=1536, h=1024):
         parts.append("No human face may be visible anywhere: show people from behind or cropped at the shoulders, with "
                      "their arms and shoulders in the frame. This is a hard rule.")
     return " ".join(p for p in parts if p)
+
+
+MAX_IMAGES = 5      # codex's image tool takes at most five input images (codex-rs image-generation tool, 2026-11)
+
+
+def refs_of(shot, cfg):
+    """Style reference images for a shot (its own "style_refs", else the file's), attached after the picture itself."""
+    return list(shot.get("style_refs", cfg.get("style_refs")) or [])
+
+
+def ref_lines(first, refs, start=2):
+    """Name every attached image by number and role: the picture to work from is image 1 (it alone gets the model's
+    extra fidelity), style references follow. The OpenAI image guide: identify each input by number and purpose."""
+    parts = [f"Image 1 is {first}."]
+    for i, _ in enumerate(refs, start):
+        parts.append(f"Image {i} is a style reference only: take its medium, palette, line weight and paper texture, "
+                     "never its subject, layout or objects.")
+    return " ".join(parts)
+
+
+def ask_photo(shot, style, faceless, scale="", refs=(), w=1536, h=1024):
+    """Rule 16.1: restyle a real photo. Its layout, camera and the size of everything in it are kept; the setting, light
+    and style are changed as the prompt says."""
+    parts = [ref_lines("a reference photo: keep its layout, camera angle and height, and the position, size and "
+                       "proportions of every object and person in it exactly", refs),
+             "Redraw image 1 as an illustration, changing only the setting, light and style: " + shot["prompt"].strip()]
+    if scale:
+        parts.append(scale + " Keep these proportions exactly.")
+    parts.append((shot.get("style") or style).strip())
+    parts.append(f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.")
+    parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
+    parts.append(HANDS)
+    if faceless:
+        parts.append("No human face may be visible anywhere: show people from behind or cropped at the shoulders, with "
+                     "their arms and shoulders in the frame. This is a hard rule.")
+    return " ".join(p for p in parts if p)
+
+
+def ask_blockout(shot, style, faceless, scale="", refs=(), w=1536, h=1024):
+    """Rule 16.3, pass 1: paint over a to-scale blockout. The blockout is the source of composition and sizes only."""
+    parts = [ref_lines("a rough to-scale blockout: it is the source of the composition, camera and the size and position "
+                       "of every object only; its flat grey shapes and colours are not the look", refs),
+             "Paint the finished picture over image 1, keeping every object exactly where it is and exactly its size: "
+             + shot["prompt"].strip()]
+    if scale:
+        parts.append(scale + " Keep these proportions exactly.")
+    parts.append((shot.get("style") or style).strip())
+    parts.append(f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.")
+    parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
+    parts.append(HANDS)
+    if faceless:
+        parts.append("No human face may be visible anywhere: show people from behind or cropped at the shoulders. This is a hard rule.")
+    return " ".join(p for p in parts if p)
+
+
+def ask_style_pass(style, refs=(), w=1536, h=1024):
+    """Rule 16.3, pass 2: the painted-over blockout drifts in style, so a second edit restyles its surfaces only."""
+    parts = [ref_lines("the picture to restyle: keep its composition, every object's position, size and silhouette, and "
+                       "every person's pose exactly", refs),
+             "Repaint only the surfaces of image 1 in this style: " + style.strip(),
+             f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.",
+             "No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame."]
+    return " ".join(parts)
+
+
+def shot_problems(shots, cfg):
+    """Rule 16 checks before any Codex call: a photo needs its licence recorded, a note's fix is a box repair, an edit
+    makes one change, and no call attaches more images than codex takes."""
+    out = []
+    for x in shots:
+        i = x["id"]
+        for k in ("photo", "blockout"):
+            if x.get(k) and not os.path.isfile(x[k]):
+                out.append(f"{i}: {k} {x[k]} not found")
+        if x.get("photo") and not str(x.get("photo_licence") or "").strip():
+            out.append(f'{i}: a reference photo needs "photo_licence" ("own" for his own photo, else the licence and '
+                       "source), recorded before it is used")
+        if x.get("photo") and x.get("blockout"):
+            out.append(f"{i}: a photo or a blockout, not both")
+        if x.get("change") and x.get("note"):
+            out.append(f"{i}: fix a note with a box repair (longform.py repair --box) or a reframe, never a whole-picture "
+                       "edit (rule 16.2): the whole frame is redrawn and other parts change")
+        if x.get("change") and len([t for t in re.split(r"(?<=[.;!?])\s+", x["change"].strip()) if t.strip()]) > 1:
+            out.append(f"{i}: one change per edit (rule 16.2); split it into one shot per change")
+        n = 1 + len(refs_of(x, cfg))
+        if n > MAX_IMAGES:
+            out.append(f"{i}: {n} images attached; codex takes at most {MAX_IMAGES}")
+    return out
 
 
 def ask_edit(shot, faceless, w=1536, h=1024):
@@ -242,6 +339,13 @@ def main():
         for wtxt in ws:
             print(f"LINT {i}: {wtxt}")
     stop = [f'{x["id"]}: "{m}" {why}' for x in todo for m, why in panelqa.refused(x.get("prompt") or x.get("change") or "")]
+    stop += shot_problems(todo, cfg)
+    # rule 16.1/16.3: a picture where sizes matter starts from a photo or a to-scale blockout, since the prompt alone
+    # missed the size in the first real run; a warning, as the size sheet may list things that don't conflict
+    for x in todo:
+        if not (x.get("photo") or x.get("blockout") or x.get("change")) and len(scalecheck.sized_items(x, sizes)) >= 2:
+            pre.append((x["id"], ["scale shot with no reference photo or blockout: start from one (rule 16)"]))
+            print(f"LINT {x['id']}: scale shot with no reference photo or blockout: start from one (rule 16)")
     if stop:
         raise SystemExit("refused prompt words, nothing run:\n  " + "\n  ".join(stop))
     cmd = codex_cmd()
@@ -267,6 +371,14 @@ def main():
             # --image=<path> as one argument: codex's -i takes any number of files, so a prompt after "-i <path>" was
             # read as a second image and codex exited with "No prompt provided via stdin" (22 of 22 edits, 2026-11-25)
             prompt, extra = ask_edit(s, faceless, bw, bh), [f"--image={os.path.abspath(base)}"]
+        elif s.get("photo"):
+            refs = refs_of(s, cfg)
+            prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs)
+            extra = [f"--image={os.path.abspath(p)}" for p in [s["photo"]] + refs]
+        elif s.get("blockout"):
+            refs = refs_of(s, cfg)
+            prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs)
+            extra = [f"--image={os.path.abspath(p)}" for p in [s["blockout"]] + refs]
         else:
             prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes)), []
         done = False
@@ -282,6 +394,14 @@ def main():
             png = find_new_png(since, [work, images])
             if not png:
                 print(f"{s['id']} try {t}: no image ({note or 'codex returned without one'})"); shutil.rmtree(work, True); continue
+            if s.get("blockout"):         # pass 2, the style pass over the painted blockout (rule 16.3)
+                styled = os.path.join(work, "styled.png")
+                calls += 1
+                why = edit_image(ask_style_pass(s.get("style") or cfg.get("style", ""), refs_of(s, cfg)),
+                                 [png] + refs_of(s, cfg), styled, timeout)
+                if why:
+                    print(f"{s['id']} try {t}: style pass gave no image ({why})"); shutil.rmtree(work, True); continue
+                png = styled
             from PIL import Image
             with Image.open(png) as im:
                 W, H = im.size
