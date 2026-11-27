@@ -1013,6 +1013,8 @@ def cmd_timeline(a):
     if sc.get("set3d"):                                 # the 2.5D pack's film-wide settings (palette), references/set3d.md
         tl["set3d"] = sc["set3d"]
     problems += cutaway_problems(segs, sc.get("sizes") or {})
+    for w in palette_warnings(tl["palette"]):
+        print("WARN", w)
     drift, drift_warn = engine_drift(film, segs)
     problems += drift
     for w in drift_warn:
@@ -2906,6 +2908,13 @@ def map_motion(film, segs):
 
 
 STAT_STILL = {}      # "<id> stat": True when the page never moved the scene (filled by stat_motion)
+STAT_TRAVEL = {}     # "<id> stat": (px at 1080 lines, seconds) the page moved the scene over its hold
+
+
+def _translate(tf):
+    import re
+    m = re.match(r"\s*translate\(\s*([-\d.e]+)[ ,]+([-\d.e]+)\s*\)\s*$", tf or "")
+    return (float(m.group(1)), float(m.group(2))) if m else None
 
 
 def stat_motion(film, segs):
@@ -2936,6 +2945,10 @@ def stat_motion(film, segs):
             f.page.evaluate(f"window.seek({sg['t0'] + 1.5:.3f})"); a = f.page.evaluate(cam, sg["id"])
             f.page.evaluate(f"window.seek({sg['t1'] - 0.1:.3f})"); b = f.page.evaluate(cam, sg["id"])
             STAT_STILL[f"{sg['id']} stat"] = a == b
+            # how far it went, so a flag can tell a page that drifts too little from a drift the frames don't show
+            pa, pb = _translate(a), _translate(b)
+            if pa and pb:
+                STAT_TRAVEL[f"{sg['id']} stat"] = (math.hypot(pb[0] - pa[0], pb[1] - pa[1]) * 1080 / f.h, sg["t1"] - 0.1 - sg["t0"] - 1.5)
         for sg in stats:
             w0, wins = math.ceil(sg["t0"] / motioncheck.WINDOW - 1e-9) * motioncheck.WINDOW, []
             while w0 + motioncheck.WINDOW <= sg["t1"] + 1e-9:
@@ -3254,6 +3267,11 @@ TEXT_BOXES = """([seg, lines, hide]) => {
   const st = document.getElementById('stage').getBoundingClientRect(), out = [];
   window.__hid = window.__hid || [];
   if (hide === 0) { window.__hid.forEach(e => e.style.visibility = ''); window.__hid = []; return out; }
+  // how opaque the text is drawn: its own fill-opacity times every ancestor's opacity up to the drawing (a fade-out is a
+  // group's opacity, which the element's own style doesn't show)
+  const op = n => { let v = 1; for (let e = n; e && e.nodeType === 1 && e.id !== 'svg'; e = e.parentNode) {
+    const cs = getComputedStyle(e); if (cs.display === 'none' || cs.visibility === 'hidden') return 0; v *= +cs.opacity; }
+    return v * +getComputedStyle(n).fillOpacity; };
   document.querySelectorAll('#svg text').forEach(el => {
     const s = el.textContent.trim(), g = el.closest('[data-seg]');
     if (!lines.includes(s) || (g ? g.getAttribute('data-seg') : '') !== seg) return;
@@ -3261,10 +3279,56 @@ TEXT_BOXES = """([seg, lines, hide]) => {
     if (r.width < 2 || r.height < 2) return;
     if (hide === 1) { el.style.visibility = 'hidden'; window.__hid.push(el); }
     out.push([Math.max(st.left, Math.floor(r.left)), Math.max(st.top, Math.floor(r.top)),
-              Math.min(st.right, Math.ceil(r.right)), Math.min(st.bottom, Math.ceil(r.bottom))]);
+              Math.min(st.right, Math.ceil(r.right)), Math.min(st.bottom, Math.ceil(r.bottom)), hide === 2 ? op(el) : 1]);
   });
   return out;
 }"""
+FADED = 0.95         # text drawn below this opacity is fading in or out: the contrast sampler skips that moment
+
+
+def _hex_rgb(c):
+    import re
+    m = re.fullmatch(r"#?([0-9a-fA-F]{6})", str(c or "").strip())
+    return tuple(int(m.group(1)[i:i + 2], 16) for i in (0, 2, 4)) if m else None
+
+
+def _wcag(a, b):
+    def lum(rgb):
+        lin = [(v / 255) / 12.92 if v / 255 <= 0.04045 else ((v / 255 + 0.055) / 1.055) ** 2.4 for v in rgb]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+PALETTE_TEXT = {"ACCENT": "the big stat numbers and accent words", "INK": "labels and body text", "GREY": "stat notes and asides"}
+
+
+def palette_warnings(palette, floor=3.0):
+    """Warnings for palette text colours under `floor`:1 (WCAG) against BG, each with the nearest colour of the same hue
+    that reaches floor + 0.5, found by moving it toward black on a light ground or toward white on a dark one. A stat in
+    #C8922E on #E6DAC3 measured 2.0:1 and only check's frame sampler caught it, after the timeline (Survive Year 1,
+    2026-11-27). Colours that aren't plain #rrggbb (a gradient, a name) are skipped; the house colours fill any key left
+    out, read from kit.js so there is one source."""
+    import re
+    house = dict(re.findall(r'(\w+): "(#[0-9a-fA-F]{6})"', re.search(r"const HOUSE = \{([^}]*)\}", (HERE / "kit.js").read_text()).group(1)))
+    pal = {**house, **{k: v for k, v in (palette or {}).items() if v}}
+    bg, out = _hex_rgb(pal.get("BG")), []
+    if not bg:
+        return out
+    toward = (0, 0, 0) if _wcag(bg, (0, 0, 0)) > _wcag(bg, (255, 255, 255)) else (255, 255, 255)
+    for k, use in PALETTE_TEXT.items():
+        c = _hex_rgb(pal.get(k))
+        if not c or _wcag(c, bg) >= floor:
+            continue
+        fix = None
+        for i in range(1, 101):
+            m = tuple(round(c[j] + (toward[j] - c[j]) * i / 100) for j in range(3))
+            if _wcag(m, bg) >= floor + 0.5:
+                fix = "#%02X%02X%02X" % m
+                break
+        out.append(f"palette {k} {pal[k]} is {_wcag(c, bg):.1f}:1 against BG {pal['BG']} (needs {floor:g}:1): {use} will "
+                   f"read faint" + (f"; {fix} keeps its hue at {_wcag(_hex_rgb(fix), bg):.1f}:1" if fix else ""))
+    return out
 
 
 def _pngs(pngs, w, h):
@@ -3289,7 +3353,20 @@ def text_contrast(film, sheet, floor, samples=3):
             span = max(0.0, b["hold"] - 0.05)
             ts = [b["t"] + span * k / max(1, samples - 1) for k in range(samples)] if samples > 1 else [b["t"]]
             worst, when, ok, seen = None, None, 0, 0
+            # a moment mid-fade measures the fade, not the colours (chart labels at 1.0-2.6:1 and map tags on their exit,
+            # Survive Year 1, 2026-11-27), so it is left out like a moment the text wasn't found. Text that is never drawn
+            # fully opaque (a label set translucent on purpose) is still measured, at its most opaque moment
+            ops = []
             for t in ts:
+                f.seek(t)
+                bx_ = [x for x in f.page.evaluate(TEXT_BOXES, [b["seg"], b["lines"], 2]) if x[2] - x[0] >= 2 and x[3] - x[1] >= 2]
+                ops.append(min((x[4] for x in bx_), default=None))
+            seenop = [o for o in ops if o is not None]
+            keep = [t for t, o in zip(ts, ops) if o is not None and o >= FADED]
+            if not keep and seenop:
+                keep = [ts[ops.index(max(seenop))]]
+            b["faded_skipped"] = sum(1 for o in seenop if o < FADED) - (1 if seenop and max(seenop) < FADED else 0)
+            for t in keep:
                 f.seek(t)
                 boxes = f.page.evaluate(TEXT_BOXES, [b["seg"], b["lines"], 2])
                 boxes = [x for x in boxes if x[2] - x[0] >= 2 and x[3] - x[1] >= 2]
@@ -3820,6 +3897,16 @@ def _check(a, film):
                              f"film's page never drifts it: its film.html is older than the engine's stat drift, so drift settings "
                              f"do nothing. Run `longform.py init {film}` to refresh the engine files (script.json is kept), then timeline and check")
                 continue
+            if sid in STAT_TRAVEL:
+                px, secs = STAT_TRAVEL[sid]
+                went = (f"the page drifted it {px:.0f} px in {secs:.1f} s ({px / max(secs, 0.1):.1f} px/s at 1080 lines), so ")
+                went += ("the drift is on but its frames change little: sparse or low-contrast ink against the ground moves "
+                         "few pixels, so raise \"drift\", add \"notes\", or darken the text colours. "
+                         if px / max(secs, 0.1) >= 8 else "it barely drifts. ")
+                flags.append(f"{sid.split()[0]}: stat scene moves {how} (quietest 2 s {m:.3f}, floor {sfloor:.3f}); {went}"
+                             f"Otherwise: \"stat_drift\": true in engine.json, \"drift\" in px/s on the segment or in its "
+                             f"data (14 is the default, 20 for a sparse stat), or cut it shorter")
+                continue
             flags.append(f"{sid.split()[0]}: stat scene moves {how} (quietest 2 s {m:.3f}, floor {sfloor:.3f}); turn on "
                          f"\"stat_drift\": true in engine.json (the scene drifts slowly from its count), raise \"drift\" (px/s, "
                          f"on the segment or in its data; 14 is the default, 20 for a sparse stat), add \"notes\" that land on "
@@ -3957,6 +4044,7 @@ def _check(a, film):
         samples, keys = sample_film(film, total, a.text_step, pace)
         sheet = text_holds(samples, total, ends, a.text_step)
         if a.contrast > 0:
+            flags += palette_warnings(tl.get("palette"), a.contrast)
             text_contrast(film, sheet, a.contrast)
             low = [x for x in sheet if x.get("contrast") is not None and x["contrast"] < a.contrast]
             report.append(f"text contrast: {len(low)} block(s) under {a.contrast:g}:1 against the pixels behind them")
