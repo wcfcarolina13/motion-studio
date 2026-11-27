@@ -21,6 +21,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
   longform.py short <film> <short> --from s05 --to s09   a 9:16 film from those segments: same voice and sound, its own layout
   longform.py timeline <film> [--pad 0.45]      measure clips, resolve "at" cues -> timeline.js, narration.wav, chapters.txt
+  longform.py tsheet <film>                     review/intro-tsheet.md: the intro as audio | visual rows
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py cast-sheet <film>                 set3d cast design sheet (review/cast-sheet.png); render needs it current
@@ -924,7 +925,7 @@ def cmd_timeline(a):
         else:
             dur = s.get("hold", 3.0)
         dur += holds[s["id"]][1]
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace", "drift") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace", "drift", "intro", "shows") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -3743,6 +3744,142 @@ def deadspace_scan(film, segs, sc):
     return rows
 
 
+# ── the intro (owner's intro rules, 2026-11-27, from a study of a YouTube strategist's intro system) ──
+INTRO_MAX = 45.0     # seconds: the intro states the promise, opens its gaps and gets out
+MUTE_S = 5.0         # the first seconds must name the subject with the sound off
+INTRO_WORDS = re.compile(r"\b(intro|cold open|opening|hook)\b", re.I)
+VISIBLE_TEXT = """() => { const out = [];
+  document.querySelectorAll('#svg text').forEach(el => { let o = 1;
+    for (let n = el; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) { const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden') { o = 0; break; } o *= +cs.opacity; }
+    const r = el.getBoundingClientRect();
+    if (o >= 0.5 && r.width > 2 && r.height > 2 && el.textContent.trim()) out.push(el.textContent.trim()); });
+  return out; }"""
+
+
+def intro_span(segs, chapters):
+    """(t0, t1, why) of the film's intro: the segments marked "intro": true; else the first chapter when it is called
+    intro, cold open, opening or hook; else the first chapter when the film has more than one; else None."""
+    marked = [s for s in segs if s.get("intro")]
+    if marked:
+        return marked[0]["t0"], marked[-1]["t1"], "segments marked \"intro\""
+    if chapters and (INTRO_WORDS.search(chapters[0].get("title", "")) or len(chapters) > 1):
+        return chapters[0]["t0"], chapters[0]["t1"], f"its first chapter, \"{chapters[0]['title']}\""
+    return None
+
+
+def _subject_terms(sc):
+    v = sc.get("subject")
+    terms = [v] if isinstance(v, str) else list(v or [])
+    norm = lambda x: re.sub(r"[\s\-]+", " ", str(x).lower()).strip()
+    return [norm(t) for t in terms if str(t).strip()], norm
+
+
+def mute_test(film, segs, sc, secs=MUTE_S):
+    """What the first `secs` seconds show with the sound off: {"text": on-screen words, "shows": segments' declared
+    "shows", "picture": scene types that draw a picture, "hit": the subject term found, or None}, and a contact strip
+    of five frames at review/mute-0-5s.jpg for a blind read. The engine can't see what a still depicts, so a picture
+    counts as showing the subject only through the segment's own "shows" line (what the still or clip depicts, written
+    by whoever drew it) or the words on screen."""
+    import io
+    import render
+    from PIL import Image
+    terms, norm = _subject_terms(sc)
+    early = [s for s in segs if s["t0"] < secs]
+    shows = [str(s.get("shows") or (s.get("data") or {}).get("shows") or "") for s in early]
+    pics = sorted({s["type"] for s in early if s["type"] not in TEXT_ONLY})
+    words, shots = set(), []
+    with render.Film(film) as f:
+        for k in range(10):
+            t = (k + 0.5) * secs / 10
+            f.seek(t)
+            words.update(f.page.evaluate(VISIBLE_TEXT))
+            if k % 2 == 0:
+                shots.append(Image.open(io.BytesIO(f.page.screenshot(type="jpeg", quality=85))).convert("RGB"))
+    if shots:
+        w = 384; h = round(w * shots[0].height / shots[0].width)
+        strip = Image.new("RGB", (w * len(shots) + 8 * (len(shots) - 1), h), (255, 255, 255))
+        for i, im in enumerate(shots):
+            strip.paste(im.resize((w, h), Image.LANCZOS), (i * (w + 8), 0))
+        (film / "review").mkdir(exist_ok=True)
+        strip.save(film / "review" / "mute-0-5s.jpg", quality=88)
+    hay = norm(" ".join(sorted(words)) + " " + " ".join(shows))
+    # a term matches as a whole word, singular or plural ("porta potty" finds "porta potties")
+    plural = lambda t: re.escape(t[:-1]) + r"(?:y|ies)" if t.endswith("y") else re.escape(t) + r"(?:e?s)?"
+    hit = next((t for t in terms if t and re.search(r"\b" + plural(t) + r"\b", hay)), None)
+    return {"text": sorted(words), "shows": [x for x in shows if x], "picture": pics, "hit": hit, "terms": terms}
+
+
+def intro_flags(film, tl, sc, max_s=INTRO_MAX, secs=MUTE_S):
+    """(report lines, flags) for the intro rules: the intro runs `max_s` seconds at most, and the first `secs` seconds
+    name the subject with the sound off (a picture scene, and the subject in its "shows" line or on screen)."""
+    segs, report, flags = tl["segments"], [], []
+    if tl.get("format") == "9x16":
+        return report, flags                    # a Short is all intro; its own rules are in shorts.md
+    span = intro_span(segs, tl.get("chapters") or [])
+    if span is None:
+        flags.append("intro: can't tell where the intro ends; mark its segments \"intro\": true or give it its own first chapter")
+    else:
+        t0, t1, why = span
+        report.append(f"intro: {t1 - t0:.1f} s ({why}), limit {max_s:g} s")
+        if t1 - t0 > max_s + 1e-6:
+            flags.append(f"intro runs {t1 - t0:.1f} s ({why}); the limit is {max_s:g} s. Cut context to the minimum the "
+                         f"promise needs and move the rest into the first chapter")
+    if secs <= 0:
+        return report, flags
+    m = mute_test(film, segs, sc, secs)
+    if not m["terms"]:
+        flags.append(f"mute test: script.json has no \"subject\" (the words a viewer would use for what the film is about, "
+                     f"e.g. [\"porta-potty\", \"portable toilet\"]), so the first {secs:g} s can't be checked; "
+                     f"see review/mute-0-5s.jpg")
+        return report, flags
+    report.append(f"mute test (first {secs:g} s): picture scenes {', '.join(m['picture']) or 'none'}; "
+                  f"subject {'shown as ' + repr(m['hit']) if m['hit'] else 'not found'}; frames in review/mute-0-5s.jpg")
+    if not m["picture"]:
+        flags.append(f"mute test: the first {secs:g} s are words on a background; open on a picture of the subject")
+    if not m["hit"]:
+        flags.append(f"mute test: nothing in the first {secs:g} s names the subject ({', '.join(m['terms'])}) with the "
+                     f"sound off. Open on a picture of it and say so in that segment's \"shows\" (what the still "
+                     f"depicts), or put the word on screen. Look at review/mute-0-5s.jpg as a stranger would")
+    return report, flags
+
+
+def cmd_tsheet(a):
+    """review/intro-tsheet.md: the intro as a T-sheet, one row per segment with its time, what is heard (narration)
+    and what is seen (scene type, still or clip, "shows", on-screen text), to read and edit before boards."""
+    film = Path(a.film).resolve()
+    sc = load_script(film)
+    tlp = film / "timeline.js"
+    tl = load_timeline(film) if tlp.exists() else None
+    segs = tl["segments"] if tl else [dict(s, t0=None, t1=None) for s in sc["segments"]]
+    span = intro_span(segs, tl.get("chapters") if tl else []) if tl else None
+    if tl and span:
+        rows = [s for s in segs if s["t0"] < span[1] - 1e-6]
+    else:
+        first = sc["segments"][0].get("chapter") if sc["segments"] else None
+        rows = [s for s in segs if s.get("intro")] or [s for s in segs if s.get("chapter", first) == first]
+    by_id = {s["id"]: s for s in sc["segments"]}
+    cell = lambda x: str(x).replace("|", "/").replace("\n", " ").strip()
+    out = [f"# Intro T-sheet: {sc.get('title', film.name)}", "",
+           f"Subject: {', '.join(_subject_terms(sc)[0]) or '(set \"subject\" in script.json)'}. "
+           f"Limit {INTRO_MAX:g} s; the first {MUTE_S:g} s must name the subject with the sound off.", "",
+           "| time | id | audio | visual |", "|---|---|---|---|"]
+    for s in rows:
+        src = by_id.get(s["id"], s)
+        d = src.get("data") or {}
+        vis = [s["type"]] + [str(d[k]) for k in ("still", "clip", "image") if d.get(k)]
+        if src.get("shows") or d.get("shows"):
+            vis.append("shows: " + str(src.get("shows") or d.get("shows")))
+        for k in ("text", "label", "caption_card"):
+            if isinstance(d.get(k), str):
+                vis.append(f"on screen: {d[k]}")
+        when = f"{s['t0']:.1f}-{s['t1']:.1f}" if s.get("t0") is not None else ""
+        out.append(f"| {when} | {s['id']} | {cell(src.get('narration', ''))} | {cell('; '.join(vis))} |")
+    (film / "review").mkdir(exist_ok=True)
+    (film / "review" / "intro-tsheet.md").write_text("\n".join(out) + "\n")
+    print(film / "review" / "intro-tsheet.md")
+
+
 def deadspace_flags(rows):
     out = []
     for r in rows:
@@ -3844,6 +3981,10 @@ def _check(a, film):
         dflags = deadspace_flags(ds)
         report.append(f"dead space: {len(dflags)} of {len(ds)} panel beat(s) have quiet room and a number, quote or source not in the shot")
         flags += dflags
+    # the intro: its length, and whether its first seconds name the subject with the sound off
+    if a.intro_max > 0:
+        r, fl = intro_flags(film, tl, load_script(film), a.intro_max, a.mute)
+        report += r; flags += fl
     # 1. picture variety: how much of the film is words on a background. A text scene type counts unless what it draws
     # covers --picture-min of the frame (a kit pattern that turns it into motion graphics); measured from the page
     pic = picture_share(film, segs) if a.picture_min > 0 else {}
@@ -4280,6 +4421,8 @@ def main():
     p.add_argument("--picture-min", type=float, default=0.06,
                    help="a text scene type drawing at least this share of the frame as picture is not text-only (0 = by type alone)")
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
+    p.add_argument("--intro-max", type=float, default=INTRO_MAX, help="longest intro, seconds (0 skips the intro tests)")
+    p.add_argument("--mute", type=float, default=MUTE_S, help="opening seconds that must name the subject with the sound off (0 skips)")
     p.add_argument("--no-deadspace", dest="deadspace", action="store_false",
                    help="skip the dead-space test (quiet room in a still while the voice says a number, quote or source)")
     p.add_argument("--overlap-step", type=float, default=0.25,
@@ -4296,6 +4439,7 @@ def main():
     p.add_argument("--beat", type=float, default=5.0, help="flag a beat with nothing new moving or entering while the voice speaks longer than this (0 skips)")
     p.set_defaults(fn=cmd_check)
     p = sp.add_parser("deadspace"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_deadspace)
+    p = sp.add_parser("tsheet"); p.add_argument("film"); p.set_defaults(fn=cmd_tsheet)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
     a = ap.parse_args()

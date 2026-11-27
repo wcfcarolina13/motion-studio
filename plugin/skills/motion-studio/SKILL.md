@@ -85,6 +85,23 @@ When a change proves out in a run (a faster route, a better default, a fix that 
 
 When a still has quiet room and the voice says a number, a quote or a named source, put it in the shot with panel callouts (longform.md). Run `longform.py deadspace <film>` after `timeline` and paste its suggestions. `check` flags any beat that still has room and an unshown fact; a beat opts out only with `"deadspace": "<why>"`. Numbers that belong on a screen in the picture go on the screen (`screen`), not in a card. Callouts are lettered into the picture by default (`"style": "ink"`), because boxed cards read to him as "plastered-on". Point one at what it's about with `"point"`.
 
+## Intros (owner's rule, 2026-11-27)
+
+From his study of a YouTube strategist's intro system. A long-form intro:
+- Runs 45 s at most.
+- Starts from the plot promise. Write the title and thumbnail first, and make the intro deliver on what they promise.
+- Passes a mute test: the first 5 s confirm the subject with the sound off, through the pictures alone.
+- Keeps context to the minimum the promise needs. The rest goes to the first chapter.
+- Opens 1 to 3 curiosity gaps: a contradiction, a spoken question, an interruption or a tease.
+- Stacks 2 or more of the channel's levers: data rigour, craft, tone or proof.
+- Front-loads the best pictures, with flashes of animations that come later.
+
+Script it as a T-sheet before boards, one row per line with an audio column and a visual column. `longform.py tsheet <film>` writes `review/intro-tsheet.md` from script.json. `check` enforces two of these rules:
+- the intro's length: the segments marked `"intro": true`, else the first chapter;
+- the mute test: a picture scene in the first 5 s, plus script.json's `"subject"` named on screen or in that segment's `"shows"` line. It also writes `review/mute-0-5s.jpg` for a stranger's read.
+
+The other rules are judgement and stay with the writer and the creative-director review. Details: longform.md, Intro.
+
 ## When something breaks
 
 `references/review.md` lists every trap hit so far (shell globbing, literal characters, clipped descenders, captions too wide, a preview that won't launch from an unattended session, and more). Check it before debugging from scratch.
