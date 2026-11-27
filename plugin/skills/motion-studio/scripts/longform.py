@@ -31,6 +31,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py render <film> [--workers 4] [--scale 1.0] [--fresh]
   longform.py final <film>                      mux render + mix, verify
   longform.py check <film> [--hold 4]           critic numbers: dead air, text-only stretches, cue landings, flashes, text size
+  longform.py deadspace <film> [--json]         quiet room in each panel beat + numbers, quotes, sources said over it -> review/deadspace.json
   longform.py share <film>                      out/share/: a page that streams the cut (publish it as a private artifact)
 
 Every file stays in the film folder; nothing is uploaded from here.
@@ -923,7 +924,7 @@ def cmd_timeline(a):
         else:
             dur = s.get("hold", 3.0)
         dur += holds[s["id"]][1]
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -957,6 +958,14 @@ def cmd_timeline(a):
                 seg["data"] = dict(seg["data"], image=cap["file"], iw=iw, ih=ih, url=cap.get("url", ""))
                 seg.setdefault("source", cap.get("credit") or re.sub(r"^https?://(www\.)?([^/]+).*", r"\2", cap.get("url", "")))
         resolve_cues(seg.get("data", {}), seg.get("words"), seg, problems, cues)
+        if seg.get("type") == "panel" and (seg.get("data") or {}).get("callouts") and seg["data"].get("image"):
+            # the still's quiet map, for callouts placed "auto" (deadspace.py; longform.md Panel callouts)
+            import deadspace
+            im = film / seg["data"]["image"]
+            if im.exists():
+                seg["data"]["quiet"] = deadspace.quiet_map(im)
+            else:
+                problems.append(f"{s['id']}: callouts need the panel's image to place them; {seg['data']['image']} is missing")
         if seg.get("type") == "panel" and (seg.get("data") or {}).get("clip"):
             if (seg["data"].get("frames") or []):
                 problems.append(f"{s['id']}: a panel takes a clip or flipbook frames, not both")
@@ -3583,6 +3592,90 @@ def join_gaps(segs, hold):
     return report, flags
 
 
+# ── dead space (owner, 2026-11-27): a still with room in it while the voice says a number, a quote or a named source
+# gets that fact animated into the shot (panel callouts). `deadspace` reports it per beat; `check` flags each beat where
+# there is room, something worth showing, and nothing in the shot showing it. A beat can opt out with "deadspace":
+# "<why>" (e.g. "the quiet sky is the point of the shot").
+DEADSPACE_ROOM = (380, 170)      # screen px: about the smallest callout card (a value and a one-line label at reading size)
+
+
+def page_warnings(film):
+    """STUDIO.warnings from the page: data the page could not use as given (a bad screen quad, a panel fx it doesn't
+    know, a callout with nowhere quiet to go)."""
+    import render
+    with render.Film(film) as f:
+        return f.page.evaluate("window.STUDIO.warnings || []")
+
+
+def deadspace_scan(film, segs, sc):
+    """One row per panel beat: {"id", "t0", "region" (deadspace.largest_quiet or None), "candidates" (each with
+    "shown"), "opt_out"}, with the camera read from the page so the region is what the frame shows the whole beat."""
+    import render, deadspace
+    narr = {x["id"]: x.get("narration") or "" for x in sc.get("segments", [])}
+    rows = []
+    with render.Film(film) as f:
+        for sg in segs:
+            d = sg.get("data") or {}
+            if sg.get("type") != "panel" or not d.get("image") or not (film / d["image"]).exists():
+                continue
+            cam = f.page.evaluate("""([id, t0, t1]) => { const c = (window.STUDIO.panelCam || {})[id]; if (!c) return null;
+                return { iw: c.iw, ih: c.ih, w: c.w, h: c.h, v: [...Array(8).keys()].map(j => { const q = c.at(t0 + (t1 - t0) * j / 7); return [q.z, q.cx, q.cy]; }) }; }""",
+                                  [sg["id"], sg["t0"], sg["t1"]])
+            if not cam:
+                continue
+            qm = d.get("quiet") or deadspace.quiet_map(film / d["image"])
+            region = deadspace.largest_quiet(qm, cam["v"], cam["iw"], cam["ih"], cam["w"], cam["h"], d.get("focus"), d.get("keep_clear") or [])
+            cands = deadspace.candidates(narr.get(sg["id"], ""), sg.get("source"))
+            for c in cands:
+                c["shown"] = bool(c.get("from")) or deadspace.covered(c, sg)   # the source line is on screen already
+            rows.append({"id": sg["id"], "t0": sg["t0"], "region": region, "candidates": cands, "opt_out": sg.get("deadspace")})
+    return rows
+
+
+def deadspace_flags(rows):
+    out = []
+    for r in rows:
+        rg, todo = r["region"], [c for c in r["candidates"] if not c["shown"]]
+        if r["opt_out"] or not rg or not todo or rg["px"][0] < DEADSPACE_ROOM[0] or rg["px"][1] < DEADSPACE_ROOM[1]:
+            continue
+        what = ", ".join(f"\"{c.get('value') or c.get('text')}\"" for c in todo[:3])
+        out.append(f"{r['id']}: dead space ({rg['px'][0]}x{rg['px'][1]} px of quiet picture around {rg['pos']}) while the voice says "
+                   f"{what}: put it in the shot with a panel callout (longform.md Panel callouts; `deadspace` lists ready ones), "
+                   f"or set \"deadspace\": \"<why>\" on the beat")
+    return out
+
+
+def cmd_deadspace(a):
+    """Per panel beat: the largest quiet region the camera shows throughout, and the numbers, quotes and named sources
+    in the narration, as callouts ready to paste -> review/deadspace.json."""
+    film = Path(a.film).resolve()
+    rows = deadspace_scan(film, load_timeline(film)["segments"], load_script(film))
+    out = []
+    for r in rows:
+        rg = r["region"]
+        room = rg and rg["px"][0] >= DEADSPACE_ROOM[0] and rg["px"][1] >= DEADSPACE_ROOM[1]
+        sug = [{k: v for k, v in dict(c, pos="auto").items() if k not in ("shown", "from") and v is not None}
+               for c in r["candidates"] if not c["shown"]]
+        out.append(dict(r, room=bool(room), suggest=sug if room else []))
+        if a.json:
+            continue
+        head = f"{r['id']} ({r['t0']:.1f} s): " + (f"quiet {rg['px'][0]}x{rg['px'][1]} px at {rg['pos']}" if rg else "no quiet region")
+        head += "" if room else " (too small for a card)"
+        if r["opt_out"]:
+            head += f"; opted out: {r['opt_out']}"
+        print(head)
+        for c in r["candidates"]:
+            print(f"    {'shown ' if c['shown'] else 'ADD   ' if room else '      '}{c['kind']:6} {c.get('value') or c.get('text')}"
+                  + (f"  (cue \"{c['at']}\")" if c.get("at") else "") + (f"  [{c['from']}]" if c.get("from") else ""))
+    (film / "review").mkdir(exist_ok=True)
+    (film / "review" / "deadspace.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
+    if a.json:
+        print(json.dumps(out, indent=1, ensure_ascii=False))
+    else:
+        n = sum(1 for r in out if r["suggest"])
+        print(f"\n{n} beat(s) with room and something to show -> review/deadspace.json (each \"suggest\" list pastes into the panel's \"callouts\")")
+
+
 def cmd_check(a):
     film = Path(a.film).resolve()
     with JobStatus(film, "check"):
@@ -3633,6 +3726,13 @@ def _check(a, film):
         raise SystemExit("check stopped: the film's page can't draw every segment:\n" + "\n".join(drift))
     flags += drift_warn
     report.append("page: clean (no errors at any segment's start, middle or end)")
+    flags += [f"page: {w}" for w in page_warnings(film)]
+    # dead space: room in a still while the voice says something worth showing, and nothing showing it
+    if a.deadspace:
+        ds = deadspace_scan(film, segs, load_script(film))
+        dflags = deadspace_flags(ds)
+        report.append(f"dead space: {len(dflags)} of {len(ds)} panel beat(s) have quiet room and a number, quote or source not in the shot")
+        flags += dflags
     # 1. picture variety: how much of the film is words on a background. A text scene type counts unless what it draws
     # covers --picture-min of the frame (a kit pattern that turns it into motion graphics); measured from the page
     pic = picture_share(film, segs) if a.picture_min > 0 else {}
@@ -4052,6 +4152,8 @@ def main():
     p.add_argument("--picture-min", type=float, default=0.06,
                    help="a text scene type drawing at least this share of the frame as picture is not text-only (0 = by type alone)")
     p.add_argument("--min-text", type=float, default=56, help="smallest reading text, px at 1920 wide (0 skips the check)")
+    p.add_argument("--no-deadspace", dest="deadspace", action="store_false",
+                   help="skip the dead-space test (quiet room in a still while the voice says a number, quote or source)")
     p.add_argument("--overlap-step", type=float, default=0.25,
                    help="seconds between in-flight overlap and edge samples (0: only settled moments; -1 skips both tests)")
     p.add_argument("--repeat", type=int, default=8, help="moments rendered twice to check frames are repeatable (0 skips)")
@@ -4065,6 +4167,7 @@ def main():
     p.add_argument("--idle-figure", type=float, default=3.0, help="flag a figure that only idles while the voice speaks longer than this (0 skips)")
     p.add_argument("--beat", type=float, default=5.0, help="flag a beat with nothing new moving or entering while the voice speaks longer than this (0 skips)")
     p.set_defaults(fn=cmd_check)
+    p = sp.add_parser("deadspace"); p.add_argument("film"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_deadspace)
     p = sp.add_parser("share"); p.add_argument("film"); p.add_argument("--segment", type=float, help="seconds per streamed file (default: from the bitrate, so each stays under 14 MB)")
     p.set_defaults(fn=cmd_share)
     a = ap.parse_args()

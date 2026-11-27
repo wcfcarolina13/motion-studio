@@ -80,6 +80,10 @@ const tagSpans = (() => {
   const ev = TL.segments.filter(s => "tag" in s).map(s => ({ t: s.tag && s.tag.t != null ? s.tag.t - 0.05 : s.t0, on: s.tag != null }));
   return ev.map((e, i) => ({ t0: e.t, t1: i + 1 < ev.length ? ev[i + 1].t : TL.duration, on: e.on })).filter(x => x.on);
 })();
+const counterSpans = (() => {
+  const ev = TL.segments.filter(s => "counter" in s).map(s => ({ t: s.counter && s.counter.t != null ? s.counter.t - 0.05 : s.t0, on: s.counter != null }));
+  return ev.map((e, i) => ({ t0: e.t, t1: i + 1 < ev.length ? ev[i + 1].t : TL.duration, on: e.on })).filter(x => x.on);
+})();
 const pitch = (size, k = 1.22) => Math.round(size * k);        // line pitch for a size
 const fit = (px, size, k = 0.55) => Math.max(6, Math.floor(px / (size * k)));   // characters per line that fit px at size (SANS ~0.55 em)
 
@@ -1453,6 +1457,191 @@ function panelScreen(sc, g, IW, IH, s) {
   meas.remove();
   return t => drawn.forEach(ws => ws.forEach(w => { const a = K.prog(t, w.at, w.at + 0.08); K.show(w.el, a > 0); if (a > 0) w.el.setAttribute("opacity", a.toFixed(3)); }));
 }
+// ── panel callouts: facts animated into a still's dead space (owner, 2026-11-27: "if there's dead space in an image
+// while something interesting is being said in the transcript or a good source is being used, find a way to animate that
+// into the shot"). "callouts": [{"kind": "stat"|"note"|"source"|"bar"|"icon", "text"?, "value"?, "at"?: cue, "hold"?: s,
+// "pos"?: [x, y] (the card's centre, 0..1 of the still) | "auto" (default), "icon"?: name (kind icon), "max"?: (kind bar)}],
+// with "keep_clear"?: [[x, y, w, h], ...] (0..1 of the still) on the panel for anything auto placement must not cover.
+// House card style (the HUD's paper cards). A card rises in on its cue and holds to the panel's end or for "hold" seconds.
+// Its anchor rides the panel camera (it stays on its patch of picture as the camera moves) but the card itself is not
+// scaled, so its text keeps its size and doesn't shimmer under a zoom. "auto" picks the quietest place from data.quiet
+// (timeline's quiet map of the still, deadspace.py), tested at the framed crop across the card's whole time on screen:
+// off the focus point, the keep_clear boxes, the HUD cards, the caption card, the source line and the other callouts.
+// When nowhere is quiet enough the card still goes to the least busy place and a warning says so (check flags it).
+const CALLOUT_ICONS = {
+  clock: "M0 -20 A20 20 0 1 1 -0.01 -20 M0 -11 V0 L9 6",
+  calendar: "M-18 -12 H18 V18 H-18 Z M-18 -3 H18 M-9 -18 V-7 M9 -18 V-7",
+  truck: "M-22 -10 H4 V10 H-22 Z M4 -3 H14 L20 4 V10 H4 M-14 15 A4 4 0 1 1 -14.01 15 M12 15 A4 4 0 1 1 11.99 15",
+  person: "M0 -19 A7 7 0 1 1 -0.01 -19 M-13 18 Q-12 -2 0 -2 Q12 -2 13 18",
+  people: "M-8 -17 A6 6 0 1 1 -8.01 -17 M-19 16 Q-18 -1 -8 -1 Q2 -1 3 16 M10 -13 A5 5 0 1 1 9.99 -13 M7 0 Q17 0 19 16",
+  house: "M-19 2 L0 -17 L19 2 M-13 -4 V18 H13 V-4 M-4 18 V7 H4 V18",
+  phone: "M-10 -20 H10 V20 H-10 Z M-3 14 H3",
+  check: "M-14 0 L-4 10 L16 -12",
+  cross: "M-12 -12 L12 12 M12 -12 L-12 12",
+  warning: "M0 -18 L19 15 H-19 Z M0 -6 V5 M0 10 V11",
+  pin: "M0 20 C-15 3 -14 -18 0 -18 C14 -18 15 3 0 20 Z M0 -10 A4 4 0 1 1 -0.01 -10",
+  up: "M-18 14 L-6 0 L2 8 L18 -12 M8 -12 H18 V-2",
+  down: "M-18 -12 L-6 2 L2 -6 L18 14 M8 14 H18 V4",
+  document: "M-13 -19 H7 L14 -12 V19 H-13 Z M-7 -6 H8 M-7 2 H8 M-7 10 H3",
+};
+function panelCallouts(d, s, IW, IH, camAt, card) {
+  const list = (d.callouts || []).filter(Boolean);
+  if (!list.length) return () => {};
+  const warn = m => (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: ${m}`);
+  const PAPER = "#F1EDE4", lum = h => { const n = parseInt(String(h).replace("#", "").slice(0, 6), 16); return ((n >> 16 & 255) * 0.299 + (n >> 8 & 255) * 0.587 + (n & 255) * 0.114) / 255; };
+  const INK = /^#[0-9a-f]{6}$/i.test(C.INK) && lum(C.INK) > 0.5 ? "#1f1d1a" : C.INK, NEG = C.NEG || "#B3261E", POS = C.POS || "#2E7D32";
+  const meas = K.text("", {}, s.ov);
+  const width = (str, attrs) => { Object.entries(attrs).forEach(([k, v]) => meas.setAttribute(k, v)); meas.textContent = str; return meas.getComputedTextLength(); };
+  const wrap = (str, attrs, maxW, maxLines) => {
+    const out = []; let cur = "";
+    String(str).split(/\s+/).filter(Boolean).forEach(w => { const tryL = cur ? cur + " " + w : w;
+      if (cur && width(tryL, attrs) > maxW) { out.push(cur); cur = w; } else cur = tryL; });
+    if (cur) out.push(cur);
+    if (out.length > maxLines) warn(`callout "${str}" runs to ${out.length} lines (most ${maxLines}): shorten it`);
+    return out;
+  };
+  const signed = v => { const m = String(v).match(/^\s*([−+-])?\s*\$?\s*\d/); return m && m[1] ? (m[1] === "+" ? 1 : -1) : 0; };
+  const PAD = 26, MAXW = V(640, 560);
+  const VAL = { "font-family": FONT, "font-size": Math.round(READ * 1.2), "font-weight": 700 };
+  const TXT = { "font-family": SANS, "font-size": READ, "font-weight": 600 };
+  const NOTE = { "font-family": FONT, "font-size": READ, "font-style": "italic" };
+  const KICK = { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4 };
+  // 1. lay out each card (screen px, origin at its top left)
+  const cards = list.map((c, i) => {
+    const kind = c.kind || (c.value != null ? "stat" : "note");
+    const rows = [];      // [kind of row, text or null, attrs, height]
+    const lineH = a => Math.round(a["font-size"] * 1.22);
+    if (kind === "source") rows.push(["kick", "SOURCE", KICK, 30]);
+    if (c.value != null && kind !== "source") rows.push(["val", String(c.value), VAL, lineH(VAL)]);
+    if (kind === "bar") rows.push(["bar", null, null, 40]);
+    const ta = kind === "note" ? NOTE : TXT;
+    const txt = kind === "source" && c.value != null ? `${c.text || ""} · ${c.value}` : c.text;
+    if (txt) wrap(txt, ta, MAXW - (kind === "icon" ? 96 : 0), kind === "note" ? 3 : 2).forEach(l => rows.push(["txt", l, ta, lineH(ta)]));
+    if (!rows.some(r => r[1] != null && r[0] !== "kick")) { warn(`callout ${i + 1} has no text or value`); return null; }
+    const iconW = kind === "icon" ? 96 : 0;
+    const innerW = Math.max(...rows.map(r => r[1] != null ? width(r[1], r[2]) : (r[0] === "bar" ? 460 : 0)));
+    const w = Math.ceil(innerW + 2 * PAD + iconW), h = Math.ceil(rows.reduce((a, r) => a + r[3], 0) + 2 * PAD - 8);
+    let frac = null;
+    if (kind === "bar") {
+      const m = String(c.value || "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/), n = m ? +m[0] : NaN;
+      frac = /%/.test(String(c.value)) ? n / 100 : c.max ? n / c.max : NaN;
+      if (!(frac >= 0)) { warn(`callout bar "${c.value}" needs a percentage or a "max"`); frac = 0; }
+      frac = Math.min(1, frac);
+    }
+    if (kind === "icon" && !CALLOUT_ICONS[c.icon]) warn(`callout icon "${c.icon}" is not one of ${Object.keys(CALLOUT_ICONS).join(", ")}`);
+    const c0 = cueT(c, s.t0 + 0.3 + i * 0.5), c1 = Math.min(s.t1, c.hold ? c0 + c.hold : s.t1);
+    return { c, i, kind, rows, w, h, iconW, frac, c0, c1 };
+  }).filter(Boolean);
+  meas.remove();
+  // 2. place them
+  const Q = d.quiet, QUIET = 2, M = V(48, 0);
+  const fr = VERT ? { x0: SAFE.x0 + 10, x1: SAFE.x1 - 10, y0: SAFE.y0 + 10, y1: SAFE.y1 - 10 } : { x0: M, x1: W - M, y0: M, y1: H - M };
+  const reserved = t => {
+    const r = [];
+    if (counterSpans.some(sp => sp.t0 <= t && t <= sp.t1)) r.push([V(W - 56, SAFE.x1 - 20) - 600, TAG_TOP - 12, 612, 330]);
+    if (tagSpans.some(sp => sp.t0 <= t && t <= sp.t1)) r.push([TAG_LEFT - 12, TAG_TOP - 12, 760, Math.round(READ * 1.45) + 44]);
+    if (card && card.c0 <= t && t <= card.c1) { const b = card.g.getBBox(); r.push([b.x - 12, b.y - 12, b.width + 24, b.height + 24]); }
+    if (s.source || s.source_plate) r.push([0, V(H - 90, SAFE.y0 - 90), W * 0.6, 90]);
+    if (TL.captions) r.push([0, VERT ? SAFE.y1 - 20 : H - 230, W, 230]);
+    return r;
+  };
+  const hit = (a, b) => a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+  const proj = (cam, ax, ay) => [(ax - cam.cx) * cam.z + W / 2, (ay - cam.cy) * cam.z + H / 2];
+  let sat = null, gw = 0, gh = 0;
+  if (Q && Q.b && Q.w * Q.h === Q.b.length) {
+    gw = Q.w; gh = Q.h; sat = { over: new Float64Array((gw + 1) * (gh + 1)), sum: new Float64Array((gw + 1) * (gh + 1)) };
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+      const v = +Q.b[y * gw + x], k = (y + 1) * (gw + 1) + x + 1;
+      ["over", "sum"].forEach(n => { sat[n][k] = (n === "over" ? (v > QUIET ? 1 : 0) : v) + sat[n][k - 1] + sat[n][k - gw - 1] - sat[n][k - gw - 2]; });
+    }
+  }
+  const area = (n, x0, y0, x1, y1) => { const A = sat[n], R = gw + 1; return A[y1 * R + x1] - A[y0 * R + x1] - A[y1 * R + x0] + A[y0 * R + x0]; };
+  const toCells = r => { const cx0 = Math.max(0, Math.floor(r[0] / IW * gw)), cy0 = Math.max(0, Math.floor(r[1] / IH * gh));
+    return [cx0, cy0, Math.min(gw, Math.max(cx0 + 1, Math.ceil((r[0] + r[2]) / IW * gw))), Math.min(gh, Math.max(cy0 + 1, Math.ceil((r[1] + r[3]) / IH * gh)))]; };
+  const focus = d.focus ? [d.focus[0] * IW, d.focus[1] * IH] : null;
+  const keep = (d.keep_clear || []).map(([x, y, w, h]) => [x * IW, y * IH, w * IW, h * IH]);
+  const placed = [];
+  cards.forEach(k => {
+    const ts = Array.from({ length: 8 }, (_, j) => K.lerp(k.c0, k.c1 - 0.05, j / 7)), cams = ts.map(camAt);
+    const zmin = Math.min(...cams.map(cm => cm.z));
+    const foot = (ax, ay, z, m = 0) => [ax - k.w / (2 * z) - m, ay - k.h / (2 * z) - m, k.w / z + 2 * m, k.h / z + 2 * m];
+    const test = (ax, ay) => {
+      let worst = 0, mean = 0;
+      for (let j = 0; j < cams.length; j++) {
+        const cm = cams[j], [sx, sy] = proj(cm, ax, ay), r = [sx - k.w / 2, sy - k.h / 2, k.w, k.h];
+        if (r[0] < fr.x0 || r[1] < fr.y0 || r[0] + r[2] > fr.x1 || r[1] + r[3] > fr.y1) return null;
+        if (reserved(ts[j]).some(b => hit(r, b))) return null;
+        if (sat) { const [x0, y0, x1, y1] = toCells(foot(ax, ay, cm.z)); worst = Math.max(worst, area("over", x0, y0, x1, y1)); mean += area("sum", x0, y0, x1, y1) / ((x1 - x0) * (y1 - y0)) / cams.length; }
+      }
+      const f = foot(ax, ay, zmin, 0.03 * IW);
+      if (focus && focus[0] > f[0] && focus[0] < f[0] + f[2] && focus[1] > f[1] && focus[1] < f[1] + f[3]) return null;
+      if (keep.some(b => hit(foot(ax, ay, zmin), b))) return null;
+      if (placed.some(p => p.k.c0 < k.c1 && k.c0 < p.k.c1 && hit(foot(ax, ay, zmin, 16), p.foot))) return null;
+      return { worst, mean };
+    };
+    let best = null;
+    if (Array.isArray(k.c.pos)) {
+      const ax = k.c.pos[0] * IW, ay = k.c.pos[1] * IH, r = test(ax, ay);
+      if (!r) warn(`callout "${k.c.text || k.c.value}" at pos [${k.c.pos}] runs off the frame or onto the focus, a HUD card or another callout`);
+      best = { ax, ay, worst: r ? r.worst : 0, mean: r ? r.mean : 0 };
+    } else {
+      if (!sat) warn(`callout "${k.c.text || k.c.value}" is "auto" but the panel has no quiet map: run timeline`);
+      const nx = sat ? gw : 24, ny = sat ? gh : 14;
+      for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
+        const ax = (x + 0.5) * IW / nx, ay = (y + 0.5) * IH / ny, r = test(ax, ay);
+        if (!r) continue;
+        // among quiet places, the highest one nearest the subject: cards stack down a column beside what they're about,
+        // in cue order, which leaves the rest of the quiet room for the next card (the middle of the room would split it)
+        const [sx, sy] = proj(cams[0], ax, ay), fx = focus ? proj(cams[0], focus[0], focus[1])[0] : W / 2;
+        const score = r.worst * 100 + 0.5 * r.mean + (sy - k.h / 2 - fr.y0) / H + 0.5 * Math.abs(sx - fx) / W;
+        if (!best || score < best.score) best = { ax, ay, worst: r.worst, mean: r.mean, score };
+      }
+      if (!best) {
+        warn(`callout "${k.c.text || k.c.value}": no place in the frame clears the focus, the HUD and the other callouts; give it a pos or a shorter text`);
+        const cm = cams[0];
+        best = { ax: cm.cx + (fr.x0 + k.w / 2 + 20 - W / 2) / cm.z, ay: cm.cy + (fr.y1 - k.h / 2 - 20 - H / 2) / cm.z, worst: -1, mean: 0 };
+      } else if (best.worst > 0) {
+        warn(`callout "${k.c.text || k.c.value}": no quiet region big enough; the best place still covers ${best.worst} busy cell(s) of the still. Shorten it, give it a pos, or use a still with room`);
+      }
+    }
+    k.ax = best.ax; k.ay = best.ay;
+    placed.push({ k, foot: foot(best.ax, best.ay, zmin) });
+    (window.STUDIO.callouts = window.STUDIO.callouts || []).push({ seg: s.id, text: k.c.text || String(k.c.value), pos: [+(best.ax / IW).toFixed(3), +(best.ay / IH).toFixed(3)], busy: best.worst, auto: !Array.isArray(k.c.pos), w: k.w, h: k.h });
+  });
+  // 3. draw
+  cards.forEach((k, n) => {
+    const g = K.el("g", { "data-callout": s.id }, s.ov);
+    K.el("rect", { x: 5, y: 7, width: k.w, height: k.h, fill: "#000", opacity: 0.18 }, g);
+    K.el("rect", { x: 0, y: 0, width: k.w, height: k.h, fill: PAPER, stroke: INK, "stroke-width": 2 }, g);
+    if (k.kind === "icon") {
+      K.el("circle", { cx: PAD + 36, cy: k.h / 2, r: 36, fill: "none", stroke: C.ACCENT || INK, "stroke-width": 3 }, g);
+      K.el("path", { d: CALLOUT_ICONS[k.c.icon] || CALLOUT_ICONS.check, transform: `translate(${PAD + 36} ${k.h / 2})`, fill: "none", stroke: INK, "stroke-width": 3.5, "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
+    }
+    let y = PAD - 4, bar = null;
+    k.rows.forEach(([kind, text, attrs, rh]) => {
+      if (kind === "bar") {
+        K.el("rect", { x: PAD, y: y + 8, width: 460, height: 22, rx: 11, fill: INK, opacity: 0.14 }, g);
+        bar = K.el("rect", { x: PAD, y: y + 8, width: 0, height: 22, rx: 11, fill: C.ACCENT || POS }, g);
+      } else {
+        const fill = kind === "kick" ? C.GREY : kind === "val" ? (signed(text) < 0 ? NEG : signed(text) > 0 ? POS : INK) : INK;
+        K.text(text, { ...attrs, fill, x: PAD + k.iconW, y: y + Math.round(rh * 0.8) }, g);
+        if (kind !== "kick") K.label(text, k.c0, k.c1, "callout");
+      }
+      y += rh;
+    });
+    k.g = g; k.bar = bar; k.tilt = n % 2 ? 0.7 : -0.7;
+    K.show(g, false);
+  });
+  return t => cards.forEach(k => {
+    const a = Math.min(K.eout(K.prog(t, k.c0, k.c0 + 0.3)), 1 - K.ein(K.prog(t, k.c1 - 0.25, k.c1)));
+    K.show(k.g, a > 0.01);
+    if (a <= 0.01) return;
+    const cm = camAt(t), [sx, sy] = proj(cm, k.ax, k.ay), rise = (1 - K.eout(K.prog(t, k.c0, k.c0 + 0.3))) * 24;
+    k.g.setAttribute("transform", `translate(${Math.round(sx - k.w / 2)} ${Math.round(sy - k.h / 2 + rise)}) rotate(${k.tilt} ${k.w / 2} ${k.h / 2})`);
+    k.g.setAttribute("opacity", a.toFixed(3));
+    if (k.bar) k.bar.setAttribute("width", (460 * k.frac * K.eio(K.prog(t, k.c0 + 0.2, k.c0 + 0.9))).toFixed(1));
+  });
+}
 let fbVig = null;
 B.panel = (s, g) => {
   const d = s.data || {}, id = "pf" + s.id.replace(/\W/g, "");
@@ -1531,6 +1720,7 @@ B.panel = (s, g) => {
     return { z, cx, cy };
   };
   (window.STUDIO.panelCam = window.STUDIO.panelCam || {})[s.id] = { at: camAt, iw: IW, ih: IH, w: W, h: H };
+  const calloutDraw = panelCallouts(d, s, IW, IH, camAt, card);
   return t => {
     const { z, cx, cy } = camAt(t);
     g.__cam = { z, cx, cy };
@@ -1542,6 +1732,7 @@ B.panel = (s, g) => {
     const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;
     g.setAttribute("opacity", Math.min(fin, fout));
     if (card) card.g.setAttribute("opacity", K.eout(K.prog(t, card.c0, card.c0 + 0.25)) * (1 - K.ein(K.prog(t, card.c1 - 0.25, card.c1))));
+    calloutDraw(t);
   };
 };
 

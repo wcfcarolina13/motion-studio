@@ -957,6 +957,98 @@ class PanelScreen(unittest.TestCase):
         self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
 
 
+class PanelCallouts(unittest.TestCase):
+    def test_candidates_and_room_and_flags(self):
+        import deadspace, longform
+        c = deadspace.candidates('According to the U.S. Census Bureau there are 1,200 porta-potty companies. One rented forty units '
+                                 'at $125 a week, and 62% of jobs are events. He said "you will hate February".')
+        self.assertEqual([(x["kind"], x.get("value") or x.get("text")) for x in c],
+                         [("source", "U.S. Census Bureau"), ("stat", "1,200 porta-potty companies"), ("stat", "forty units"),
+                          ("stat", "$125 a week"), ("bar", "62%"), ("note", "“you will hate February”")])
+        seg = {"counter": {"value": "$125 a week"}, "data": {"screen": {"lines": ["Units: 1200"]}}}
+        self.assertTrue(deadspace.covered({"value": "$125 a week"}, seg))
+        self.assertTrue(deadspace.covered({"value": "1,200 porta-potty companies"}, seg))   # the number is on the screen
+        self.assertFalse(deadspace.covered({"value": "62%"}, seg))
+        import numpy as np
+        ok = np.zeros((6, 8), bool); ok[1:4, 2:7] = True; ok[5, :] = True
+        self.assertEqual(deadspace.max_rect(ok), (15, 1, 2, 3, 5))
+        row = {"id": "b1", "t0": 0, "opt_out": None, "region": {"pos": [0.7, 0.3], "box": [0.5, 0.1, 0.4, 0.4], "px": [700, 400]},
+               "candidates": [dict(c[4], shown=False)]}
+        self.assertEqual(len(longform.deadspace_flags([row])), 1)
+        self.assertEqual(longform.deadspace_flags([dict(row, opt_out="the empty sky is the point")]), [])
+        self.assertEqual(longform.deadspace_flags([dict(row, region=dict(row["region"], px=[300, 120]))]), [])
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_cards_go_in_quiet_room_ride_the_camera_and_read(self):
+        import io, longform, render, readcheck, deadspace
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            rng = np.random.default_rng(3)
+            a = (np.full((1080, 1920, 3), (226, 214, 190)) + rng.normal(0, 5, (1080, 1920, 1))).clip(0, 255).astype("uint8")
+            im = Image.fromarray(a); dr = ImageDraw.Draw(im)
+            for i in range(48):                                  # dense ink over the left third (the subject)
+                dr.line((i * 12, 0, i * 12 + 50, 1080), fill=(40, 30, 20), width=4)
+            dr.rectangle((1560, 820, 1760, 1000), outline=(60, 50, 40), width=8)   # an object in the quiet part
+            im.save(film / "panels" / "yard.png")
+            busy = Image.new("RGB", (1920, 1080)); bd = ImageDraw.Draw(busy)
+            for i in range(0, 1920, 18):
+                bd.line((i, 0, i + 40, 1080), fill=(255, 255, 255), width=3)
+            busy.save(film / "panels" / "busy.png")
+            q = deadspace.quiet_map(film / "panels" / "yard.png")
+            calls = [{"kind": "stat", "value": "+$4,860", "text": "cash by month 3", "t": 1.0},
+                     {"kind": "source", "text": "U.S. Census Bureau", "value": "2022", "t": 1.6},
+                     {"kind": "bar", "value": "62%", "text": "of jobs are events", "t": 2.2},
+                     {"kind": "icon", "icon": "truck", "text": "one truck", "t": 2.6, "hold": 2.0}]
+            segs = [{"id": "y1", "type": "panel", "t0": 0, "t1": 7, "counter": {"value": "$4,860", "label": "CASH", "t": 0.5},
+                     "data": {"image": "panels/yard.png", "focus": [0.3, 0.5], "camera": "pan-right", "callouts": calls, "quiet": q}},
+                    {"id": "y2", "type": "panel", "t0": 7, "t1": 9, "data": {"image": "panels/busy.png", "quiet": deadspace.quiet_map(film / "panels" / "busy.png"),
+                     "callouts": [{"kind": "note", "text": "a long note that has nowhere quiet to go in this picture", "t": 7.3}]}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 9, "segments": segs}) + ";\n")
+            boxes = """() => [...document.querySelectorAll('[data-callout=y1]')].filter(e => e.style.display !== 'none')
+                         .map(e => { const r = e.getBoundingClientRect(); return [e.querySelector('text:not([data-aux])').textContent, r.left, r.top, r.right, r.bottom]; })"""
+            hud = """() => { const r = [...document.querySelectorAll('#hud rect')].filter(e => e.getBoundingClientRect().width > 0).map(e => e.getBoundingClientRect());
+                         return r.length ? [Math.min(...r.map(b => b.left)), Math.min(...r.map(b => b.top)), Math.max(...r.map(b => b.right)), Math.max(...r.map(b => b.bottom))] : null; }"""
+            with render.Film(film) as f:
+                f.seek(0.9); early = f.page.evaluate(boxes)
+                f.seek(3.0); mid = f.page.evaluate(boxes); hudbox = f.page.evaluate(hud)
+                sizes = f.page.evaluate(longform.MEASURE_TEXT); over = f.page.evaluate(longform.OVERLAP)
+                f.seek(6.5); late = f.page.evaluate(boxes)
+                placed = f.page.evaluate("window.STUDIO.callouts")
+                want = f.page.evaluate("""() => window.STUDIO.callouts.filter(c => c.seg === 'y1').map(c => [3.0, 6.5].map(t => {
+                    const cam = window.STUDIO.panelCam.y1.at(t); return [(c.pos[0] * 1920 - cam.cx) * cam.z + 960, (c.pos[1] * 1080 - cam.cy) * cam.z + 540]; }))""")
+                warns = f.page.evaluate("window.STUDIO.warnings || []")
+                labels = f.page.evaluate("window.STUDIO.text.filter(x => x.where === 'callout').map(x => x.text)")
+                frames = []
+                for i in range(60):
+                    f.seek(0.8 + i / 30)
+                    frames.append(np.asarray(Image.open(io.BytesIO(f.page.locator("#stage").screenshot())).convert("RGB").resize((320, 180))))
+                self.assertFalse(f.errors)
+        self.assertEqual(early, [])                                           # nothing before its cue
+        self.assertEqual([m[0] for m in mid], ["+$4,860", "U.S. Census Bureau ·", "62%", "one truck"])   # the source wraps
+        self.assertEqual([m[0] for m in late], ["+$4,860", "U.S. Census Bureau ·", "62%"])   # the icon's hold ended
+        y1 = [c for c in placed if c["seg"] == "y1"]
+        self.assertTrue(all(c["busy"] == 0 and c["pos"][0] > 0.35 for c in y1), y1)   # in the quiet part, off the object
+        def hit(a, b):
+            return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+        self.assertTrue(hudbox)
+        self.assertFalse([m for m in mid if hit(m[1:], hudbox)], (mid, hudbox))            # clear of the counter card
+        self.assertFalse([(a, b) for i, a in enumerate(mid) for b in mid[i + 1:] if hit(a[1:], b[1:])])   # clear of each other
+        for (name, *box), (at3, at65), box65 in zip(mid, want, late + [None]):
+            cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            self.assertLess(abs(cx - at3[0]) + abs(cy - at3[1]), 12, name)                # where the camera puts its anchor
+            if box65:
+                self.assertGreater(abs((box65[1] + box65[3]) / 2 - cx), 5, name)          # and it rode the pan
+        self.assertGreater(min(px for w, px, aux in sizes if w in ("+$4,860", "cash by month 3", "62%", "one truck") and not aux), 50)
+        self.assertFalse([o for o in over if o[0] in ("+$4,860", "cash by month 3", "62%", "one truck", "U.S. Census Bureau ·", "2022")], over)
+        self.assertIn("cash by month 3", labels); self.assertIn("2022", labels)
+        self.assertTrue(any("y2:" in w and "no quiet region big enough" in w for w in warns), warns)
+        self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
+
+
 class ChartScene(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
     def test_lines_draw_on_cue_labels_fit_and_no_flash(self):
