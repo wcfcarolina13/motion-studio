@@ -912,6 +912,51 @@ class HudDelta(unittest.TestCase):
         self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
 
 
+class PanelScreen(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_text_maps_into_the_screen_types_on_cue_and_reads(self):
+        import io, longform, render, readcheck
+        from PIL import Image, ImageDraw
+        quad = [(700, 260), (1290, 300), (1270, 640), (690, 660)]
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            im = Image.new("RGB", (1920, 1080), (226, 214, 190)); ImageDraw.Draw(im).polygon(quad, fill=(30, 40, 50))
+            im.save(film / "panels" / "lap.png")
+            sc = {"quad": [[x / 1920, y / 1080] for x, y in quad],
+                  "lines": [{"text": "Units owned: 40"}, {"text": "Rented: 31 a week"}, {"text": "Cash: +$4,860", "t": 3.0}]}
+            segs = [{"id": "v01a", "type": "panel", "t0": 0, "t1": 6, "data": {"image": "panels/lap.png", "shot": "MED", "screen": sc}},
+                    {"id": "bad", "type": "panel", "t0": 6, "t1": 7, "data": {"image": "panels/lap.png", "screen": {"quad": [[0, 0]], "lines": ["x"]}}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f, film / f)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 7, "segments": segs}) + ";\n")
+            words = """() => [...document.querySelectorAll('[data-screen=v01a] text')].filter(e => e.style.display !== 'none')
+                         .map(e => { const r = e.getBoundingClientRect(); return [e.textContent, (r.left + r.right) / 2, (r.top + r.bottom) / 2]; })"""
+            with render.Film(film) as f:
+                f.seek(2.0); early = f.page.evaluate(words)
+                f.seek(5.9); late = f.page.evaluate(words); sizes = f.page.evaluate(longform.MEASURE_TEXT)
+                quadNow = f.page.evaluate("""() => { const p = document.querySelector('#scrv01a polygon'), m = p.getScreenCTM();
+                    return p.getAttribute('points').split(' ').map(s => s.split(',').map(Number)).map(([x, y]) => [m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f]); }""")
+                frames = []
+                for i in range(60):
+                    f.seek(2.6 + i / 30)
+                    frames.append(np.asarray(Image.open(io.BytesIO(f.page.locator("#stage").screenshot())).convert("RGB").resize((320, 180))))
+                warns = f.page.evaluate("window.STUDIO.warnings || []"); labels = f.page.evaluate("window.STUDIO.text.filter(x => x.where === 'screen').map(x => x.text)")
+                self.assertFalse(f.errors)
+        self.assertNotIn("+$4,860", [w[0] for w in early])                  # line 3 waits for its cue
+        self.assertEqual([w[0] for w in late][-1], "+$4,860")
+        def inside(x, y):                    # convex quad, clockwise on screen: every edge has the point on its right
+            q = quadNow
+            return all((q[(i + 1) % 4][0] - q[i][0]) * (y - q[i][1]) - (q[(i + 1) % 4][1] - q[i][1]) * (x - q[i][0]) > 0 for i in range(4))
+        self.assertTrue(all(inside(x, y) for _, x, y in late), (late, quadNow))   # every word on the screen
+        ys = [y for w, _, y in late if w in ("Units", "owned:", "40")]
+        self.assertLess(max(ys) - min(ys), 40)                               # a line stays on its line
+        self.assertGreater(min(sz for w, sz, aux in sizes if w in ("Units", "owned:", "Rented:", "Cash:", "+$4,860")), 50)
+        self.assertEqual(labels, ["Units owned: 40", "Rented: 31 a week", "Cash: +$4,860"])
+        self.assertTrue(any("bad: screen needs a quad" in w for w in warns), warns)
+        self.assertEqual(readcheck.flash_frames(frames, 30, 320, 180), [])
+
+
 class ChartScene(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
     def test_lines_draw_on_cue_labels_fit_and_no_flash(self):
