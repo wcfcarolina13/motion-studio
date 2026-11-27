@@ -716,9 +716,9 @@ im.save("image.png")
                 rdir, made, secs, e = panelqa.repair(film, "panels/p1.png", "600,300,200,200", "darken it", seeds=[1],
                                                      allow_codex=True, method="markup")
                 self.assertEqual(made, [1])
-                self.assertEqual(e["markup"]["1"]["fit"], "stretched")             # 3:2 answer mapped onto 16:9
-                self.assertLess(e["markup"]["1"]["outside_likeness"], 1.0)
-                self.assertEqual(e["markup"]["1"]["red_left"], 0.0)
+                self.assertEqual(e["full"]["1"]["fit"], "stretched")             # 3:2 answer mapped onto 16:9
+                self.assertLess(e["full"]["1"]["outside_likeness"], 1.0)
+                self.assertEqual(e["full"]["1"]["red_left"], 0.0)
                 mk = np.asarray(Image.open(rdir / "markup.png").convert("RGB"))
                 self.assertEqual(tuple(mk[300 - 32 - 3, 700]), (255, 0, 0))         # outline just outside the paste
                 cand = np.asarray(Image.open(rdir / "candidate_1.png").convert("RGB")).astype(int)
@@ -739,6 +739,9 @@ im.save("image.png")
             self.assertEqual(res["blind"], {key["A"]: {"fixed": True, "clean": True}, key["B"]: {"fixed": False, "clean": False}})
             whole = [x for x in res["rows"] if x["method"] == "whole"][0]
             self.assertLess(whole["outside_likeness"], 1.0)
+            wl = json.loads((film / "repairs" / "log.json").read_text())[-1]
+            self.assertEqual((wl["method"], wl["margin"], wl["feather"]), ("whole", 64, 48))   # the wider blend
+            self.assertEqual(json.loads((film / "repairs" / "log.json").read_text())[0]["feather"], 16)
             for f in ("report.md", "blind.png", "compare.png"):
                 self.assertTrue((ab / f).exists(), f)
 

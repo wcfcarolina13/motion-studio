@@ -618,7 +618,7 @@ def cmd_repair(a):
     film = Path(a.film).resolve()
     img, found = image_for(film, a)
     beats = found[0]["beats"] if found else []
-    if a.feather > a.margin:
+    if a.feather is not None and a.margin is not None and a.feather > a.margin:
         print(f"  note: --feather {a.feather} is wider than --margin {a.margin}, so the edge of the box itself keeps some of the old drawing")
     model = a.model or (panelqa.CHATGPT if not a.draft_local else "qwen")
     if model in panelqa.GENERATORS:
@@ -3952,13 +3952,15 @@ def main():
                    help="DRAFTS ONLY: repair with a local mflux model (qwen unless --model klein); the render refuses the panel")
     p.add_argument("--allow-codex", action="store_true", help="the ChatGPT route spends the Codex allowance: one image per take")
     p.add_argument("--faceless", action="store_true", help="tell ChatGPT no face may show (a faceless hero)")
-    p.add_argument("--method", choices=["crop", "markup"], default="crop",
-                   help="crop: the square around the box is the edit base; markup: the whole panel with the box outlined in red "
-                        "(ChatGPT only). Either way only the box plus --margin is pasted back")
+    p.add_argument("--method", choices=list(panelqa.METHODS), default="crop",
+                   help="crop: the square around the box is the edit base; whole: the whole panel with 'change only ...' (pasted "
+                        "with a wider feather); markup: the whole panel plus a copy with the box outlined in red. ChatGPT only for "
+                        "whole and markup. Every method pastes back only the box plus --margin")
     p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3], help="takes (ChatGPT) or seeds (local); 3 by default")
     p.add_argument("--context", type=float, default=2.25, help="crop side as a multiple of the box's longer side")
-    p.add_argument("--margin", type=int, default=32, help="pixels the paste reaches past the box, so a redraw that spills out is kept")
-    p.add_argument("--feather", type=float, default=16, help="pixels of blend inside the paste edge (keep it at most --margin)")
+    p.add_argument("--margin", type=int, help="pixels the paste reaches past the box, so a redraw that spills out is kept "
+                   "(32; 64 for --method whole)")
+    p.add_argument("--feather", type=float, help="pixels of blend inside the paste edge, at most --margin (16; 48 for --method whole)")
     p.add_argument("--gen-size", type=int, help="generate at this size instead of the crop's own (enlarged with Real-ESRGAN when installed)")
     p.add_argument("--no-color-match", action="store_true", help="paste the redraw's colours as they came back")
     p.add_argument("--min-change", type=float, default=0.10,
