@@ -86,6 +86,7 @@ People and evidence (their own set; they wipe on and off left to right instead o
     - `"ink"` is the default since the owner said boxed cards looked "plastered-on, not melded into the scene" (2026-11-27). The words are lettered straight onto the picture's quiet paper, in the illustration's dark ink, or in paper-light ink on a dark patch (from the quiet map's lightness). A faint feathered wash only evens the grain. The words write on left to right like a pen, a value gets a hand-drawn accent underline, and a bar is an ink outline filled with accent gouache.
     - `"point": [x, y]` (0..1 of the still) draws a pen leader with an arrowhead from the words to the thing they're about, after the words. The leader rides the camera.
     - `"card"` is the old paper card in the HUD's style, which rises in.
+    - `"tag"` is the default in a collage film (below): a scrap of the map's paper with tape, slapped on at its word.
   - Timing: a callout lands on its cue word (default 0.5 s apart from the segment's start) and holds to the panel's end, or for `hold` seconds.
   - Movement: a card's anchor rides the panel camera, so the card stays on its patch of picture. The card itself is not scaled, so its text keeps its size and doesn't shimmer under a zoom.
   - `"auto"` placement (the default): `timeline` writes a quiet map of the still into the panel (`quiet`, from deadspace.py: ink edges and tonal spread per 40 px cell). The page tests every place at the framed crop across the card's whole time on screen. It keeps the card off the focus point, the `keep_clear` boxes, the HUD cards, the caption card, the source line, burned captions and the other callouts. It picks the highest quiet place nearest the subject, so cards stack down a column beside what they're about. When nothing is quiet enough the card goes to the least busy place and a warning says so; `check` flags every page warning. The warning needs a real share of the card on drawing (more than 2 cells, or 6% of its footprint): a short callout whose edge touches a line or two no longer flags (a two-word callout flagged on 2 cells, 2026-11-27). After a look at full size, `"busy_ok": true` on a callout silences its warning.
@@ -184,6 +185,19 @@ A scene that shows a real thing (a scam text, a company's site, a headline, an a
 This supports the Longtok rule: complaints are attributed to the agency or outlet that published them, so the capture is the attribution. Never name a company as a scam.
 
 Trade-offs: every real-looking element needs either a capture or an explicit "made up" mark, so older scripts stop at `timeline` until they are marked. Most sites can't be reached from the cloud, so captures are taken on the Mac (a browser screenshot saved to `sources/`). A `real` id on a drawn `sms` records where the message came from, but the drawing is still a recreation; use `capture` to show the message itself.
+
+## Collage style
+
+`"style": "collage"` in script.json draws a film's overlays in the map's collage look (house.js, shared with mapscene.js), so stills, HUD, charts and maps read as one hand. Owner, 2026-11-27: "we're already utilizing the vox effects, so why not utilize them over the stills and etc too?" Off by default; `timeline` fetches the fonts into `fonts/` (mapart.py's set: Libre Caslon, Special Elite, Permanent Marker, Anton; OFL and Apache-2.0, licences beside them).
+
+- Panel callouts default to `"tag"`. The value is in Caslon with a yellow highlighter stroke behind it, and the words are typed in Special Elite capitals (a `note` is in marker). The tag slaps on at its word (1.1, 0.98, 1 on twos, never a fade), boils every 8 frames, and steps off in three steps. `"point"` draws a marker leader with a head, on twos, in ink, or in paper where the picture under it is dark. The paper rides the camera smoothly. Only its own motion steps on twos.
+- `data.ink` on a panel: `{"kind": "circle", "place": [x, y], "r": 0.08}`, `{"kind": "arrow", "from": [x, y], "to": [x, y]}`, `{"kind": "x", "place": [x, y]}`, or `{"kind": "paint", "box": [x0, y0, x1, y1]}`. Positions are 0..1 of the still, each item lands on its `at` word and holds to `until` or the panel's end. Ink is the map's tapered marker, drawn on twos then boiling. Paint is a half see-through yellow sweep, left to right over 16 frames. Multiplied, it went olive on grey metal.
+- HUD: the cash card is a taped ledger strip (ruled lines, a red margin, Caslon value, Special Elite label), and the change chip is a stub of paper with the amount in its sign's colour. The hero uses the same paper. The tag card is a yellow tag.
+- Source line: typed in Special Elite on a torn strip of paper, a touch off level, on every scene.
+- Charts: the map's paper, Caslon type, line labels on paper scraps, and the title on a card with a yellow FIG label (`"fig"` changes its text). A chart with no title puts its y label on the card.
+- Yellow is palette `HIGHLIGHT`, else the house yellow #EDBD2E. It is not ACCENT, which a warm palette often makes a dark ochre that ink can't be read on. Maps still paint with ACCENT.
+- `"paper_grain": true` lays a fibre grain over the paper pieces. Off by default.
+- Trade-offs: a tag is still a box on the picture, which is what he called "plastered-on"; tape, tilt and a shadow make it read as stuck on, not melded in. Paper covers drawing, so the quiet-room warning still matters. Special Elite's zero looks like a capital O. The map's sound roles have no recordings yet, so the slaps are silent.
 
 ## Source line
 

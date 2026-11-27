@@ -4,16 +4,14 @@
 // Every value is a pure function of t, like the rest of the engine. Motion is on twos (15 steps a second at 30 fps),
 // and every paper piece "boils" (a small jitter, a new one every 8 frames), so no frame is ever still.
 (function () {
-  // "yellow" is the film's accent: palette ACCENT (mapart.py paints regions with the same colour), Vox yellow by default
-  const PAL = { board: "#EFEBE3", ink: "#1D1C20", yellow: "#EDBD2E", beige: "#F1EDE4" };
-  const FONTS = { caslon: "MS Caslon", caslonI: "MS Caslon Italic", marker: "MS Marker", elite: "MS Elite", anton: "MS Anton" };
-  const FILES = { caslon: "LibreCaslonText.ttf", caslonI: "LibreCaslonText-Italic.ttf", marker: "PermanentMarker-Regular.ttf",
-                  elite: "SpecialElite-Regular.ttf", anton: "Anton-Regular.ttf" };
-
+  // the house style (house.js): the paper, inks and typefaces this map shares with the rest of a collage film
+  const HS = window.House;
   window.MapScene = function (E) {
     const { K, W, H, READ, VERT, SAFE, SEGS, TL, sceneG, cueT } = E;
-    const FPS = TL.fps || 30, M = TL.map;
-    PAL.yellow = (TL.palette || {}).ACCENT || "#EDBD2E";
+    if (!HS) { window.STUDIO.warnings.push("map: house.js is missing: run longform.py init"); return null; }
+    const FPS = TL.fps || 30, M = TL.map, { FONTS, FILES } = HS;
+    // "yellow" is the film's accent: palette ACCENT (mapart.py paints regions with the same colour), Vox yellow by default
+    const PAL = Object.assign({}, HS.PAL, { yellow: (TL.palette || {}).ACCENT || "#EDBD2E" });
     const segs = SEGS.filter(s => s.type === "map");
     const warn = m => window.STUDIO.warnings.push("map: " + m);
     if (!segs.length) return null;
@@ -29,10 +27,7 @@
     // the renderer seeks to t rounded to 6 decimals, so frame n can arrive as n/30 - 5e-7 s, which is n - 1.5e-5 frames:
     // a 1e-6 margin put every third frame (n % 3 == 1) on the frame before, so moves on twos stepped 2-2-1-3 and the
     // boil landed a frame late (2026-11-25). A thousandth of a frame covers the rounding and is far from the next frame.
-    const frameOf = t => Math.floor(t * FPS + 1e-3);
-    const twos = t => Math.floor(frameOf(t) / 2) * 2 / FPS;              // motion steps on twos
-    const hash = (...v) => { let h = 2166136261; v.forEach(x => { h ^= Math.round(x * 1000) | 0; h = Math.imul(h, 16777619); }); return ((h >>> 0) % 100000) / 100000; };
-    const sm = x => x * x * (3 - 2 * x);
+    const { frameOf, twos, boilSeed } = HS.clock(FPS), { hash, sm, resample, strokeD, crayonD, quad, dashes, jitter, slap } = HS;
     const P = M ? M.proj : { lon0: 0, lat0: 0, lon1: 1, lat1: 1, k: 1, s: 1, w: W, h: H };
     const toMap = (lon, lat) => [(lon - P.lon0) * P.k * P.s, (P.lat1 - lat) * P.s];
     const ll = v => Array.isArray(v) ? v : [v.lon, v.lat];
@@ -180,63 +175,6 @@
     }));
 
     // ── marker ink: a variable-width outline drawn in screen space every frame, so its weight holds at any zoom ──
-    const noise1 = (u, seed) => Math.sin(u * 0.11 + seed * 9.1) * 0.6 + Math.sin(u * 0.27 + seed * 3.7) * 0.3 + Math.sin(u * 0.53 + seed * 1.3) * 0.1;
-    function resample(pts, step = 1.6) {
-      const out = [pts[0]], cum = [0];
-      for (let i = 1; i < pts.length; i++) {
-        const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], d = Math.hypot(x1 - x0, y1 - y0);
-        let acc = cum[cum.length - 1];
-        const n = Math.max(1, Math.ceil(d / step));
-        for (let k = 1; k <= n; k++) { out.push([x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n]); cum.push(acc + d * k / n); }
-      }
-      return { pts: out, cum };
-    }
-    // one stroke: pts (screen), width w, the first `upto` px of it, tapered ends; returns path data
-    function strokeD(pts, w, upto, seed, taper = 9) {
-      const n = pts.length;
-      if (n < 2) return "";
-      const { pts: q, cum } = resample(pts);
-      let m = q.length; while (m > 1 && cum[m - 1] > upto) m--;
-      if (m < 2) return "";
-      const L = cum[m - 1], left = [], right = [];
-      for (let i = 0; i < m; i++) {
-        const a = q[Math.max(0, i - 1)], b = q[Math.min(m - 1, i + 1)];
-        let nx = -(b[1] - a[1]), ny = b[0] - a[0];
-        const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
-        const s = cum[i], tp = Math.min(1, 0.35 + 0.65 * Math.min(s, L - s) / taper);
-        const wi = w * (1 + 0.15 * noise1(s, seed)) * tp / 2;
-        left.push([q[i][0] + nx * wi, q[i][1] + ny * wi]); right.push([q[i][0] - nx * wi, q[i][1] - ny * wi]);
-      }
-      const all = left.concat(right.reverse());
-      return "M" + all.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L") + "Z";
-    }
-    // a dry crayon pass along the same line, a third as wide, with gaps: drawn in the same ink, so it only adds
-    function crayonD(pts, w, upto, seed) {
-      const { pts: q, cum } = resample(pts, 2.5);
-      let d = "", on = false;
-      for (let i = 0; i < q.length && cum[i] <= upto; i++) {
-        const keep = hash(seed, Math.floor(cum[i] / 6)) > 0.35;
-        const o = (hash(seed + 1, Math.floor(cum[i] / 14)) - 0.5) * w * 0.5;
-        const p = [q[i][0] + o * 0.3, q[i][1] + o];
-        if (keep) { d += (on ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1); on = true; } else on = false;
-      }
-      return d;
-    }
-    const quad = (a, b, bend, n = 48) => {
-      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, dx = b[0] - a[0], dy = b[1] - a[1];
-      const c = [mx - dy * bend, my + dx * bend];
-      return [...Array(n + 1)].map((_, i) => { const u = i / n; return [(1 - u) * (1 - u) * a[0] + 2 * (1 - u) * u * c[0] + u * u * b[0], (1 - u) * (1 - u) * a[1] + 2 * (1 - u) * u * c[1] + u * u * b[1]]; });
-    };
-    const dashes = (pts, on, off) => {      // split a polyline into dash pieces
-      const { pts: q, cum } = resample(pts, 2), out = [];
-      let cur = [];
-      q.forEach((p, i) => { const inOn = (cum[i] % (on + off)) < on; if (inOn) cur.push(p); else if (cur.length) { out.push(cur); cur = []; } });
-      if (cur.length) out.push(cur);
-      return out;
-    };
-    const boilSeed = (t, id) => Math.floor(frameOf(t) / 8) % 3 + id * 7;
-    const jitter = (pts, seed, a = 0.8) => pts.map((p, i) => [p[0] + (hash(seed, i, 1) - 0.5) * 2 * a, p[1] + (hash(seed, i, 2) - 0.5) * 2 * a]);
-
     const inks = [];
     segs.forEach(s => ((s.data || {}).ink || []).forEach((d, k) => {
       const kind = d.kind || "arrow";
@@ -392,7 +330,6 @@
       out.width = x;
       return out;
     }
-    const slap = f => f < 0 ? 0 : f < 2 ? 1.1 : f < 4 ? 0.98 : 1;     // arrival: 1.1, 0.98, 1.0 on twos, never a fade
 
     // movers: a piece with "along": "<ink id>" travels that line from its own cue over "travel" seconds
     function along(q, t) {

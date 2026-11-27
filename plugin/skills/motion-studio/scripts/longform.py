@@ -7,7 +7,7 @@ script.json: {"title", "voice"?: {"engine", "pack", "name", "speed"}, "palette"?
 Anything inside a segment's data with "at": "<word or phrase>" (optionally "nth": 2, "offset": -0.1) is timed to
 that word of the segment's narration once `align` has run, so beats land on what is said.
 
-  longform.py init <film>                       copy the engine (film.html, kit.js, figure.js, closeup.js, mapscene.js) into the folder
+  longform.py init <film>                       copy the engine (film.html, kit.js, house.js, figure.js, closeup.js, mapscene.js) into the folder
   longform.py lines <film> [--json]             what the voice says per segment, "say" map applied (feed to TTS, one file per id;
                                                 --json adds speaker, mono); likely misreads go to stderr as SAY: lines
   longform.py voiced <film> [ids] [--speed 1.0]  after voicing: record each clip's voice, pack, speed, words and hash
@@ -199,6 +199,7 @@ def gate_real_assets(film, segs, step):
 # "map_drift": a map camera pushes in slowly across every hold instead of sitting still (mapscene.js; 2026-11-25)
 # "stat_drift": a stat scene rises slowly from its count on, so a long stat never holds still (longform.html; 2026-11-25)
 ENGINE_DEFAULTS = {"anticipate": True, "map_drift": True, "stat_drift": True}
+HOUSE_FONTS = ("LibreCaslonText.ttf", "LibreCaslonText-Italic.ttf", "PermanentMarker-Regular.ttf", "SpecialElite-Regular.ttf", "Anton-Regular.ttf")
 
 
 def cmd_init(a):
@@ -473,7 +474,7 @@ def cmd_panels(a):
         print(f"{len(warned)} panel prompts have lint warnings; run `longform.py lint {a.film}`")
 
 
-ENGINE_FILES = ("kit.js", "figure.js", "closeup.js", "mapscene.js", "three.min.js", "set3d.js")
+ENGINE_FILES = ("kit.js", "house.js", "figure.js", "closeup.js", "mapscene.js", "three.min.js", "set3d.js")
 
 
 def engine_drift(film, segs):
@@ -1042,6 +1043,16 @@ def cmd_timeline(a):
           "anticipate": bool(sc.get("anticipate", eng.get("anticipate", False))),
           "map_drift": sc.get("map_drift", eng.get("map_drift", False)),
           "stat_drift": sc.get("stat_drift", eng.get("stat_drift", False))}
+    # the house collage style (house.js; longform.md "Collage style"): film-wide, off unless script.json says "collage"
+    if sc.get("style"):
+        tl["style"] = sc["style"]
+        if sc["style"] not in ("collage", "plain"):
+            problems.append(f"style \"{sc['style']}\": use \"collage\" or \"plain\"")
+    if sc.get("paper_grain"):
+        tl["paper_grain"] = True
+    if sc.get("style") == "collage" and not all((film / "fonts" / f).exists() for f in HOUSE_FONTS):
+        import mapart                                   # the map's typefaces (OFL, Apache-2.0), with their licences
+        mapart.cmd_fonts(film)
     if sc.get("sizes"):
         tl["sizes"] = sc["sizes"]
     if sc.get("set3d"):                                 # the 2.5D pack's film-wide settings (palette), references/set3d.md
@@ -1143,7 +1154,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say", "set3d") if k in sc}
+    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say", "set3d", "style", "paper_grain") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")

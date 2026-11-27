@@ -1,4 +1,5 @@
 """Tests for motioncheck.py, overlapcheck.py and readcheck.py: python3 -m unittest test_checks (from scripts/). Needs ffmpeg."""
+import contextlib
 import json
 import os
 import shutil
@@ -1417,6 +1418,65 @@ class CounterHero(unittest.TestCase):
         out, _, _ = self.where(segs)
         (x, y, w), = out[4.5]
         self.assertTrue(x > 1500 and y < 200, out[4.5])  # "hero": false keeps it in the corner
+
+
+class CollageStyle(unittest.TestCase):
+    """"style": "collage": tags slap on their word on twos, ink and paint draw on stills, the HUD, source and chart take the
+    map's paper and fonts, and every frame is a pure function of t (owner, 2026-11-27: "utilize them over the stills too")."""
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_collage(self):
+        import io, longform, mapart, render
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    mapart.cmd_fonts(film)
+            except Exception as e:
+                self.skipTest(f"fonts not reachable: {e}")
+            im = Image.new("RGB", (1920, 1080), (226, 214, 190)); dr = ImageDraw.Draw(im)
+            for i in range(40):
+                dr.line((i * 12, 0, i * 12 + 50, 1080), fill=(40, 30, 20), width=4)
+            im.save(film / "panels" / "yard.png")
+            segs = [{"id": "y1", "type": "panel", "t0": 0, "t1": 6, "source": "U.S. Census Bureau", "tag": {"text": "Month 0", "t": 0.1},
+                     "counter": {"value": "−$1,000", "label": "Your cash", "t": 0.1},
+                     "data": {"image": "panels/yard.png", "focus": [0.15, 0.5],
+                              "callouts": [{"kind": "stat", "value": "$16,000", "text": "vacuum tank", "t": 1.0, "point": [0.2, 0.6], "pos": [0.55, 0.5]}],
+                              "ink": [{"kind": "paint", "box": [0.1, 0.7, 0.3, 0.8], "t": 0.6}, {"kind": "circle", "place": [0.6, 0.75], "r": 0.05, "t": 0.8},
+                                      {"kind": "arrow", "from": [0.4, 0.9], "to": [0.5, 0.75], "t": 0.8}, {"kind": "spiral", "t": 0.8}]}},
+                    {"id": "c1", "type": "chart", "t0": 6, "t1": 10, "counter": None, "tag": None,
+                     "data": {"y": {"label": "Cash position", "format": "money"}, "series": [{"label": "One", "points": [[0, -10], [10, 50]], "t": 6.2}]}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 10, "segments": segs, "style": "collage", "paper_grain": True}) + ";\n")
+            scale = """() => { const g = document.querySelector('[data-callout=y1]'); if (!g || g.style.display === 'none') return null;
+                         return +g.firstChild.getAttribute('transform').match(/scale\\(([\\d.]+)\\)/)[1]; }"""
+            fam = """() => [...document.querySelectorAll('text')].filter(e => ['$16,000', 'VACUUM TANK', 'Source: U.S. Census Bureau', 'MONTH 0', 'Cash position'].includes(e.textContent))
+                         .map(e => [e.textContent, e.getAttribute('font-family') || ''])"""
+            with render.Film(film) as f:
+                got = []
+                for k in range(27, 34):            # the cue lands 0.05 s before its word: frame 28
+                    f.seek(k / 30); got.append(f.page.evaluate(scale))
+                fonts = f.page.evaluate("['MS Caslon', 'MS Elite', 'MS Marker'].map(n => document.fonts.check('40px \"' + n + '\"'))")
+                f.seek(2.0); fams = f.page.evaluate(fam)
+                ink = f.page.evaluate("() => [...document.querySelectorAll('[data-ink=y1] path')].map(p => (p.getAttribute('d') || '').length)")
+                over = f.page.evaluate(longform.OVERLAP)
+                warns = f.page.evaluate("window.STUDIO.warnings || []")
+                f.seek(8.0); fams += f.page.evaluate(fam)
+                g = lambda: np.asarray(Image.open(io.BytesIO(f.page.screenshot())).convert("L"))
+                f.seek(1.1); a = g(); f.seek(5.0); f.seek(1.1); b = g()
+                self.assertFalse(f.errors)
+        self.assertEqual(got, [None, 1.1, 1.1, 0.98, 0.98, 1, 1])       # on its word, on twos, never a fade
+        self.assertEqual(fonts, [True, True, True])
+        fd = dict(fams)
+        self.assertIn("MS Caslon", fd["$16,000"]); self.assertIn("MS Elite", fd["VACUUM TANK"])
+        self.assertIn("MS Elite", fd["Source: U.S. Census Bureau"]); self.assertIn("MS Elite", fd["MONTH 0"]); self.assertIn("MS Caslon", fd["Cash position"])
+        self.assertTrue(all(n > 20 for n in ink), ink)                    # paint, circle (stroke and crayon), arrow all drawn
+        self.assertFalse([o for o in over if o[0] in ("$16,000", "VACUUM TANK")], over)
+        self.assertTrue(any('ink kind "spiral"' in w for w in warns), warns)
+        self.assertFalse((a != b).any())                                  # the same frame however it is reached
 
 
 class SpokenNumbers(unittest.TestCase):
