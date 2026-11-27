@@ -54,6 +54,7 @@ These are the owner's rules from a review of a long-form explainer's stills (202
 ## 9. No fake writing
 
 - Covered by the generated-text rule (review.md): prompts never ask for writing; any text on screen is ours, in a real font, laid on top; every still gets a garbled-text check. Real-font text can become a design element of its own: tags, stamps, receipts, cut-paper letters.
+- **Facts on a screen in the picture go on that screen.** When a still shows a laptop, a phone or a sign that the narration's numbers belong to, put them on it with the panel's `screen` overlay (longform.md), not in a corner card. The owner, on the laptop shot v01a (2026-11-27): "Shouldn't the stats be literally on the screen?" Prompt the still with a plain lit screen, then map our text into it.
 
 ## 10. Places and objects true to life
 
