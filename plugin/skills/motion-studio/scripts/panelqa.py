@@ -524,7 +524,13 @@ def draft_repairs(film):
     return {e["image"]: e["model"] for e in log if e.get("status") == "accepted" and e.get("model") in GENERATORS}
 
 
-def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), context=2.25, margin=32, feather=16,
+METHODS = ("crop", "markup", "whole")
+# paste margin and feather per method: a whole-panel answer is redrawn everywhere, so its paste gets a wider blend to hide
+# the seam (the first A/B, 2026-11-27: the whole edit fixed merged roofs; pasted at 16 px it left a faint seam at the roof)
+PASTE = {"crop": (32, 16), "markup": (32, 16), "whole": (64, 48)}
+
+
+def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), context=2.25, margin=None, feather=None,
            color=True, min_change=0.10, gen_size=None, gen_args=(), beats=(), draft=False, allow_codex=False, faceless=False,
            method="crop"):
     """Redraw one region of a panel. The paste covers the box grown by `margin`, blends over `feather` px inside that, and
@@ -537,10 +543,12 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
         raise SystemExit(f"no panel image {img}")
     if model not in ROUTES:
         raise SystemExit(f"no repair route {model}: {', '.join(ROUTES)}")
-    if method not in ("crop", "markup"):
-        raise SystemExit(f"no repair method {method}: crop or markup")
-    if method == "markup" and model != CHATGPT:
-        raise SystemExit("the markup method sends the whole panel with the fault outlined; only the ChatGPT route takes it")
+    if method not in METHODS:
+        raise SystemExit(f"no repair method {method}: {', '.join(METHODS)}")
+    if method != "crop" and model != CHATGPT:
+        raise SystemExit(f"the {method} method sends the whole panel; only the ChatGPT route takes it")
+    margin = PASTE[method][0] if margin is None else margin
+    feather = PASTE[method][1] if feather is None else feather
     if model in GENERATORS and not draft:
         raise SystemExit(f"{model} is a local image model, and local models are drafts only (owner's rule, picture-truth.md "
                          "rule 15): repair with ChatGPT (the default), or pass --draft-local for a draft the render will refuse")
@@ -580,7 +588,21 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
     t0 = time.time()
     failures = {}
     whole = {}
-    if model == CHATGPT and method == "markup":
+    if model == CHATGPT and method == "whole":
+        # the whole panel goes with "change only ..." (the first A/B's winner); the answer is mapped back onto the panel
+        # and only the same crop is kept, so the paste (wider feather), colour match and checks are the crop route's
+        import codex_stills
+        ask = codex_stills.ask_edit({"change": prompt}, faceless, W, H)
+        for x in seeds:
+            full = rdir / f"full_{x}.png"
+            why = codex_stills.edit_image(ask, [str(src)] + ([str(Path(ref).resolve())] if ref else []), full)
+            if why:
+                print(f"  take {x}: {why}"); failures[str(x)] = why
+                continue
+            arr, how, k = fit_full(full, W, H, base, region)
+            whole[str(x)] = {"fit": how, "outside_likeness": k, "size": list(size(full))}
+            write_rgb(arr[sy:sy + side, sx:sx + side], rdir / f"out_{x}.png")
+    elif model == CHATGPT and method == "markup":
         # the whole panel goes, with the paste region outlined in red, plus the clean panel; the answer is mapped back onto
         # the panel and only the same crop is kept, so the paste, colour match and checks below are the crop route's
         mark = rdir / "markup.png"
@@ -651,6 +673,9 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
         overflow = float((np.abs(blur(new) - blur(old)).max(-1) > 50)[near].mean()) if near.any() else 0.0
         sharp = detail(new)
         notes = []
+        if method == "whole" and whole[str(s)]["outside_likeness"] < 0.9:
+            notes.append(f"the model redrew the panel well outside the fix (likeness {whole[str(s)]['outside_likeness']}); "
+                         "only the region is pasted, so check the seam")
         if method == "markup":
             pm = np.zeros((side, side), bool)
             pm[max(0, rc[1]):rc[1] + rc[3], max(0, rc[0]):rc[0] + rc[2]] = True
@@ -686,7 +711,7 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
              "margin": margin, "feather": feather, "open_sides": sides, "crop": [sx, sy, side], "gen_size": gen, "resize_detail": trip,
              "enlarged_with": enlarged, "color_match": color, "crossings": cross, "prompt": prompt, "model": model,
              "ref": ref, "seeds": list(seeds), "candidates": made, "checks": checks, "seconds": secs,
-             "draft": model in GENERATORS, "failures": failures, "method": method, "markup": whole,
+             "draft": model in GENERATORS, "failures": failures, "method": method, "full": whole,
              "at": time.strftime("%Y-%m-%d %H:%M"), "status": "candidate" if made else "failed"}
     log.append(entry)
     log_path.write_text(json.dumps(log, indent=1, ensure_ascii=False) + "\n")
