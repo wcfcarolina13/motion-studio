@@ -15,7 +15,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py panels <film>                     the unique panel images the film needs -> out/panels.json (prompts for the generator)
   longform.py lint <film | prompts.json>        warn on prompt patterns that break hands, limbs and busy scenes
   longform.py review <film> [--checks c.json]   out/review/index.html: numbered panels to mark by click, regions by drag
-  longform.py repair <film> --beat b07 --box x,y,w,h --prompt "..." --allow-codex   redraw one region with ChatGPT -> repairs/<image>/rNN/
+  longform.py repair <film> --beat b07 --box x,y,w,h --prompt "..." --allow-codex   redraw one region (markup + whole) -> repairs/<image>/rNN/
   longform.py accept|revert <film> panels/p07/r02 [--seed 2]   put a repair into the panel, or take it back out
   longform.py upscale <film> [--size 2304x1296]   Real-ESRGAN 4x then Lanczos to cover the size -> panels-hd/ (timeline uses it)
   longform.py align <film>                      word timestamps for every clip -> narration/words.json
@@ -623,22 +623,31 @@ def cmd_repair(a):
     model = a.model or (panelqa.CHATGPT if not a.draft_local else "qwen")
     if model in panelqa.GENERATORS:
         print(f"  DRAFT ONLY: {model} is a local model; the render refuses this panel while the repair is accepted")
-    rdir, made, secs, e = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=model, seeds=a.seeds, context=a.context,
-                                         draft=a.draft_local, allow_codex=a.allow_codex, faceless=a.faceless, method=a.method,
-                                         margin=a.margin, feather=a.feather, color=not a.no_color_match, min_change=a.min_change, gen_size=a.gen_size,
-                                         gen_args=a.gen_args.split() if a.gen_args else [], beats=beats)
-    rid = e["id"]
-    cross = {k: v for k, v in e["crossings"].items() if v}
-    if cross:
-        print("  lines crossing the paste edge (they stay as drawn outside it; if the redraw moves them, they break there): "
-              + ", ".join(f"{k} {v}" for k, v in cross.items()))
-    print(f"  crop {e['crop'][2]} px, generated at {e['gen_size']} ({e['enlarged_with'] if e['enlarged_with'] != 'none' else 'native size'})")
-    for s, c in e["checks"].items():
-        print(f"  seed {s}: {c['change']:.0%} of the box changed, detail ratio {c['sharpness']}"
-              + (f"; {'; '.join(c['notes'])}" if c["notes"] else ""))
-    print(f"{rid}: {len(made)} candidate(s) in {secs} s -> {rdir.relative_to(film)}/compare_<seed>.png")
-    if made:
-        print(f"look at the compare images, then: longform.py accept {a.film} {rid}" + (" --seed N" if len(made) > 1 else ""))
+    # the default on the ChatGPT route runs markup and whole together, one take each, and the gate keeps whichever fixes
+    # it: each won one of the two A/Bs of 2026-11-27 (whole on merged roofs where markup failed, markup on a liftgate where
+    # it was the sharpest), so one call of each beats three of either (picture-truth.md rule 16)
+    method = a.method or ("pair" if model == panelqa.CHATGPT else "crop")
+    methods = ["markup", "whole"] if method == "pair" else [method]
+    seeds = a.seeds or ([1] if method == "pair" else [1, 2, 3])
+    for m in methods:
+        rdir, made, secs, e = panelqa.repair(film, img, a.box, a.prompt, ref=a.ref, model=model, seeds=seeds, context=a.context,
+                                             draft=a.draft_local, allow_codex=a.allow_codex, faceless=a.faceless, method=m,
+                                             margin=a.margin, feather=a.feather, color=not a.no_color_match, min_change=a.min_change,
+                                             gen_size=a.gen_size, gen_args=a.gen_args.split() if a.gen_args else [], beats=beats,
+                                             sharpen=not a.no_sharpen)
+        rid = e["id"]
+        cross = {k: v for k, v in e["crossings"].items() if v}
+        if cross:
+            print("  lines crossing the paste edge (they stay as drawn outside it; if the redraw moves them, they break there): "
+                  + ", ".join(f"{k} {v}" for k, v in cross.items()))
+        print(f"  {m}: crop {e['crop'][2]} px, generated at {e['gen_size']} ({e['enlarged_with'] if e['enlarged_with'] != 'none' else 'native size'})")
+        for s_, c in e["checks"].items():
+            print(f"  {m} take {s_}: {c['change']:.0%} of the box changed, detail ratio {c['sharpness']}"
+                  + (f" (sharpened {c['sharpen']})" if c.get("sharpen") else "")
+                  + (f"; {'; '.join(c['notes'])}" if c["notes"] else ""))
+        print(f"{rid} ({m}): {len(made)} candidate(s) in {secs} s -> {rdir.relative_to(film)}/compare_<seed>.png")
+        if made:
+            print(f"  gate it at full size, then: longform.py accept {a.film} {rid}" + (" --seed N" if len(made) > 1 else ""))
 
 
 def cmd_accept(a):
@@ -3952,11 +3961,14 @@ def main():
                    help="DRAFTS ONLY: repair with a local mflux model (qwen unless --model klein); the render refuses the panel")
     p.add_argument("--allow-codex", action="store_true", help="the ChatGPT route spends the Codex allowance: one image per take")
     p.add_argument("--faceless", action="store_true", help="tell ChatGPT no face may show (a faceless hero)")
-    p.add_argument("--method", choices=list(panelqa.METHODS), default="crop",
-                   help="crop: the square around the box is the edit base; whole: the whole panel with 'change only ...' (pasted "
-                        "with a wider feather); markup: the whole panel plus a copy with the box outlined in red. ChatGPT only for "
-                        "whole and markup. Every method pastes back only the box plus --margin")
-    p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3], help="takes (ChatGPT) or seeds (local); 3 by default")
+    p.add_argument("--method", choices=["pair"] + list(panelqa.METHODS),
+                   help="pair (default on ChatGPT): markup and whole, one take each (2 Codex images), keep the one that passes the "
+                        "gate. whole: the whole panel with 'change only ...' (wider feather); markup: the whole panel plus a copy "
+                        "with the box outlined in red; crop: the square around the box (last resort; the local route's only one). "
+                        "Every method pastes back only the box plus --margin")
+    p.add_argument("--no-sharpen", action="store_true", help="paste the redraw's detail as it came back (it is sharpened to "
+                   "match the panel when under 0.85 of its detail)")
+    p.add_argument("--seeds", type=int, nargs="+", help="takes (ChatGPT) or seeds (local): 1 per method for pair, else 3")
     p.add_argument("--context", type=float, default=2.25, help="crop side as a multiple of the box's longer side")
     p.add_argument("--margin", type=int, help="pixels the paste reaches past the box, so a redraw that spills out is kept "
                    "(32; 64 for --method whole)")

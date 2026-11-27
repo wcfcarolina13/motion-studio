@@ -111,4 +111,7 @@ The owner's rules after the Survive Year 1 redraws (2026-11-27, "update the skil
   - Markup didn't fix it either (detail 0.65, no red left in).
   - The whole-panel edit separated the roofs cleanly (likeness outside the fix 0.964). Pasted back over the region with a 16 px blend, it showed a faint seam at the roof line.
 
-  So `repair --method whole` sends the whole panel and pastes back only the region, with a wider blend (64 px margin, 48 px feather). One sample is a lean, not a rule: the default stays `crop` until a second sample agrees.
+  So `repair --method whole` sends the whole panel and pastes back only the region, with a wider blend (64 px margin, 48 px feather).
+- **A/B sample 2.** The liftgate platform on m10b, a prop beside a person, faceless. All four takes were fixed and clean. Markup was the sharpest, with the best-attached arms (detail 0.70, likeness outside 0.94). Crop (0.51) and whole pasted (0.54) were soft, and the man was unchanged in all four.
+- **The default since then: `pair`.** On the ChatGPT route, `repair` runs markup and whole together, one take each, for 2 Codex images instead of the 3 crop takes it used before. Whichever passes the gate is kept. Each method won one sample, and one call of each covers both kinds of fault. Crop is the last resort (`--method crop`).
+- **Sharpen to match.** Every pasted redraw came back softer than the panel (detail 0.51 to 0.57). A redraw under 0.85 of the panel's detail on the paste margin is now unsharp-masked by the amount that brings it closest to the panel's (0.5 to 3), and `accept` pastes the same sharpened redraw. `--no-sharpen` turns this off.

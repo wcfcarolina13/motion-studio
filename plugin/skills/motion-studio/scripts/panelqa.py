@@ -354,6 +354,26 @@ def redrawn(out_png, side, gain=(1, 1, 1), off=(0, 0, 0)):
     return read_rgb(out_png, side, side) * np.array(gain, np.float32) + np.array(off, np.float32)
 
 
+SHARPEN_BELOW = 0.85                    # a redraw under this share of the panel's detail is sharpened to match
+SHARPEN_STEPS = (0.5, 1.0, 1.5, 2.0, 3.0)
+
+
+def unsharp(a, amount, r=1):
+    """Unsharp mask: add back `amount` times the detail a (2r+1)-pixel blur removes."""
+    return np.clip(a + amount * (a - blur(a, r)), 0, 255) if amount else a
+
+
+def sharpen_to(new, detail):
+    """The unsharp amount that brings a soft redraw's fine detail closest to the panel's (detail(a) is the ratio to the
+    panel on the paste margin). The two A/Bs of 2026-11-27 pasted at 0.51-0.57 of the panel's detail, which reads soft."""
+    d0 = detail(new)
+    if d0 >= SHARPEN_BELOW:
+        return 0.0, d0
+    best = min(((abs(detail(unsharp(new, k)) - 1.0), k) for k in SHARPEN_STEPS))
+    k = best[1]
+    return k, detail(unsharp(new, k))
+
+
 def composite(base, out_png, crop, box, feather):
     """The paste used for repairs logged before 2026-10-18 (feather outside the box, no colour match)."""
     sx, sy, side = crop
@@ -462,7 +482,7 @@ def repair_markup_ask(prompt, W, H, ref=False, faceless=False):
              "texture and light. The change: " + prompt.strip().rstrip(".") + ". The finished picture has no red rectangle."]
     if ref:
         parts.append("Image 3 is a reference for how that part should look. Do not copy it in whole.")
-    parts.append(f"Make exactly one image, {W}x{H}, the same size and shape as image 2, and save it as image.png in the "
+    parts.append(f"Make exactly one image, {W}x{H}, the same size and shape as image 1, and save it as image.png in the "
                  "current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
     parts.append(codex_stills.HANDS)
@@ -532,7 +552,7 @@ PASTE = {"crop": (32, 16), "markup": (32, 16), "whole": (64, 48)}
 
 def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), context=2.25, margin=None, feather=None,
            color=True, min_change=0.10, gen_size=None, gen_args=(), beats=(), draft=False, allow_codex=False, faceless=False,
-           method="crop"):
+           method="crop", sharpen=True):
     """Redraw one region of a panel. The paste covers the box grown by `margin`, blends over `feather` px inside that, and
     matches the redraw's colour to the original around it. Writes repairs/<image path>/rNN/: crop.png (the square sent
     to the model), out_<seed>.png (what came back), compare_<seed>.png (the crop before and after) and, unless the seed
@@ -668,6 +688,8 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
             continue
         gain, off = color_match(read_rgb(out, side, side), old, band) if color else ([1.0] * 3, [0.0] * 3)
         new = redrawn(out, side, gain, off)
+        amount, _ = sharpen_to(new, detail) if sharpen else (0.0, None)
+        new = unsharp(new, amount)
         change = float((np.abs(new[inbox] - old[inbox]).max(-1) > NO_EDIT).mean())
         # what the model drew just outside the paste: the paste drops it, so a shape there ends in a cut-off edge
         overflow = float((np.abs(blur(new) - blur(old)).max(-1) > 50)[near].mean()) if near.any() else 0.0
@@ -692,7 +714,7 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
         if not 0.7 <= sharp <= 1.4:
             notes.append(f"{'softer' if sharp < 0.7 else 'sharper'} than the panel (detail ratio {sharp}"
                          + (f"; the resize alone gives {trip}" if trip is not None else "") + ")")
-        checks[str(s)] = {"change": round(change, 3), "overflow": round(overflow, 3), "sharpness": sharp,
+        checks[str(s)] = {"change": round(change, 3), "overflow": round(overflow, 3), "sharpness": sharp, "sharpen": amount,
                           "gain": gain, "offset": off, "notes": notes}
         if min_change and change < min_change:     # kept for a look (the raw redraw beside the crop), not offered
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-i", str(out), "-filter_complex",
@@ -792,7 +814,8 @@ def accept(film, rid, seed=None):
                                     ring(side, side, (x - sx, y - sy, w, h), RING))
         else:
             gain, off = [1.0] * 3, [0.0] * 3
-        write_rgb(paste(base, redrawn(out, side, gain, off), e["crop"], e["region"], e["feather"], e.get("open_sides", "")), tmp)
+        new = unsharp(redrawn(out, side, gain, off), (c or {}).get("sharpen", 0.0))
+        write_rgb(paste(base, new, e["crop"], e["region"], e["feather"], e.get("open_sides", "")), tmp)
     keep = png_stamps(src)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(tmp), "-frames:v", "1",
                     *(["-q:v", "2"] if src.suffix.lower() in (".jpg", ".jpeg") else []), str(src)], check=True)
