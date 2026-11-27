@@ -15,6 +15,7 @@
 <div id="caps"></div>
 </div>
 <script src="kit.js"></script>
+<script src="house.js" onerror="void 0"></script>
 <script src="figure.js"></script>
 <script src="closeup.js"></script>
 <script src="mapscene.js" onerror="void 0"></script>
@@ -69,6 +70,37 @@ const SH = SAFE.y1 - SAFE.y0, SMID = (SAFE.y0 + SAFE.y1) / 2;
 const V = (wide, tall) => VERT ? tall : wide;      // one layout number per format
 const SEGS = TL.segments;
 const FONT = "Georgia, serif", SANS = "Helvetica Neue, Helvetica, Arial, sans-serif";
+// the collage style ("style": "collage" in script.json; house.js): numbers on stills become paper tags pinned to what they
+// are about, a still takes marker ink and a paint sweep (data.ink), and the HUD, chapter tag, source line and charts take
+// the map's paper, tape and typefaces, so a film's overlays read as one hand (owner, 2026-11-27: "we're already utilizing
+// the vox effects, so why not utilize them over the stills too?"). Overlays step on twos; the camera on stills stays smooth.
+// Its fonts are added before anything is measured; a map film loads them too.
+const HO = window.House || null, COLLAGE = TL.style === "collage" && !!HO;
+if (TL.style === "collage" && !HO) (window.STUDIO.warnings = window.STUDIO.warnings || []).push("style collage: house.js is missing: run longform.py init");
+if (HO && (COLLAGE || TL.segments.some(s => s.type === "map"))) HO.installFonts();
+const HC = HO ? HO.clock(TL.fps || 30) : null;
+// the collage's yellow (tags, tape, the paint sweep, a FIG label): palette HIGHLIGHT, else the house yellow. Not ACCENT, which
+// a warm palette often makes a dark ochre that ink can't be read on
+const HY = (TL.palette || {}).HIGHLIGHT || (HO ? HO.PAL.yellow : "#EDBD2E");
+const HF = COLLAGE ? HO.FAM : null;
+// one soft shadow under every paper piece, made once
+const houseShadow = () => { if (!document.getElementById("hshadow")) { const f = K.el("filter", { id: "hshadow", x: "-20%", y: "-20%", width: "140%", height: "140%" }, K.defs); K.el("feGaussianBlur", { stdDeviation: 4 }, f); } return "hshadow"; };
+// "paper_grain": true in script.json lays a fibre grain over the paper pieces (multiplied, so it only darkens). Off by
+// default: on a painted still the paper's own grain can fight the picture's texture. A seeded tile, made once
+const houseGrain = () => {
+  if (!COLLAGE || !TL.paper_grain) return null;
+  if (!document.getElementById("hgrain")) {
+    const N = 256, cv = document.createElement("canvas"); cv.width = cv.height = N;
+    const cx = cv.getContext("2d"), im = cx.createImageData(N, N), r = K.rng(29);
+    for (let i = 0; i < N * N; i++) { const v = 255 - Math.floor(r() * r() * 46); im.data.set([v, v - 2, v - 6, 255], i * 4); }
+    cx.putImageData(im, 0, 0);
+    cx.strokeStyle = "rgba(120, 100, 70, 0.10)"; cx.lineWidth = 1;
+    for (let i = 0; i < 70; i++) { const x = r() * N, y = r() * N, a = r() * 6.28, l = 6 + r() * 22; cx.beginPath(); cx.moveTo(x, y); cx.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); cx.stroke(); }
+    const pat = K.el("pattern", { id: "hgrain", patternUnits: "userSpaceOnUse", width: N, height: N }, K.defs);
+    K.el("image", { href: cv.toDataURL("image/png"), width: N, height: N }, pat);
+  }
+  return "hgrain";
+};
 // reading size: anything the viewer must read is at least READ px (`check --min-text` measures it on the frame). A 16:9 video
 // on a phone held upright is about 6.5 cm wide, so 56 px of 1920 is about 11 pt. "type_scale" in script.json scales it per film.
 // Text marked AUX (chapter and source lines, kickers, attributions) is a label the viewer need not read, and is exempt.
@@ -98,11 +130,11 @@ const dots = [];
 const sceneG = K.group("scenes");
 const overlayG = K.group("overlay");   // per-segment text that must not move with a scene's camera (s.ov)
 const footG = K.group("foot");
-const sourceT = K.text("", { ...AUX, "font-family": SANS, "font-size": V(20, 24), fill: C.GREY, x: 60, y: V(H - 36, SAFE.y0 - 50) }, footG);
+const sourceT = K.text("", { ...AUX, "font-family": COLLAGE ? HF.elite : SANS, "font-size": V(COLLAGE ? 22 : 20, 24), fill: C.GREY, x: 60, y: V(H - 36, SAFE.y0 - 50) }, footG);
 // the plate behind the source line on full-frame pictures (below, srcPlate); drawn under the text in the same group
-const sourcePlate = K.el("rect", { fill: "#0d0c0a", "fill-opacity": 0.72, rx: 4, opacity: 0 }, footG);
+const sourcePlate = COLLAGE ? K.el("path", { fill: HO.PAL.beige, opacity: 0 }, footG) : K.el("rect", { fill: "#0d0c0a", "fill-opacity": 0.72, rx: 4, opacity: 0 }, footG);
 footG.insertBefore(sourcePlate, sourceT);
-const chapterT = K.text("", { ...AUX, "font-family": SANS, "font-size": 20, fill: C.GREY, x: W - 60, y: 52, "text-anchor": "end", "letter-spacing": 3 }, footG);
+const chapterT = K.text("", { ...AUX, "font-family": COLLAGE ? HF.elite : SANS, "font-size": COLLAGE ? 22 : 20, fill: C.GREY, x: W - 60, y: 52, "text-anchor": "end", "letter-spacing": 3 }, footG);
 
 // ── helpers ──────────────────────────────────────────────
 const clipN = { n: 0 };
@@ -605,7 +637,8 @@ B.chart = (s, g) => {
     while (a > 0 && SEGS[a].type === "chart" && (SEGS[a].data || {}).drawn && SEGS[a - 1].type === "chart") a--;
     while (b + 1 < SEGS.length && SEGS[b + 1].type === "chart" && (SEGS[b + 1].data || {}).drawn) b++;
     return [SEGS[a].t0, SEGS[b].t1]; })();
-  const PAPERC = d.paper || (lumOf(C.BG) > 0.6 ? C.BG : "#F1EDE4"), INKC = d.ink || (lumOf(C.INK) < 0.5 ? C.INK : "#1f1d1a");
+  // collage style: the map's paper, Caslon type, labels on paper scraps, and the title on a card with a yellow FIG label
+  const CL = COLLAGE, PAPERC = d.paper || (CL ? HO.PAL.board : lumOf(C.BG) > 0.6 ? C.BG : "#F1EDE4"), INKC = d.ink || (lumOf(C.INK) < 0.5 ? C.INK : "#1f1d1a");
   const NEGC = C.NEG || "#B3261E", POSC = C.POS || "#2E7D32", MUTE = "#8c867a";
   const PALETTE = [INKC, C.ACCENT, "#2f5d8a", "#7b4b94", "#8a5a2b", "#3d7a74"];
   const yf = (d.y || {}).format || "number";
@@ -619,13 +652,16 @@ B.chart = (s, g) => {
   const xlo = (d.x || {}).min ?? Math.min(...xs), xhi = (d.x || {}).max ?? Math.max(...xs);
   const xt = ((d.x || {}).ticks || niceTicks(xlo, xhi, 5)).map(x => Array.isArray(x) ? x : [x, chartFmt(x, (d.x || {}).format)]);
   // text: title, axis labels, tick labels, end labels (all at reading size), the note (an attribution, exempt)
-  const T = (str, a) => K.text(str, Object.assign({ "font-family": SANS, "font-size": READ, fill: INKC }, a), g);
-  const title = d.title ? T(d.title, { "font-family": FONT, "font-size": Math.max(READ, 60), "text-anchor": "middle" }) : null;
-  const yLab = (d.y || {}).label ? T(d.y.label, { fill: MUTE }) : null, xLab = (d.x || {}).label ? T(d.x.label, { fill: MUTE, "text-anchor": "middle" }) : null;
-  const note = d.note ? K.text(d.note, { ...AUX, "font-family": SANS, "font-size": V(24, 26), "font-style": "italic", fill: MUTE, "text-anchor": "end" }, s.ov) : null;
+  const T = (str, a) => K.text(str, Object.assign({ "font-family": CL ? HF.caslon : SANS, "font-size": READ, fill: INKC }, a), g);
+  // a collage chart with no title names itself by its y label, on the FIG card
+  const figText = CL ? d.title || (d.y || {}).label : null;
+  const title = CL ? (figText ? T(figText, { "font-size": Math.max(READ, 60), "font-weight": 700 }) : null)
+                   : d.title ? T(d.title, { "font-family": FONT, "font-size": Math.max(READ, 60), "text-anchor": "middle" }) : null;
+  const yLab = (d.y || {}).label && !(CL && !d.title) ? T(d.y.label, { fill: MUTE }) : null, xLab = (d.x || {}).label ? T(d.x.label, { fill: MUTE, "text-anchor": "middle" }) : null;
+  const note = d.note ? K.text(d.note, { ...AUX, "font-family": CL ? HF.caslonI : SANS, "font-size": V(24, 26), "font-style": "italic", fill: MUTE, "text-anchor": "end" }, s.ov) : null;
   const ends = series.map((sr, k) => {
     const col = sr.color || PALETTE[k % PALETTE.length];
-    const plate = K.el("rect", { fill: PAPERC, stroke: col, "stroke-width": 3, rx: 6 }, g);
+    const plate = K.el("rect", CL ? { fill: HO.PAL.beige, filter: `url(#${houseShadow()})` } : { fill: PAPERC, stroke: col, "stroke-width": 3, rx: 6 }, g);
     const lab = T(sr.label, { "font-weight": 700, fill: col === INKC || lumOf(col) > 0.55 ? INKC : col });
     return { sr, col, plate, lab, w: 0 };
   });
@@ -637,7 +673,19 @@ B.chart = (s, g) => {
   const px0 = inX(V(70, SAFE.x0 + 10)) + yTickW + 24, px1 = Math.max(W * V(0.55, 0.6), inX(W - V(60, 30)) - labW - 56);
   const py0 = inY(V(title ? 230 : 150, SAFE.y0 + (title ? 200 : 120))), py1 = inY(V(H - (xLab ? 210 : 140), SAFE.y1 - (xLab ? 210 : 150)));
   const X = x => px0 + (x - xlo) / ((xhi - xlo) || 1) * (px1 - px0), Y = y => py1 - (y - ylo) / ((yhi - ylo) || 1) * (py1 - py0);
-  if (title) K.set(title, { x: W / 2, y: py0 - V(110, 120) });
+  if (title && CL) {
+    // the FIG card: paper, a soft shadow, a yellow label typed FIG. 1, a strip of tape, a degree off level
+    const tw = title.getComputedTextLength(), cw = tw + 72, ch = Math.max(READ, 60) * 1.25 + 44, x0 = V(70, SAFE.x0 + 10), y0 = py0 - ch - V(60, 50);
+    const card = K.el("g", { transform: `rotate(-1 ${x0} ${y0 + ch})` }, g);
+    K.el("path", { d: HO.paperD(x0 + 5, y0 + 8, cw, ch, 71), fill: "#000", opacity: 0.22, filter: `url(#${houseShadow()})` }, card);
+    K.el("path", { d: HO.paperD(x0, y0, cw, ch, 70), fill: HO.PAL.beige }, card);
+    if (houseGrain()) K.el("path", { d: HO.paperD(x0, y0, cw, ch, 70), fill: "url(#hgrain)", style: "mix-blend-mode: multiply" }, card);
+    K.el("path", { d: HO.paperD(x0 + 28, y0 - 22, 150, 44, 72, 1), fill: HY }, card);
+    K.text(d.fig || "FIG. 1", { ...AUX, "font-family": HF.elite, "font-size": 24, "letter-spacing": 3, fill: HO.PAL.ink, x: x0 + 103, y: y0 + 1, "text-anchor": "middle", "dominant-baseline": "central" }, card);
+    K.el("path", { d: HO.tapeD(x0 + cw - 40, y0 + 4, 100, 34, 0.6, 73), fill: HO.PAL.tape, opacity: 0.8 }, card);
+    card.appendChild(title);
+    K.set(title, { x: x0 + 36, y: y0 + 22 + Math.max(READ, 60) * 1.0 + 6 });
+  } else if (title) K.set(title, { x: W / 2, y: py0 - V(110, 120) });
   if (yLab) K.set(yLab, { x: px0 - yTickW - 24, y: py0 - 40 });
   if (xLab) K.set(xLab, { x: (px0 + px1) / 2, y: py1 + READ * 1.2 + 70 });
   if (note) K.set(note, { x: W - 60, y: V(H - 36, SAFE.y1 + 40) });
@@ -699,7 +747,7 @@ B.chart = (s, g) => {
     for (let j = 0; j <= 200; j++) { const tt = e.t0 + DRAW * j / 200; if (e.path.getPointAtLength(e.len * K.eio(j / 200)).x >= mx - 0.5) { tPass = tt; break; } }
     const at = d.drawn && m.t == null ? s.t0 - 1 : Math.max(tPass, cueT(m, -Infinity));   // a held chart starts with its marks up
     const dot = K.el("circle", { cx: mx, cy: my, r: 0, fill: e.col, stroke: PAPERC, "stroke-width": 4 }, g);
-    const plate = K.el("rect", { fill: PAPERC, stroke: e.col, "stroke-width": 3, rx: 6 }, g);
+    const plate = K.el("rect", CL ? { fill: HO.PAL.beige, filter: `url(#${houseShadow()})` } : { fill: PAPERC, stroke: e.col, "stroke-width": 3, rx: 6 }, g);
     const lab = T(m.text, { "font-weight": 600 });
     const w = lab.getComputedTextLength() + 28, h = PH, o = 22;
     // every spot on a grid around the dot, scored by how much line it covers and how far it sits from its dot (a plate
@@ -728,7 +776,7 @@ B.chart = (s, g) => {
     K.label(m.text, Math.max(s.t0, at), s.t1, "chart mark");
     return { dot, plate, lab, lead, at };
   }).filter(Boolean);
-  if (title) K.label(d.title, s.t0, s.t1, "chart title");
+  if (title) K.label(CL ? figText : d.title, s.t0, s.t1, "chart title");
   xt.forEach(([, l]) => K.label(String(l), s.t0, s.t1, "chart axis"));
   yt.forEach(v => K.label(chartFmt(v, yf), s.t0, s.t1, "chart axis"));
   if (yLab) K.label(d.y.label, s.t0, s.t1, "chart axis"); if (xLab) K.label(d.x.label, s.t0, s.t1, "chart axis");
@@ -1564,6 +1612,58 @@ const CALLOUT_ICONS = {
   down: "M-18 -12 L-6 2 L2 -6 L18 14 M8 14 H18 V4",
   document: "M-13 -19 H7 L14 -12 V19 H-13 Z M-7 -6 H8 M-7 2 H8 M-7 10 H3",
 };
+// marker ink and paint on a still (collage style, house.js): data.ink, a list of
+//   {"kind": "circle", "place": [x, y], "r": 0.08}          a quick loop round a thing (r: a share of the still's width)
+//   {"kind": "arrow", "from": [x, y], "to": [x, y]}           an arrow drawn on, with a bend ("bend")
+//   {"kind": "x", "place": [x, y]}                            a cross
+//   {"kind": "paint", "box": [x0, y0, x1, y1]}                a yellow highlighter sweep over a thing, left to right
+// with positions as 0..1 of the still, each on its word ("at") and up until "until" (a word) or the panel's end. The ink
+// rides the camera with the picture and is drawn on twos, then boils; the paint is half see-through, so the drawing shows through.
+function panelInk(d, s, IW, IH, camAt) {
+  const list = (d.ink || []).filter(Boolean);
+  if (!list.length) return () => {};
+  if (!HO) { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: data.ink needs house.js: run longform.py init`); return () => {}; }
+  const g = K.el("g", { "data-ink": s.id }, s.ov), P = HO.PAL;
+  const proj = (cm, f) => [(f[0] * IW - cm.cx) * cm.z + W / 2, (f[1] * IH - cm.cy) * cm.z + H / 2];
+  const items = list.map((q, i) => {
+    const kind = q.kind || "circle", t0 = cueT(q, s.t0 + 0.4), t1 = q.until && q.until.t != null ? q.until.t - 0.05 : s.t1;
+    if (!["circle", "arrow", "x", "paint"].includes(kind)) { (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: ink kind "${kind}" is not circle, arrow, x or paint`); return null; }
+    // the paint is laid on half see-through (multiplied, yellow on a grey or dark object turned olive)
+    const el = kind === "paint" ? K.el("path", { fill: HY, opacity: 0.5 }, g)
+                                : K.el("path", { fill: q.color || P.ink }, g);
+    const cray = kind === "paint" ? null : K.el("path", { fill: "none", stroke: q.color || P.ink, "stroke-width": 2, "stroke-linecap": "round" }, g);
+    return { q, kind, t0, t1, el, cray, id: 300 + i, frames: q.frames || (kind === "x" ? 6 : kind === "paint" ? 16 : kind === "circle" ? 14 : 12) };
+  }).filter(Boolean);
+  return t => items.forEach(k => {
+    const on = t >= k.t0 && t < k.t1;
+    K.show(k.el, on); if (k.cray) K.show(k.cray, on);
+    if (!on) return;
+    const cm = camAt(t), p = K.clamp01((HC.twos(t) - k.t0) / (k.frames / HC.fps)), seed = HC.boilSeed(t, k.id), w = (k.q.width || 6) * Math.sqrt(cm.z);
+    let dd = "", cd = "";
+    if (k.kind === "paint") {
+      // a highlighter stroke: a band with wobbling long edges and a ragged end, its length growing left to right
+      const b = k.q.box || [0.4, 0.4, 0.6, 0.5], [x0, y0] = proj(cm, [b[0], b[1]]), [x1, y1] = proj(cm, [b[2], b[3]]);
+      const xe = x0 + (x1 - x0) * p, n = 12, top = [], bot = [];
+      for (let i = 0; i <= n; i++) { const x = x0 + (xe - x0) * i / n;
+        top.push([x, y0 + (HO.hash(k.id, i, 1) - 0.5) * 6]); bot.push([x, y1 + (HO.hash(k.id, i, 2) - 0.5) * 6]); }
+      if (p > 0) dd = "M" + top.concat(bot.reverse()).map(v => v[0].toFixed(1) + " " + v[1].toFixed(1)).join("L") + "Z";
+    } else if (k.kind === "circle") {
+      const [x, y] = proj(cm, k.q.place || [0.5, 0.5]), r = (k.q.r || 0.08) * IW * cm.z, pts = HO.jitter(HO.loopPts(x, y, r, r * (k.q.flat || 0.86)), seed), L = r * 2 * Math.PI * 1.1;
+      dd = HO.strokeD(pts, w, L * p, seed); cd = HO.crayonD(pts, w, L * p, seed);
+    } else if (k.kind === "x") {
+      const [x, y] = proj(cm, k.q.place || [0.5, 0.5]), sz = (k.q.size || 22) * Math.sqrt(cm.z);
+      dd = HO.strokeD(HO.jitter([[x - sz, y - sz], [x + sz, y + sz]], seed), w, 2.9 * sz * K.clamp01(p * 2), seed)
+         + HO.strokeD(HO.jitter([[x + sz, y - sz], [x - sz, y + sz]], seed + 3), w, 2.9 * sz * K.clamp01(p * 2 - 1), seed + 3);
+    } else {
+      const pts = HO.jitter(HO.quad(proj(cm, k.q.from || [0.3, 0.3]), proj(cm, k.q.to || [0.5, 0.5]), k.q.bend != null ? k.q.bend : 0.14), seed);
+      const { cum } = HO.resample(pts), L = cum[cum.length - 1];
+      dd = HO.strokeD(pts, w, L * p, seed) + (p > 0.85 ? HO.headD(pts, w, seed, K.clamp01((p - 0.85) / 0.15)) : "");
+      cd = HO.crayonD(pts, w, L * p, seed);
+    }
+    k.el.setAttribute("d", dd || "M0 0");
+    if (k.cray) k.cray.setAttribute("d", cd || "M0 0");
+  });
+}
 function panelCallouts(d, s, IW, IH, camAt, card) {
   const list = (d.callouts || []).filter(Boolean);
   if (!list.length) return () => {};
@@ -1586,17 +1686,25 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
   const TXT = { "font-family": SANS, "font-size": READ, "font-weight": 600 };
   const NOTE = { "font-family": FONT, "font-size": READ, "font-style": "italic" };
   const KICK = { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4 };
+  // the collage's tag: the value in Caslon, the words typed in Special Elite capitals, a quote in marker (house.js)
+  const TAGF = COLLAGE ? { VAL: { "font-family": HF.caslon, "font-size": Math.round(READ * 1.25), "font-weight": 700 },
+                           TXT: { "font-family": HF.elite, "font-size": READ },
+                           NOTE: { "font-family": HF.marker, "font-size": READ },
+                           KICK: { ...AUX, "font-family": HF.elite, "font-size": 24, "letter-spacing": 4 } } : null;
   // 1. lay out each card (screen px, origin at its top left)
   const cards = list.map((c, i) => {
     const kind = c.kind || (c.value != null ? "stat" : "note");
+    const style = c.style || d.callout_style || (COLLAGE ? "tag" : "ink"), tag = style === "tag" && !!TAGF;
+    const F = tag ? TAGF : { VAL, TXT, NOTE, KICK };
     const rows = [];      // [kind of row, text or null, attrs, height]
     const lineH = a => Math.round(a["font-size"] * 1.22);
-    if (kind === "source") rows.push(["kick", "SOURCE", KICK, 30]);
-    if (c.value != null && kind !== "source") rows.push(["val", String(c.value), VAL, lineH(VAL)]);
+    if (kind === "source") rows.push(["kick", "SOURCE", F.KICK, 30]);
+    if (c.value != null && kind !== "source") rows.push(["val", String(c.value), F.VAL, lineH(F.VAL)]);
     if (kind === "bar") rows.push(["bar", null, null, 40]);
-    const ta = kind === "note" ? NOTE : TXT;
-    const txt = kind === "source" && c.value != null ? `${c.text || ""} · ${c.value}` : c.text;
-    if (txt) wrap(txt, ta, MAXW - (kind === "icon" ? 96 : 0), kind === "note" ? 3 : 2).forEach(l => rows.push(["txt", l, ta, lineH(ta)]));
+    const ta = kind === "note" ? F.NOTE : F.TXT;
+    let txt = kind === "source" && c.value != null ? `${c.text || ""} · ${c.value}` : c.text;
+    if (txt && tag && kind !== "note") txt = String(txt).toUpperCase();
+    if (txt) wrap(txt, ta, (tag ? V(760, 600) : MAXW) - (kind === "icon" ? 96 : 0), kind === "note" ? 3 : 2).forEach(l => rows.push(["txt", l, ta, lineH(ta)]));
     if (!rows.some(r => r[1] != null && r[0] !== "kick")) { warn(`callout ${i + 1} has no text or value`); return null; }
     const iconW = kind === "icon" ? 96 : 0;
     const innerW = Math.max(...rows.map(r => r[1] != null ? width(r[1], r[2]) : (r[0] === "bar" ? 460 : 0)));
@@ -1610,7 +1718,7 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     }
     if (kind === "icon" && !CALLOUT_ICONS[c.icon]) warn(`callout icon "${c.icon}" is not one of ${Object.keys(CALLOUT_ICONS).join(", ")}`);
     const c0 = cueT(c, s.t0 + 0.3 + i * 0.5), c1 = Math.min(s.t1, c.hold ? c0 + c.hold : s.t1);
-    return { c, i, kind, rows, w, h, iconW, frac, c0, c1 };
+    return { c, i, kind, style: tag ? "tag" : style, rows, w, h, iconW, frac, c0, c1 };
   }).filter(Boolean);
   meas.remove();
   // 2. place them
@@ -1699,6 +1807,7 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
   // fact is about. style "card" keeps the HUD's paper cards. Per callout or for the panel ("callout_style").
   const WASH = "cw" + s.id.replace(/\W/g, "");
   { const f = K.el("filter", { id: WASH, x: "-30%", y: "-30%", width: "160%", height: "160%" }, K.defs); K.el("feGaussianBlur", { stdDeviation: 16 }, f); }
+  const SHADOW = houseShadow(), GRAIN = houseGrain();
   const lightAt = (k) => {
     if (!Q || !Q.l || Q.l.length !== gw * gh) return 7;
     const [x0, y0, x1, y1] = toCells([k.ax - k.w / 2, k.ay - k.h / 2, k.w, k.h]);
@@ -1707,8 +1816,10 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
   };
   const wobble = (x0, y0, x1, seed) => { const r = K.rng(seed), pts = []; for (let i = 0; i <= 8; i++) pts.push(`${(x0 + (x1 - x0) * i / 8).toFixed(1)} ${(y0 + (r() - 0.5) * 3 + Math.sin(i * 0.9) * 1.2).toFixed(1)}`);
     return "M" + pts.join(" L"); };
+  cards.forEach((k, n) => { if (k.style === "tag") buildTag(k, n); });
   cards.forEach((k, n) => {
-    const style = k.c.style || d.callout_style || "ink", ink = style === "ink";
+    if (k.style === "tag") return;
+    const style = k.style, ink = style === "ink";
     const dark = ink && lightAt(k) < 4.5;
     const INKC = ink ? (dark ? PAPER : "#2a231c") : INK;
     const g = K.el("g", { "data-callout": s.id }, s.ov);
@@ -1757,7 +1868,78 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     Object.assign(k, { g, bar, under, lead, clip, ink, tilt: ink ? (n % 2 ? 0.5 : -0.5) : (n % 2 ? 0.7 : -0.7) });
     K.show(g, false);
   });
+  // the collage tag (house.js): a scrap of the map's paper with a strip of tape, slapped onto the picture on its word
+  // (1.1, 0.98, 1 on twos, never a fade), boiling every 8 frames like the map's pieces; the value gets a yellow
+  // highlighter stroke, and "point" a marker leader drawn on twos. It rides the camera smoothly: pinned to the picture,
+  // the paper moves with it, while its own motion steps on twos.
+  function buildTag(k, n) {
+    const seed = (s.id.length * 31 + n * 17) % 997;
+    const g = K.el("g", { "data-callout": s.id }, s.ov), sg = K.el("g", {}, g), bg = K.el("g", { "data-boil": 1 }, sg);
+    K.el("path", { d: HO.paperD(4, 7, k.w, k.h, seed + 1), fill: "#000", opacity: 0.2, filter: `url(#${SHADOW})` }, bg);
+    K.el("path", { d: HO.paperD(0, 0, k.w, k.h, seed), fill: HO.PAL.beige }, bg);
+    if (GRAIN) K.el("path", { d: HO.paperD(0, 0, k.w, k.h, seed), fill: `url(#${GRAIN})`, style: "mix-blend-mode: multiply" }, bg);
+    const body = K.el("g", {}, bg);
+    let y = PAD - 4, bar = null, hl = null;
+    if (k.kind === "icon") K.el("path", { d: CALLOUT_ICONS[k.c.icon] || CALLOUT_ICONS.check, transform: `translate(${PAD + 36} ${k.h / 2}) scale(1.3)`, fill: "none", stroke: HO.PAL.ink, "stroke-width": 4, "stroke-linecap": "round", "stroke-linejoin": "round" }, body);
+    k.rows.forEach(([kind, text, attrs, rh]) => {
+      if (kind === "bar") {
+        bar = K.el("rect", { x: PAD, y: y + 6, width: 0, height: 24, fill: HY }, body);
+        K.el("path", { d: HO.paperD(PAD, y + 6, 460, 24, seed + 5, 1.2), fill: "none", stroke: HO.PAL.ink, "stroke-width": 2.5 }, body);
+      } else {
+        const sgn = kind === "val" ? signed(text) : 0;
+        if (kind === "val") {      // the highlighter goes under the number, so it multiplies the paper, not the ink
+          hl = K.el("rect", { x: PAD + k.iconW - 8, y: y + rh * 0.42, height: rh * 0.5, width: 0, fill: HY, opacity: 0.9, style: "mix-blend-mode: multiply" }, body);
+        }
+        const el = K.text(text, { ...attrs, fill: kind === "kick" ? HO.PAL.ink : sgn < 0 ? NEG : sgn > 0 ? POS : HO.PAL.ink, x: PAD + k.iconW, y: y + Math.round(rh * 0.8) }, body);
+        if (kind === "kick") el.setAttribute("opacity", 0.7);
+        if (kind === "val") hl.__w = el.getComputedTextLength() + 16;
+        if (kind !== "kick") K.label(text, k.c0, k.c1, "callout");
+      }
+      y += rh;
+    });
+    // tape across the top edge, off centre, at its own small angle
+    const tx = k.w * (0.3 + 0.4 * HO.hash(seed, 2)), rot = (HO.hash(seed, 3) - 0.5) * 0.5;
+    K.el("path", { d: HO.tapeD(tx, 0, Math.min(150, k.w * 0.5), 38, rot, seed), fill: HO.PAL.tape, opacity: 0.78 }, bg);
+    // the leader is map ink, or paper where the picture under its middle is dark
+    let lead = null;
+    if (Array.isArray(k.c.point)) {
+      const mid = { ax: (k.ax + k.c.point[0] * IW) / 2, ay: (k.ay + k.c.point[1] * IH) / 2, w: 40, h: 40 };
+      lead = { p: [k.c.point[0] * IW, k.c.point[1] * IH], path: K.el("path", { fill: lightAt(mid) < 4.5 ? HO.PAL.beige : HO.PAL.ink }, g) };
+    }
+    Object.assign(k, { g, sg, bg, bar, hl, lead, tilt: (HO.hash(seed, 4) - 0.5) * 3.2, seed, tagged: true });
+    K.show(g, false);
+  }
+  function drawTag(k, t) {
+    const f0 = HC.frameOf(k.c0), f = HC.frameOf(t) - f0, f2 = f - (f & 1), out = HC.frameOf(k.c1) - HC.frameOf(t);
+    const on = f >= 0 && out > 0;
+    K.show(k.g, on);
+    if (!on) return;
+    // leaving: three steps on twos to nothing
+    const a = out >= 6 ? 1 : Math.ceil(out / 2) / 3;
+    const cm = camAt(t), [sx, sy] = proj(cm, k.ax, k.ay), ox = Math.round(sx - k.w / 2), oy = Math.round(sy - k.h / 2);
+    k.g.setAttribute("transform", `translate(${ox} ${oy})`);
+    k.g.setAttribute("opacity", a.toFixed(3));
+    const sc = HO.slap(f2), cx = k.w / 2, cy = k.h / 2;
+    k.sg.setAttribute("transform", `translate(${cx} ${cy}) rotate(${k.tilt.toFixed(2)}) scale(${sc}) translate(${-cx} ${-cy})`);
+    const bs = HC.boilSeed(t, k.seed);
+    k.bg.setAttribute("transform", `translate(${((HO.hash(bs, 1) - 0.5) * 1.6).toFixed(2)} ${((HO.hash(bs, 2) - 0.5) * 1.6).toFixed(2)}) rotate(${((HO.hash(bs, 3) - 0.5) * 0.4).toFixed(2)} ${cx} ${cy})`);
+    const tw = HC.twos(t);
+    if (k.hl) k.hl.setAttribute("width", (k.hl.__w * K.clamp01((tw - k.c0 - 0.15) / 0.4)).toFixed(1));
+    if (k.bar) k.bar.setAttribute("width", (460 * k.frac * K.clamp01((tw - k.c0 - 0.2) / 0.7)).toFixed(1));
+    if (k.lead) {
+      // marker from the tag's edge nearest the point to just short of it, a slight bend, drawn on after the slap, then boiling
+      const [px, py] = proj(cm, k.lead.p[0], k.lead.p[1]), lx = px - ox, ly = py - oy;
+      const bx = Math.min(Math.max(lx, 0), k.w), by = Math.min(Math.max(ly, 0), k.h), dx = lx - bx, dy = ly - by, L = Math.hypot(dx, dy);
+      const p = K.clamp01((tw - k.c0 - 0.25) / 0.45);
+      if (L > 60 && p > 0) {
+        const ux = dx / L, uy = dy / L, pts = HO.jitter(HO.quad([bx + ux * 10, by + uy * 10], [lx - ux * 16, ly - uy * 16], 0.12, 32), bs, 0.8);
+        const { cum } = HO.resample(pts), len = cum[cum.length - 1];
+        k.lead.path.setAttribute("d", HO.strokeD(pts, 6, len * p, bs) + (p > 0.85 ? HO.headD(pts, 6, bs, K.clamp01((p - 0.85) / 0.15)) : ""));
+      } else k.lead.path.setAttribute("d", "");
+    }
+  }
   return t => cards.forEach(k => {
+    if (k.tagged) return drawTag(k, t);
     const a = Math.min(K.eout(K.prog(t, k.c0, k.c0 + (k.ink ? 0.2 : 0.3))), 1 - K.ein(K.prog(t, k.c1 - 0.25, k.c1)));
     K.show(k.g, a > 0.01);
     if (a <= 0.01) return;
@@ -1874,7 +2056,7 @@ B.panel = (s, g) => {
     return { z, cx, cy };
   };
   (window.STUDIO.panelCam = window.STUDIO.panelCam || {})[s.id] = { at: camAt, iw: IW, ih: IH, w: W, h: H };
-  const calloutDraw = panelCallouts(d, s, IW, IH, camAt, card);
+  const inkDraw = panelInk(d, s, IW, IH, camAt), calloutDraw = panelCallouts(d, s, IW, IH, camAt, card);
   return t => {
     const { z, cx, cy } = camAt(t);
     g.__cam = { z, cx, cy };
@@ -1886,7 +2068,7 @@ B.panel = (s, g) => {
     const fin = d.enter === "fade" ? K.eout(K.prog(t, s.t0, s.t0 + 0.45)) : 1, fout = d.exit === "fade" ? 1 - K.ein(K.prog(t, s.t1 - 0.45, s.t1)) : 1;
     g.setAttribute("opacity", Math.min(fin, fout));
     if (card) card.g.setAttribute("opacity", K.eout(K.prog(t, card.c0, card.c0 + 0.25)) * (1 - K.ein(K.prog(t, card.c1 - 0.25, card.c1))));
-    calloutDraw(t);
+    inkDraw(t); calloutDraw(t);
   };
 };
 
@@ -2047,6 +2229,17 @@ const segAt = t => { let cur = null; for (const s of SEGS) { if (s.t0 > t) break
 const showSource = t => {
   showLabel(sourceT, srcRuns, t);
   const a = +sourceT.getAttribute("opacity"), s = segAt(t), on = a > 0.001 && s && srcPlate(s);
+  if (COLLAGE) {
+    // a torn strip of the map's paper, the line typed on it in map ink, a touch off level; on every scene, since the
+    // strip carries its own ground
+    sourceT.setAttribute("fill", HO.PAL.ink);
+    if (!(a > 0.001)) { sourcePlate.setAttribute("opacity", 0); return; }
+    const b = sourceT.getBBox(), key = sourceT.textContent;
+    if (sourcePlate.__key !== key) { sourcePlate.__key = key; sourcePlate.setAttribute("d", HO.paperD(b.x - 16, b.y - 8, b.width + 32, b.height + 16, key.length, 1.4)); }
+    sourcePlate.setAttribute("opacity", a.toFixed(3));
+    [sourcePlate, sourceT].forEach(e => e.setAttribute("transform", `rotate(-0.6 ${b.x.toFixed(1)} ${(b.y + b.height).toFixed(1)})`));
+    return;
+  }
   sourceT.setAttribute("fill", on ? "#e4e1da" : C.GREY);
   if (!on) { sourcePlate.setAttribute("opacity", 0); return; }
   const b = sourceT.getBBox();
@@ -2073,6 +2266,11 @@ const HUD = (() => {
   SEGS.forEach(s => ["counter", "tag"].forEach(k => { if (k in s) ev[k].push({ t: s[k] && s[k].t != null ? s[k].t - 0.05 : s.t0, v: s[k], s }); }));
   if (!ev.counter.length && !ev.tag.length) return null;
   const hudG = K.group("hud");
+  // the collage's ledger (house.js): the cards are torn paper strips held by tape, the cash card ruled like a ledger page
+  // with a red margin, the value in Caslon, labels typed in Special Elite; the tag card is a yellow tag
+  const HFV = COLLAGE ? HF.caslon : FONT, HFL = COLLAGE ? HF.elite : SANS, HFN = COLLAGE ? HF.caslonI : SANS;
+  const paperOf = (el, x, y, w, h, seed) => { const k = [x, y, w, h].map(v => Math.round(v)).join(",");
+    if (el.__k !== k) { el.__k = k; el.setAttribute("d", HO.paperD(x, y, w, h, seed)); } };
   const PAPER = "#F1EDE4", NEG = C.NEG || "#B3261E", POS = C.POS || "#2E7D32";
   // the cards are paper whatever the film's palette, so their ink must be dark: on the engine's default dark palette C.INK
   // is a light grey, and a tag read as light on light (2026-11-26)
@@ -2126,15 +2324,22 @@ const HUD = (() => {
     const t0 = c.hero ? c.hero.land : c.t;        // after a hero, the chip stays under the card from the landing
     c.d = { n: d, text: (d > 0 ? "+" : "") + fmt(c.p, d), t0, t1: Math.min(t0 + DIN + DHOLD + DOUT, c.t1) };
   });
-  const cG = K.el("g", {}, hudG), cShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, cG), cCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, cG);
-  const cLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 4, fill: INK, "text-anchor": "end" }, cG);
-  const cVal = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, "text-anchor": "end" }, cG);
-  const cNote = K.text("", { ...AUX, "font-family": SANS, "font-size": 20, "font-style": "italic", fill: C.GREY, "text-anchor": "end" }, cG);
-  const dG = K.el("g", {}, hudG), dChip = K.el("rect", { rx: 10 }, dG);
-  const dVal = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, fill: PAPER, "text-anchor": "end" }, dG);
-  const dLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 22, "font-weight": 700, "letter-spacing": 2, "text-anchor": "end" }, dG);
+  const cG = K.el("g", {}, hudG), cShadow = K.el(COLLAGE ? "path" : "rect", { fill: "#000", opacity: COLLAGE ? 0.22 : 0.18, ...(COLLAGE ? { filter: `url(#${houseShadow()})` } : {}) }, cG),
+        cCard = COLLAGE ? K.el("path", { fill: PAPER }, cG) : K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, cG);
+  const cGrain = COLLAGE && houseGrain() ? K.el("path", { fill: "url(#hgrain)", style: "mix-blend-mode: multiply" }, cG) : null;
+  const cRules = COLLAGE ? K.el("path", { fill: "none", stroke: "#7d93a8", "stroke-width": 1.5, opacity: 0.45 }, cG) : null;
+  const cMargin = COLLAGE ? K.el("line", { stroke: "#c0504a", "stroke-width": 2, opacity: 0.55 }, cG) : null;
+  const cLab = K.text("", { ...AUX, "font-family": HFL, "font-size": 22, "font-weight": 700, "letter-spacing": 4, fill: INK, "text-anchor": "end" }, cG);
+  const cVal = K.text("", { "font-family": HFV, "font-size": READ, "font-weight": 700, "text-anchor": "end" }, cG);
+  const cNote = K.text("", { ...AUX, "font-family": HFN, "font-size": 20, "font-style": "italic", fill: C.GREY, "text-anchor": "end" }, cG);
+  const cTape = COLLAGE ? K.el("path", { fill: HO.PAL.tape, opacity: 0.8 }, cG) : null;
+  // in the collage the change is a stub of paper under the card, the amount in its sign's colour, not a coloured chip
+  const dG = K.el("g", {}, hudG), dShadow = COLLAGE ? K.el("path", { fill: "#000", opacity: 0.2, filter: `url(#${houseShadow()})` }, dG) : null,
+        dChip = COLLAGE ? K.el("path", { fill: PAPER }, dG) : K.el("rect", { rx: 10 }, dG);
+  const dVal = K.text("", { "font-family": HFV, "font-size": READ, "font-weight": 700, fill: PAPER, "text-anchor": "end" }, dG);
+  const dLab = K.text("", { ...AUX, "font-family": HFL, "font-size": 22, "font-weight": 700, "letter-spacing": 2, "text-anchor": "end" }, dG);
   // the card is as wide as the widest value it will count through, measured once
-  const meas = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700 }, hudG);
+  const meas = K.text("", { "font-family": HFV, "font-size": READ, "font-weight": 700 }, hudG);
   cs.forEach(c => { if (c.off) return;
     const vals = [c.value].concat(c.prev && c.p && c.prev.p ? [fmt(c.p, c.prev.p.n)] : []);
     c.w = Math.max(...vals.map(v => { meas.textContent = v + "0"; return meas.getComputedTextLength(); }), c.label.length * 17, c.note.length * 10) + 56;
@@ -2142,8 +2347,8 @@ const HUD = (() => {
     if (c.d) { meas.textContent = c.d.text; c.d.w = meas.getComputedTextLength() + 44; K.label(c.d.text, c.t, c.d.t1, "counter"); } });
   // the hero's widths, measured once here: measured each frame, a text under the flight's scale is hinted at another
   // size and a frame drew differently depending on the frame before it
-  { const mv = K.text("", { "font-family": FONT, "font-size": Math.round(V(150, 120) * TS), "font-weight": 700 }, hudG);
-    const ml = K.text("", { "font-family": SANS, "font-size": 34, "font-weight": 700, "letter-spacing": 6 }, hudG);
+  { const mv = K.text("", { "font-family": HFV, "font-size": Math.round(V(150, 120) * TS), "font-weight": 700 }, hudG);
+    const ml = K.text("", { "font-family": HFL, "font-size": 34, "font-weight": 700, "letter-spacing": 6 }, hudG);
     cs.forEach(c => { if (!c.hero) return;
       const vals = [c.value].concat(c.prev && c.p && c.prev.p ? [fmt(c.p, c.prev.p.n)] : []);
       const vw = Math.max(...vals.map(v => { mv.textContent = v + "0"; return mv.getComputedTextLength(); }));
@@ -2154,18 +2359,21 @@ const HUD = (() => {
   meas.remove();
   const COUNT = 0.6;
   // the hero's own card, label, number and chip: drawn at the centre, then moved and scaled onto the corner card
-  const HS = Math.round(V(150, 120) * TS), hG = K.el("g", {}, hudG), hShadow = K.el("rect", { fill: "#000", opacity: 0.18 }, hG);
-  const hCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 3 }, hG);
-  const hLab = K.text("", { ...AUX, "font-family": SANS, "font-size": 34, "font-weight": 700, "letter-spacing": 6, fill: INK, "text-anchor": "middle" }, hG);
-  const hVal = K.text("", { "font-family": FONT, "font-size": HS, "font-weight": 700, "text-anchor": "middle" }, hG);
-  const hChip = K.el("rect", { rx: 14 }, hG);
-  const hDel = K.text("", { "font-family": FONT, "font-size": READ, "font-weight": 700, fill: PAPER, "text-anchor": "middle" }, hG);
+  const HS = Math.round(V(150, 120) * TS), hG = K.el("g", {}, hudG), hShadow = K.el(COLLAGE ? "path" : "rect", { fill: "#000", opacity: 0.18 }, hG);
+  const hCard = COLLAGE ? K.el("path", { fill: PAPER }, hG) : K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 3 }, hG);
+  if (COLLAGE) { hShadow.setAttribute("filter", `url(#${houseShadow()})`); hShadow.setAttribute("opacity", 0.24); }
+  const hTape = COLLAGE ? K.el("path", { fill: HO.PAL.tape, opacity: 0.8 }, hG) : null;
+  const hLab = K.text("", { ...AUX, "font-family": HFL, "font-size": 34, "font-weight": 700, "letter-spacing": 6, fill: INK, "text-anchor": "middle" }, hG);
+  const hVal = K.text("", { "font-family": HFV, "font-size": HS, "font-weight": 700, "text-anchor": "middle" }, hG);
+  const hChip = COLLAGE ? K.el("path", { fill: PAPER, filter: `url(#${houseShadow()})` }, hG) : K.el("rect", { rx: 14 }, hG);
+  const hDel = K.text("", { "font-family": HFV, "font-size": READ, "font-weight": 700, fill: PAPER, "text-anchor": "middle" }, hG);
 
   // tag
   const ts = ev.tag.map((e, i) => ({ t: e.t, text: e.v == null ? null : String(e.v.text != null ? e.v.text : e.v) }));
   ts.forEach((x, i) => { x.t1 = i + 1 < ts.length ? ts[i + 1].t : TL.duration; if (x.text) K.label(x.text, x.t, x.t1, "tag"); });
-  const tG = K.el("g", {}, hudG), tCard = K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, tG);
-  const tTxt = K.text("", { "font-family": SANS, "font-size": READ, "font-weight": 700, "letter-spacing": 3, fill: INK }, tG);
+  const tG = K.el("g", {}, hudG), tShadow = COLLAGE ? K.el("path", { fill: "#000", opacity: 0.2, filter: `url(#${houseShadow()})` }, tG) : null,
+        tCard = COLLAGE ? K.el("path", { fill: HY }, tG) : K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, tG);
+  const tTxt = K.text("", { "font-family": HFL, "font-size": READ, "font-weight": 700, "letter-spacing": 3, fill: INK }, tG);
   const left = TAG_LEFT;
 
   const at = (list, t) => { let cur = null; for (const x of list) if (t >= x.t) cur = x; return cur; };
@@ -2193,8 +2401,18 @@ const HUD = (() => {
         }
         const w = show.w, h = (show.label ? 30 : 0) + READ * 1.15 + (show.note ? 30 : 0) + 28;
         const x0 = right - w, y = top + (1 - a) * -24;
-        K.set(cShadow, { x: x0 + 5, y: y + 7, width: w, height: h });
-        K.set(cCard, { x: x0, y, width: w, height: h });
+        if (COLLAGE) {
+          paperOf(cShadow, x0 + 4, y + 7, w, h, 41); paperOf(cCard, x0, y, w, h, 40);
+          if (cGrain) paperOf(cGrain, x0, y, w, h, 40);
+          let rd = ""; for (let ry = y + 40; ry < y + h - 6; ry += 34) rd += `M${x0 + 4} ${ry.toFixed(1)} H${x0 + w - 4}`;
+          cRules.setAttribute("d", rd || "M0 0");
+          K.set(cMargin, { x1: x0 + 30, x2: x0 + 30, y1: y + 2, y2: y + h - 2 });
+          const tk = Math.round(x0) + "," + Math.round(y);
+          if (cTape.__k !== tk) { cTape.__k = tk; cTape.setAttribute("d", HO.tapeD(x0 + 20, y + 10, 110, 36, -0.7, 43)); }
+        } else {
+          K.set(cShadow, { x: x0 + 5, y: y + 7, width: w, height: h });
+          K.set(cCard, { x: x0, y, width: w, height: h });
+        }
         let yy = y + 14;
         cLab.textContent = show.label.toUpperCase(); if (show.label) { yy += 24; K.set(cLab, { x: right - 24, y: yy }); }
         yy += READ * 1.0 + (show.label ? 8 : 4);
@@ -2210,9 +2428,11 @@ const HUD = (() => {
           // the caption sits inside the chip, paper on the sign colour, so it reads on any scene behind
           const col = dd.n < 0 ? NEG : POS, lh = show.dlab ? 30 : 0, ch = READ * 1.2 + lh;
           const cy = y + h + 16 + (hero ? 0 : (1 - K.eout(K.prog(t, dd.t0, dd.t0 + DIN))) * 10);
-          K.set(dChip, { x: right - Math.max(dd.w, show.dlab.length * 15 + 44), y: cy, width: Math.max(dd.w, show.dlab.length * 15 + 44), height: ch, fill: col });
-          dLab.textContent = show.dlab.toUpperCase(); K.set(dLab, { x: right - 22, y: cy + 30, fill: PAPER });
-          dVal.textContent = dd.text; K.set(dVal, { x: right - 22, y: cy + lh + READ * 0.95 });
+          const cw = Math.max(dd.w, show.dlab.length * 15 + 44);
+          if (COLLAGE) { paperOf(dShadow, right - cw + 3, cy + 5, cw, ch, 81); paperOf(dChip, right - cw, cy, cw, ch, 80); }
+          else K.set(dChip, { x: right - cw, y: cy, width: cw, height: ch, fill: col });
+          dLab.textContent = show.dlab.toUpperCase(); K.set(dLab, { x: right - 22, y: cy + 30, fill: COLLAGE ? INK : PAPER });
+          dVal.textContent = dd.text; K.set(dVal, { x: right - 22, y: cy + lh + READ * 0.95, fill: COLLAGE ? col : PAPER });
           dG.setAttribute("opacity", da.toFixed(3));
           dG.setAttribute("transform", `rotate(0.8 ${right} ${top})`);
         }
@@ -2228,8 +2448,14 @@ const HUD = (() => {
         hLab.textContent = c.label.toUpperCase();
         const dd = c.d, dw = hh_.dw, w = hh_.w, lh = c.label ? 50 : 0, h = 30 + lh + HS * 1.05 + 30;
         const cx = W / 2, y0 = V(H * 0.42, SMID) - h / 2, x0 = cx - w / 2;
-        K.set(hShadow, { x: x0 + 7, y: y0 + 10, width: w, height: h });
-        K.set(hCard, { x: x0, y: y0, width: w, height: h });
+        if (COLLAGE) {
+          paperOf(hShadow, x0 + 6, y0 + 10, w, h, 51); paperOf(hCard, x0, y0, w, h, 50);
+          const tk = Math.round(x0) + "," + Math.round(y0);
+          if (hTape.__k !== tk) { hTape.__k = tk; hTape.setAttribute("d", HO.tapeD(x0 + w / 2, y0 + 2, 170, 44, 0.04, 53)); }
+        } else {
+          K.set(hShadow, { x: x0 + 7, y: y0 + 10, width: w, height: h });
+          K.set(hCard, { x: x0, y: y0, width: w, height: h });
+        }
         K.set(hLab, { x: cx, y: y0 + 30 + 34 });
         K.set(hVal, { x: cx, y: y0 + 30 + lh + HS * 0.85 });
         const ca = K.eout(K.prog(t, hh_.t0 + 0.1 + hh_.count * 0.8, hh_.t0 + 0.3 + hh_.count));   // the chip once the count lands
@@ -2237,8 +2463,9 @@ const HUD = (() => {
         if (dd) {
           hDel.textContent = dd.text;
           const chy = y0 + h + 18;
-          K.set(hChip, { x: cx - dw / 2, y: chy, width: dw, height: READ * 1.25, fill: dd.n < 0 ? NEG : POS, opacity: ca.toFixed(3) });
-          K.set(hDel, { x: cx, y: chy + READ * 0.98, opacity: ca.toFixed(3) });
+          if (COLLAGE) { paperOf(hChip, cx - dw / 2, chy, dw, READ * 1.25, 82); hChip.setAttribute("opacity", ca.toFixed(3)); }
+          else K.set(hChip, { x: cx - dw / 2, y: chy, width: dw, height: READ * 1.25, fill: dd.n < 0 ? NEG : POS, opacity: ca.toFixed(3) });
+          K.set(hDel, { x: cx, y: chy + READ * 0.98, opacity: ca.toFixed(3), ...(COLLAGE ? { fill: dd.n < 0 ? NEG : POS } : {}) });
         }
         // in: a short rise and settle; out: the whole hero moves its top-right corner onto the card's and shrinks to its width
         const pin = K.eout(K.prog(t, hh_.t0, hh_.t0 + HIN)), f = K.eio(K.prog(t, hh_.fly, hh_.land));
@@ -2262,7 +2489,8 @@ const HUD = (() => {
       if (tx && ta > 0.01) {
         tTxt.textContent = tx.toUpperCase();
         const tw = tTxt.getComputedTextLength() + 48, th = READ * 1.45;
-        K.set(tCard, { x: left, y: top + (1 - ta) * -24, width: tw, height: th });
+        if (COLLAGE) { paperOf(tShadow, left + 4, top + (1 - ta) * -24 + 6, tw, th, 61); paperOf(tCard, left, top + (1 - ta) * -24, tw, th, 60); }
+        else K.set(tCard, { x: left, y: top + (1 - ta) * -24, width: tw, height: th });
         K.set(tTxt, { x: left + 24, y: top + (1 - ta) * -24 + READ * 1.12 });
         tG.setAttribute("opacity", ta.toFixed(3));
         tG.setAttribute("transform", `rotate(-0.8 ${left} ${top})`);
