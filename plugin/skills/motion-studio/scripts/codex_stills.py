@@ -42,7 +42,9 @@ one at another shape is re-rolled. After each edit the frame is compared with it
 frame under 0.9 is kept but listed in review.tsv as "composition may have moved". On the first real test (2026-11-25)
 edits asking for one small change scored 0.71 and 0.82, with the figure moved and the whole texture redrawn, which
 flipped at 4 fps reads as jitter. So edits suit a deliberate cut to a new drawing (a new pose), not flipbook in-betweens;
-motion over one still is the panel's "fx" layer (longform.md). Low scores are not re-rolled, since each try is a
+motion over one still is the panel's "fx" layer (longform.md). After the crop, a frame within a pixel or two (half a
+percent) of its base frame is snapped to that exact size, since the crop can round one pixel differently; a bigger
+difference is listed in review.tsv. Low scores are not re-rolled, since each try is a
 Codex call and the test suggests a re-roll rarely holds still either.
 
 How to redraw (picture-truth.md rule 16, 2026-11-27): a shot with "photo": path and "photo_licence" restyles that real
@@ -260,6 +262,43 @@ def likeness(a, b):
     return float((g[0] * g[1]).sum() / den) if den else 0.0
 
 
+SNAP = 0.005     # a frame within half a percent of its base frame's size (a pixel or two) is snapped to it exactly
+
+
+def frame_of(base, out):
+    """The still a flipbook frame flips against: an earlier shot's cropped still for one of our originals, else the base
+    PNG itself (a path given as the base is used as a frame as it is)."""
+    o = os.path.abspath(base)
+    if os.path.dirname(o) == os.path.abspath(os.path.join(out, "originals")):
+        f = os.path.join(out, os.path.basename(o))
+        if os.path.isfile(f):
+            return f
+    return base
+
+
+def snap_to(dst, frame):
+    """Give dst exactly frame's size when they differ by a pixel or two, keeping its PNG text; a note for review.tsv.
+    Episode thread, 2026-11-27: edits came back 1671x940 against a 1672x940 base, and timeline stopped on "flipbook
+    frames differ in size". A bigger difference is left alone and listed, since stretching it would distort the frame."""
+    from PIL import Image
+    from PIL.PngImagePlugin import PngInfo
+    with Image.open(frame) as f:
+        fw, fh = f.size
+    im = Image.open(dst); im.load()
+    w, h = im.size
+    if (w, h) == (fw, fh):
+        return None
+    if abs(w - fw) > max(2, SNAP * fw) or abs(h - fh) > max(2, SNAP * fh):
+        return f"{w}x{h}, not its base frame's {fw}x{fh}: flipbook frames must match; redo or resize by hand"
+    info = PngInfo()
+    for k, v in (im.text or {}).items():
+        info.add_text(k, v)
+    tmp = dst + ".part"
+    im.convert("RGB").resize((fw, fh), Image.LANCZOS).save(tmp, format="PNG", pnginfo=info)
+    os.replace(tmp, dst)
+    return f"snapped {w}x{h} to its base frame's {fw}x{fh}"
+
+
 def edit_base(shot, out, default):
     """The base picture for an edit: an earlier shot's untouched original, a PNG path, or --edit-from."""
     ref = shot.get("edit_from") or default
@@ -437,6 +476,9 @@ def main():
             src = orig + ".fit.png" if os.path.exists(orig + ".fit.png") else orig
             crop_16x9(src, dst, f"originals/{s['id']}.png")
             if base:
+                snapped = snap_to(dst, frame_of(base, a.out))
+                if snapped:
+                    review.append((s["id"], snapped))
                 k = likeness(base, src)
                 print(f"{s['id']}: likeness to its base {k:.2f}")
                 if k < LIKENESS:
