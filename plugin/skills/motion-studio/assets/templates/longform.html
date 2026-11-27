@@ -350,15 +350,22 @@ B.cutaway = (s, g) => {
 // never rises more than STAT_RISE of the frame's height. The motion a pan makes depends on how much is drawn: at 10 px/s a
 // short "$4.3M" with a one-line label measured 0.22 and a long label 0.34, against final's 0.2 floor, so 14 px/s keeps the
 // sparsest stat about 50% over it. "stat_drift" in engine.json: true, a number (px/s)
-// or false; a segment's "drift" overrides it. Returns the rise in px at t.
+// or false; "drift" on the segment or in its data overrides it. Returns [dx, dy] in px at t.
+// The travel used to be capped at STAT_RISE (12%) of the frame whatever the hold, so the speed fell as the hold grew: an
+// 18 s stat crawled at 7 px/s and failed the motion check with drift on (Survive Year 1, 2026-11-27). Now the speed holds
+// and the travel goes as far as the room allows: up until the content's top reaches the top margin (below the HUD cards
+// while they are up), then diagonally sideways into the room either side of the widest line.
 const STAT_DRIFT = 14, STAT_RISE = 0.12, STAT_EASE = 0.6;
 function statRate(s, d, c0) {
-  const v = d.drift !== undefined ? d.drift : TL.stat_drift, px = (v === true ? STAT_DRIFT : typeof v === "number" ? Math.max(0, v) : 0) * H / 1080;
-  return Math.min(px, STAT_RISE * H / Math.max(0.5, s.t1 - c0 - STAT_EASE / 2));
+  const v = d.drift !== undefined ? d.drift : s.drift !== undefined ? s.drift : TL.stat_drift;
+  return (v === true ? STAT_DRIFT : typeof v === "number" ? Math.max(0, v) : 0) * H / 1080;
 }
-function statDrift(t, rate, c0) {
-  const x = Math.max(0, t - c0);
-  return rate * (x < STAT_EASE ? x * x / (2 * STAT_EASE) : x - STAT_EASE / 2);
+function statDrift(t, rate, c0, s, room) {
+  const x = Math.max(0, t - c0), dur = Math.max(0.5, s.t1 - c0 - STAT_EASE / 2);
+  const want = rate * dur, up = Math.max(room.up, STAT_RISE * H), side = Math.max(0, room.side);
+  const total = Math.min(want, Math.hypot(up, side)), dy = Math.min(total, up), dx = Math.sqrt(Math.max(0, total * total - dy * dy));
+  const k = (x < STAT_EASE ? x * x / (2 * STAT_EASE) : x - STAT_EASE / 2) / dur;   // 0..1 along the path, at constant speed after the ease
+  return [-dx * Math.min(1, k), dy * Math.min(1, k)];
 }
 
 B.stat = (s, g) => {
@@ -370,6 +377,13 @@ B.stat = (s, g) => {
   // notes: [{text, at}] — follow-up lines that land on their words under the label, so a long stat scene keeps moving
   const notes = (d.notes || []).map(x => ({ x, ms: wrapWords(txt(x), fit(V(1500, SAFE.x1 - SAFE.x0 - 40), NS)).map(l => maskText(l, { "font-family": SANS, "font-size": NS, fill: C.GREY }, g)) }));
   K.label((d.prefix || "") + fmtNum(d.value, d.decimals || 0) + (d.suffix || "") + " " + d.label, s.t0, s.t1, "big number");
+  // the room the drift may use: above the number's top to the top margin (under the HUD cards when either is up during the
+  // scene), and either side of the widest line to the frame's edge
+  big.t.textContent = full;
+  const wid = Math.max(big.t.getComputedTextLength(), ...lab.map(m => m.t.getComputedTextLength()), ...notes.flatMap(n => n.ms.map(m => m.t.getComputedTextLength())));
+  big.t.textContent = "";
+  const hudUp = [...tagSpans, ...counterSpans].some(sp => sp.t0 < s.t1 && sp.t1 > s.t0);
+  const topM = hudUp ? V(TAG_TOP + 300, SAFE.y0 + 300) : V(60, SAFE.y0 + 20), sideM = V(80, SAFE.x0 + 20);
   notes.forEach(n => K.label(txt(n.x), s.t0, s.t1, "stat note"));
   return t => {
     const e = env(t, s), o = 1 - e.o;
@@ -381,8 +395,9 @@ B.stat = (s, g) => {
     let ny = by + 110 + lab.length * pitch(LS, 1.3) + 20;
     notes.forEach((n, k) => { const tk = cueT(n.x, revealAt(s, k + 1, notes.length + 1, 0.8, 0.4));
       n.ms.forEach(m => { placeMask(m, W / 2, ny, K.eout(K.prog(t, tk, tk + 0.35)) * o); ny += pitch(NS); }); });
-    const dr = statDrift(t, statRate(s, d, c0), c0);
-    g.__cam = dr ? { cx: W / 2, cy: H / 2 - dr, z: 1, frac: 1 } : null;
+    const bigFS = big.size, room = { up: by - bigFS * 0.8 - topM, side: (V(W, SAFE.x1 - SAFE.x0) - wid) / 2 - sideM };
+    const [dx, dy] = statDrift(t, statRate(s, d, c0), c0, s, room);
+    g.__cam = dx || dy ? { cx: W / 2 - dx, cy: H / 2 - dy, z: 1, frac: 1 } : null;
   };
 };
 
@@ -1311,6 +1326,9 @@ const SHOT_CAM = { EST: ["pull", 1.16, 1.0], WIDE: ["pan", 1.08, 1.08], MED: ["p
 const PANEL_IMAGES = [];
 function panelCam(d) {
   if (d.camera && typeof d.camera === "object") return d.camera;
+  // a clip moves by itself: no camera move on top of it unless one is asked for (Survive Year 1, 2026-11-27: a push over
+  // a moving clip read as two motions fighting)
+  if (!d.camera && d.clip) return { from: { x: 0.5, y: 0.5, z: 1 }, to: { x: 0.5, y: 0.5, z: 1 } };
   const [fx, fy] = d.focus || [0.5, 0.45], [def, z0, z1] = SHOT_CAM[d.shot] || ["push", 1.02, 1.08];
   let mv = d.camera || def;
   if (mv === "pan") mv = fx < 0.5 ? "pan-left" : "pan-right";
@@ -1624,6 +1642,7 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
   cards.forEach(k => {
     const ts = Array.from({ length: 8 }, (_, j) => K.lerp(k.c0, k.c1 - 0.05, j / 7)), cams = ts.map(camAt);
     const zmin = Math.min(...cams.map(cm => cm.z));
+    k.cells = Math.max(1, Math.ceil(k.w / zmin / IW * (gw || 48)) * Math.ceil(k.h / zmin / IH * (gh || 27)));
     const foot = (ax, ay, z, m = 0) => [ax - k.w / (2 * z) - m, ay - k.h / (2 * z) - m, k.w / z + 2 * m, k.h / z + 2 * m];
     const test = (ax, ay) => {
       let worst = 0, mean = 0;
@@ -1636,7 +1655,7 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
       const f = foot(ax, ay, zmin, 0.03 * IW);
       if (focus && focus[0] > f[0] && focus[0] < f[0] + f[2] && focus[1] > f[1] && focus[1] < f[1] + f[3]) return null;
       if (keep.some(b => hit(foot(ax, ay, zmin), b))) return null;
-      if (placed.some(p => p.k.c0 < k.c1 && k.c0 < p.k.c1 && hit(foot(ax, ay, zmin, 16), p.foot))) return null;
+      if (placed.some(p => p.k.c0 < k.c1 && k.c0 < p.k.c1 && hit(foot(ax, ay, zmin, 40), p.foot))) return null;
       return { worst, mean };
     };
     let best = null;
@@ -1660,7 +1679,9 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
         warn(`callout "${k.c.text || k.c.value}": no place in the frame clears the focus, the HUD and the other callouts; give it a pos or a shorter text`);
         const cm = cams[0];
         best = { ax: cm.cx + (fr.x0 + k.w / 2 + 20 - W / 2) / cm.z, ay: cm.cy + (fr.y1 - k.h / 2 - 20 - H / 2) / cm.z, worst: -1, mean: 0 };
-      } else if (best.worst > 0) {
+      } else if (best.worst > Math.max(2, 0.06 * k.cells) && !k.c.busy_ok) {
+        // a card's edge on a cell or two of ink reads fine (the map spreads each line to its neighbours); a warning means a
+        // real share of the card sits on drawing. "busy_ok": true records a human look that it reads anyway
         warn(`callout "${k.c.text || k.c.value}": no quiet region big enough; the best place still covers ${best.worst} busy cell(s) of the still. Shorten it, give it a pos, or use a still with room`);
       }
     }
@@ -1668,38 +1689,98 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     placed.push({ k, foot: foot(best.ax, best.ay, zmin) });
     (window.STUDIO.callouts = window.STUDIO.callouts || []).push({ seg: s.id, text: k.c.text || String(k.c.value), pos: [+(best.ax / IW).toFixed(3), +(best.ay / IH).toFixed(3)], busy: best.worst, auto: !Array.isArray(k.c.pos), w: k.w, h: k.h });
   });
-  // 3. draw
+  // 3. draw. style "ink" (the default since the owner's note on 2026-11-27 that boxed cards looked "plastered-on", not
+  // melded into the scene): the words are lettered straight onto the picture's own quiet paper, in the illustration's ink
+  // (or paper-light on a dark patch, from the quiet map's lightness), over a faint feathered wash that only evens out the
+  // grain (multiplying it into the picture left a visible darker block, so it is a plain lift). They write on left to right like a pen, a
+  // value gets a hand-drawn accent underline, and "point": [x, y] (0..1 of the still) draws a pen leader to the thing the
+  // fact is about. style "card" keeps the HUD's paper cards. Per callout or for the panel ("callout_style").
+  const WASH = "cw" + s.id.replace(/\W/g, "");
+  { const f = K.el("filter", { id: WASH, x: "-30%", y: "-30%", width: "160%", height: "160%" }, K.defs); K.el("feGaussianBlur", { stdDeviation: 16 }, f); }
+  const lightAt = (k) => {
+    if (!Q || !Q.l || Q.l.length !== gw * gh) return 7;
+    const [x0, y0, x1, y1] = toCells([k.ax - k.w / 2, k.ay - k.h / 2, k.w, k.h]);
+    let n = 0, sum = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { sum += +Q.l[y * gw + x]; n++; }
+    return n ? sum / n : 7;
+  };
+  const wobble = (x0, y0, x1, seed) => { const r = K.rng(seed), pts = []; for (let i = 0; i <= 8; i++) pts.push(`${(x0 + (x1 - x0) * i / 8).toFixed(1)} ${(y0 + (r() - 0.5) * 3 + Math.sin(i * 0.9) * 1.2).toFixed(1)}`);
+    return "M" + pts.join(" L"); };
   cards.forEach((k, n) => {
+    const style = k.c.style || d.callout_style || "ink", ink = style === "ink";
+    const dark = ink && lightAt(k) < 4.5;
+    const INKC = ink ? (dark ? PAPER : "#2a231c") : INK;
     const g = K.el("g", { "data-callout": s.id }, s.ov);
-    K.el("rect", { x: 5, y: 7, width: k.w, height: k.h, fill: "#000", opacity: 0.18 }, g);
-    K.el("rect", { x: 0, y: 0, width: k.w, height: k.h, fill: PAPER, stroke: INK, "stroke-width": 2 }, g);
-    if (k.kind === "icon") {
-      K.el("circle", { cx: PAD + 36, cy: k.h / 2, r: 36, fill: "none", stroke: C.ACCENT || INK, "stroke-width": 3 }, g);
-      K.el("path", { d: CALLOUT_ICONS[k.c.icon] || CALLOUT_ICONS.check, transform: `translate(${PAD + 36} ${k.h / 2})`, fill: "none", stroke: INK, "stroke-width": 3.5, "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
+    const clipId = "cwr" + s.id.replace(/\W/g, "") + n, clip = K.clipRect(clipId, -40, -40, 0, k.h + 80);
+    const body = K.el("g", ink ? { "clip-path": `url(#${clipId})` } : {}, g);
+    if (ink) K.el("rect", { x: -18, y: -10, width: k.w + 36, height: k.h + 20, rx: 30, fill: dark ? "#16120e" : PAPER, opacity: dark ? 0.4 : 0.35, filter: `url(#${WASH})` }, body);
+    else {
+      K.el("rect", { x: 5, y: 7, width: k.w, height: k.h, fill: "#000", opacity: 0.18 }, g);
+      K.el("rect", { x: 0, y: 0, width: k.w, height: k.h, fill: PAPER, stroke: INK, "stroke-width": 2 }, g);
+      g.appendChild(body);
     }
-    let y = PAD - 4, bar = null;
+    if (k.kind === "icon") {
+      if (!ink) K.el("circle", { cx: PAD + 36, cy: k.h / 2, r: 36, fill: "none", stroke: C.ACCENT || INK, "stroke-width": 3 }, body);
+      K.el("path", { d: CALLOUT_ICONS[k.c.icon] || CALLOUT_ICONS.check, transform: `translate(${PAD + 36} ${k.h / 2}) scale(${ink ? 1.3 : 1})`, fill: "none", stroke: INKC, "stroke-width": 3.5, "stroke-linecap": "round", "stroke-linejoin": "round" }, body);
+    }
+    let y = PAD - 4, bar = null, under = null;
+    const neg = dark ? "#F08A7E" : NEG, pos = dark ? "#8FD392" : POS;
     k.rows.forEach(([kind, text, attrs, rh]) => {
       if (kind === "bar") {
-        K.el("rect", { x: PAD, y: y + 8, width: 460, height: 22, rx: 11, fill: INK, opacity: 0.14 }, g);
-        bar = K.el("rect", { x: PAD, y: y + 8, width: 0, height: 22, rx: 11, fill: C.ACCENT || POS }, g);
+        if (ink) {
+          bar = K.el("rect", { x: PAD, y: y + 6, width: 0, height: 24, fill: C.ACCENT || POS, opacity: 0.85 }, body);
+          K.el("path", { d: `M${PAD} ${y + 6} H${PAD + 460} V${y + 30} H${PAD} Z`, fill: "none", stroke: INKC, "stroke-width": 2.5, "stroke-linejoin": "round" }, body);
+        } else {
+          K.el("rect", { x: PAD, y: y + 8, width: 460, height: 22, rx: 11, fill: INK, opacity: 0.14 }, body);
+          bar = K.el("rect", { x: PAD, y: y + 8, width: 0, height: 22, rx: 11, fill: C.ACCENT || POS }, body);
+        }
       } else {
-        const fill = kind === "kick" ? C.GREY : kind === "val" ? (signed(text) < 0 ? NEG : signed(text) > 0 ? POS : INK) : INK;
-        K.text(text, { ...attrs, fill, x: PAD + k.iconW, y: y + Math.round(rh * 0.8) }, g);
+        const fill = kind === "kick" ? (ink ? INKC : C.GREY) : kind === "val" ? (signed(text) < 0 ? neg : signed(text) > 0 ? pos : INKC) : INKC;
+        const el = K.text(text, { ...attrs, fill, x: PAD + k.iconW, y: y + Math.round(rh * 0.8) }, body);
+        if (kind === "kick" && ink) el.setAttribute("opacity", 0.7);
+        if (kind === "val" && ink) {
+          const w = el.getComputedTextLength();
+          under = K.el("path", { d: wobble(PAD + k.iconW, y + rh * 0.95, PAD + k.iconW + w, n * 7 + 3), fill: "none", stroke: C.ACCENT || INKC, "stroke-width": 4, "stroke-linecap": "round" }, body);
+          under.__len = w + 4;
+        }
         if (kind !== "kick") K.label(text, k.c0, k.c1, "callout");
       }
       y += rh;
     });
-    k.g = g; k.bar = bar; k.tilt = n % 2 ? 0.7 : -0.7;
+    // the pen leader to what the fact is about
+    let lead = null;
+    if (Array.isArray(k.c.point)) {
+      lead = { p: [k.c.point[0] * IW, k.c.point[1] * IH], path: K.el("path", { fill: "none", stroke: INKC, "stroke-width": 3, "stroke-linecap": "round" }, g),
+               head: K.el("path", { fill: "none", stroke: INKC, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" }, g) };
+    }
+    Object.assign(k, { g, bar, under, lead, clip, ink, tilt: ink ? (n % 2 ? 0.5 : -0.5) : (n % 2 ? 0.7 : -0.7) });
     K.show(g, false);
   });
   return t => cards.forEach(k => {
-    const a = Math.min(K.eout(K.prog(t, k.c0, k.c0 + 0.3)), 1 - K.ein(K.prog(t, k.c1 - 0.25, k.c1)));
+    const a = Math.min(K.eout(K.prog(t, k.c0, k.c0 + (k.ink ? 0.2 : 0.3))), 1 - K.ein(K.prog(t, k.c1 - 0.25, k.c1)));
     K.show(k.g, a > 0.01);
     if (a <= 0.01) return;
-    const cm = camAt(t), [sx, sy] = proj(cm, k.ax, k.ay), rise = (1 - K.eout(K.prog(t, k.c0, k.c0 + 0.3))) * 24;
-    k.g.setAttribute("transform", `translate(${Math.round(sx - k.w / 2)} ${Math.round(sy - k.h / 2 + rise)}) rotate(${k.tilt} ${k.w / 2} ${k.h / 2})`);
+    const cm = camAt(t), [sx, sy] = proj(cm, k.ax, k.ay), rise = k.ink ? 0 : (1 - K.eout(K.prog(t, k.c0, k.c0 + 0.3))) * 24;
+    const ox = Math.round(sx - k.w / 2), oy = Math.round(sy - k.h / 2 + rise);
+    k.g.setAttribute("transform", `translate(${ox} ${oy}) rotate(${k.tilt} ${k.w / 2} ${k.h / 2})`);
     k.g.setAttribute("opacity", a.toFixed(3));
-    if (k.bar) k.bar.setAttribute("width", (460 * k.frac * K.eio(K.prog(t, k.c0 + 0.2, k.c0 + 0.9))).toFixed(1));
+    if (k.ink) K.set(k.clip, { width: (k.w + 80) * K.eio(K.prog(t, k.c0, k.c0 + 0.6)) });     // written on, left to right
+    if (k.under) { const p = K.eio(K.prog(t, k.c0 + 0.45, k.c0 + 0.8)); k.under.setAttribute("stroke-dasharray", `${k.under.__len} ${k.under.__len}`); k.under.setAttribute("stroke-dashoffset", (k.under.__len * (1 - p)).toFixed(1)); }
+    if (k.bar) k.bar.setAttribute("width", (460 * k.frac * K.eio(K.prog(t, k.c0 + 0.3, k.c0 + 1.0))).toFixed(1));
+    if (k.lead) {
+      // from the card's edge nearest the point to just short of it, a slight curve, drawn on after the words
+      const [px, py] = proj(cm, k.lead.p[0], k.lead.p[1]), lx = px - ox, ly = py - oy;
+      const bx = Math.min(Math.max(lx, 0), k.w), by = Math.min(Math.max(ly, 0), k.h), dx = lx - bx, dy = ly - by, L = Math.hypot(dx, dy);
+      if (L > 30) {
+        const ux = dx / L, uy = dy / L, ex = lx - ux * 14, ey = ly - uy * 14, mx = (bx + ex) / 2 - uy * L * 0.12, my = (by + ey) / 2 + ux * L * 0.12;
+        const p = K.eio(K.prog(t, k.c0 + 0.6, k.c0 + 1.0));
+        k.lead.path.setAttribute("d", `M${(bx + ux * 8).toFixed(1)} ${(by + uy * 8).toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`);
+        const len = k.lead.path.getTotalLength();
+        k.lead.path.setAttribute("stroke-dasharray", `${len} ${len}`); k.lead.path.setAttribute("stroke-dashoffset", (len * (1 - p)).toFixed(1));
+        const hx = ex - mx, hy = ey - my, hl = Math.hypot(hx, hy) || 1, ax = hx / hl, ay = hy / hl;
+        k.lead.head.setAttribute("d", `M${(ex - ax * 16 - ay * 9).toFixed(1)} ${(ey - ay * 16 + ax * 9).toFixed(1)} L${ex.toFixed(1)} ${ey.toFixed(1)} L${(ex - ax * 16 + ay * 9).toFixed(1)} ${(ey - ay * 16 - ax * 9).toFixed(1)}`);
+        k.lead.head.setAttribute("opacity", p > 0.95 ? 1 : 0);
+      } else { k.lead.path.setAttribute("d", ""); k.lead.head.setAttribute("d", ""); }
+    }
   });
 }
 let fbVig = null;

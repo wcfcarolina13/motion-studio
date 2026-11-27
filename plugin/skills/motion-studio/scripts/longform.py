@@ -924,7 +924,7 @@ def cmd_timeline(a):
         else:
             dur = s.get("hold", 3.0)
         dur += holds[s["id"]][1]
-        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace") if k in s}
+        seg = {k: s[k] for k in ("id", "type", "data", "source", "chapter", "cast", "speaker", "mono", "sfx", "bed", "illustrative", "payoff", "steady", "counter", "tag", "source_plate", "deadspace", "drift") if k in s}
         seg.update(t0=round(t, 3), t1=round(t + dur, 3), join=holds[s["id"]][0], hold_after=holds[s["id"]][1])
         w = allwords.get(s["id"])
         if w and w.get("text") == s.get("narration"):
@@ -2371,6 +2371,9 @@ CLIP_RETIME = ("blend", "hold", "interp")
 CLIP_REFUSED = {"pingpong": "plays the clip forward and then reversed", "loop": "restarts the clip, a visible jump back"}
 
 
+CLIP_FIT_FLOOR, CLIP_FIT_LONG = 0.45, 0.75
+
+
 def clip_prepare(film, seg, fmt, problems):
     """A panel's video clip (data.clip, an mp4 in the film) as numbered JPEG frames at the panel's own size, plus the
     frame schedule the page draws from: data.clip_frames {dir, n, fps} and data.clip_sched, one [frame a, frame b, weight
@@ -2383,6 +2386,7 @@ def clip_prepare(film, seg, fmt, problems):
                    16 fps cadence 2-2-2-1, the steps allowed by the pop check) or interp (ffmpeg motion interpolation to
                    30 fps; smoother, can warp edges)
       "clip_speed": 1 (0.5 plays at half speed, stretching a short clip); "clip_start": seconds into the clip.
+      "clip_fit": true sets both so the clip's last frame lands on the cut (CLIP_FIT_FLOOR, CLIP_FIT_LONG).
     The extraction is cached under clips/frames/<name>-<hash of the clip and settings>/."""
     d = seg["data"]
     src = film / d["clip"]
@@ -2425,6 +2429,25 @@ def clip_prepare(film, seg, fmt, problems):
         (tmp / "meta.json").write_text(json.dumps({"n": n, "fps": fps}) + "\n")
         shutil.rmtree(out, ignore_errors=True); tmp.rename(out)
     m = json.loads(meta.read_text())
+    if d.get("clip_fit"):
+        # fit the clip to its beat so its last frame lands on the cut (Survive Year 1, 2026-11-27): a clip shorter than the
+        # beat is slowed to fill it, but never under CLIP_FIT_FLOOR (slower reads as slow motion; below it the clip ends
+        # early and holds); a longer clip plays its end at CLIP_FIT_LONG speed, starting where that end needs it to
+        if "clip_speed" in d or "clip_start" in d:
+            problems.append(f"{seg['id']}: clip_fit sets clip_speed and clip_start itself; drop one or the other")
+        length, beat = (m["n"] - 1) / m["fps"], seg["t1"] - seg["t0"]
+        if length <= beat:
+            sp, st = max(CLIP_FIT_FLOOR, length / beat), 0.0
+        else:
+            sp, st = CLIP_FIT_LONG, max(0.0, length - beat * CLIP_FIT_LONG)
+        d["clip_speed"], d["clip_start"] = round(sp, 4), round(st, 3)
+        if length / beat < CLIP_FIT_FLOOR:
+            problems.append(f"{seg['id']}: clip_fit: the clip ({length:.1f} s) can't fill its {beat:.1f} s beat even at "
+                            f"{CLIP_FIT_FLOOR}x; it ends {beat - length / CLIP_FIT_FLOOR:.1f} s early and holds. Shorten the beat or use a longer take")
+    for e in d.get("fx") or []:
+        if isinstance(e, dict) and e.get("type") in ("rain", "snow") and not e.get("over_clip"):
+            problems.append(f"{seg['id']}: panel fx {e['type']} over a clip: a clip that already has weather gets it twice. "
+                            f"Drop the fx, or set \"over_clip\": true on it after checking the clip has none")
     d["clip_frames"] = {"dir": str(out.relative_to(film)), "n": m["n"], "fps": m["fps"]}
     d["clip_sched"] = clip_schedule(seg, m["n"], m["fps"])
     d.setdefault("image", f"{d['clip_frames']['dir']}/0000.jpg")     # no still given: the clip's first frame is the poster
@@ -3782,8 +3805,9 @@ def _check(a, film):
         for sid, m in slow:
             how = "too little" if m < sfloor else "barely above it"
             flags.append(f"{sid.split()[0]}: stat scene moves {how} (quietest 2 s {m:.3f}, floor {sfloor:.3f}); turn on "
-                         f"\"stat_drift\": true in engine.json (the scene rises slowly from its count), raise the segment's "
-                         f"\"drift\" (px/s), or cut it shorter")
+                         f"\"stat_drift\": true in engine.json (the scene drifts slowly from its count), raise \"drift\" (px/s, "
+                         f"on the segment or in its data; 14 is the default, 20 for a sparse stat), add \"notes\" that land on "
+                         f"later words, or cut it shorter")
         report.append(f"panel motion (predicted from each still and its camera; it reads low, so near the floor usually "
                       f"passes): floor {mfloor:.3f}, {len(low)} panel(s) at or near it")
         if mest:

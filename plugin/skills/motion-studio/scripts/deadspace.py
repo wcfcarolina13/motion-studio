@@ -25,7 +25,7 @@ EDGE_T = 22                # luminance step (0..255, after a light blur) that co
 
 
 def quiet_map(path, gw=GW, gh=GH):
-    """{"w", "h", "b"}: b is one digit per cell, row by row, 0 = flat paper, 9 = dense ink."""
+    """{"w", "h", "b", "l"}: b is one digit per cell, row by row, 0 = flat paper, 9 = dense ink; l is its lightness."""
     import numpy as np
     from PIL import Image, ImageFilter
     im = Image.open(path).convert("L").resize((gw * 12, gh * 12), Image.LANCZOS).filter(ImageFilter.GaussianBlur(0.8))
@@ -40,7 +40,10 @@ def quiet_map(path, gw=GW, gh=GH):
     pad = np.pad(busy, 1, mode="edge")
     near = np.max(np.stack([pad[1 + dy:1 + dy + gh, 1 + dx:1 + dx + gw] for dy in (-1, 0, 1) for dx in (-1, 0, 1)]), axis=0)
     busy = np.maximum(busy, near * 0.6)
-    return {"w": gw, "h": gh, "b": "".join(str(int(round(v))) for v in busy.ravel())}
+    # and how light each cell is (0 dark .. 9 light), so a callout's ink can be dark on paper and light on a dark wall
+    light = np.clip(a.reshape(gh, 12, gw, 12).mean(axis=(1, 3)) / 255 * 9, 0, 9)
+    return {"w": gw, "h": gh, "b": "".join(str(int(round(v))) for v in busy.ravel()),
+            "l": "".join(str(int(round(v))) for v in light.ravel())}
 
 
 def grid(qm):
