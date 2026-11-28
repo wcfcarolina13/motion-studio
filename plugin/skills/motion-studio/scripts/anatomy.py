@@ -32,6 +32,10 @@ DEFAULT = ('claude -p "Read the image file at {path}. Judge only the anatomy of 
            'for any of: ' + CRITERIA.replace('"', "'") + ' {faceless_rule} Answer on the last line with PASS, or FAIL: '
            'followed by the reason in a few words." --allowedTools Read')
 FACELESS_RULE = "8) any visible human face (this hero must be faceless)."
+# a character model sheet lays out separate head and face close-ups beside the full figure: they are views, not detached
+# parts (cel test, 2026-11-28: a sheet failed for "three detached floating heads with no neck or body")
+SHEET_RULE = ("This is a character model sheet: separate head or face close-ups and turnaround views beside the full figure are "
+              "intended views of the same person, not floating or detached parts and not extra people.")
 # a Wan image-to-video clip is judged on its last frame against its first (the source still): Wan invents people with
 # faces at desks, doors, gates and in close-ups, and grows extra boots (picture-truth.md rule 13, 2026-11-25)
 CLIP = ('claude -p "Read two image files. The first, {first}, is the still a video clip started from; the second, {path}, is the '
@@ -64,13 +68,14 @@ def needs_check(shot):
     return bool(shot.get("char_in_frame")) or bool(PEOPLE.search(shot.get("prompt") or shot.get("change") or ""))
 
 
-def judge(path, faceless=False, cmd=None):
-    """("PASS" | "FAIL" | "UNCLEAR", reason)."""
+def judge(path, faceless=False, cmd=None, sheet=False):
+    """("PASS" | "FAIL" | "UNCLEAR", reason). sheet: the image is a character model sheet (SHEET_RULE)."""
     cmd = cmd or os.environ.get("ANATOMY_CHECK_CMD", DEFAULT)
     if cmd == "off":
         return "PASS", "judge off"
-    c = (cmd.replace("{faceless_rule}", FACELESS_RULE if faceless else "")
-            .replace("{faceless}", "yes" if faceless else "no").replace("{path}", shlex.quote(path)))
+    rule = " ".join(x for x in (FACELESS_RULE if faceless else "", SHEET_RULE if sheet else "") if x)
+    c = (cmd.replace("{faceless_rule}", rule.replace('"', "'"))
+            .replace("{faceless}", "yes" if faceless else "no").replace("{sheet}", "yes" if sheet else "no").replace("{path}", shlex.quote(path)))
     try:
         r = subprocess.run(c, shell=True, capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=int(os.environ.get("ANATOMY_TIMEOUT", 180)))
     except subprocess.TimeoutExpired:

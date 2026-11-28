@@ -38,7 +38,7 @@ SKY_BRIGHT = re.compile(r"\b(?:daylight|sunny|sunlit|bright sky|blue sky|midday|
 WHITE_GROUND = re.compile(r"\b(?:pure white|white background|white paper|stark white|bright white)\b", re.I)
 HIDDEN = re.compile(r"pocket|behind (?:his|her|their|the) back|under the table|below the (?:frame|panel)|out of (?:frame|shot)"
                     r"|in (?:his|her|their) lap|in shadow|hidden|cropped|off[- ]frame", re.I)
-CONTACT = re.compile(r"handshake|shak\w* hands|hug\w*|embrac\w*|holding hands|hand on (?:his|her|their) (?:shoulder|arm|back|cheek)"
+CONTACT = re.compile(r"handshake|shak\w* hands|\bhug(?:s|ged|ging)?\b|embrac\w*|holding hands|hand on (?:his|her|their) (?:shoulder|arm|back|cheek)"
                      r"|grabs? (?:his|her|their) (?:arm|wrist|hand)", re.I)
 # the owner's review of 85 ChatGPT stills (picture-truth.md, rule 12)
 MONEY = re.compile(r"\b(?:cash|money|bills?|banknotes?|dollar notes?|coins?|wallets?|paychecks?|paycheques?|stacks? of \$|\$\d)", re.I)
@@ -46,6 +46,11 @@ HAND_ONLY = re.compile(r"\b(?:hands? only|only (?:the |his |her |their )?hands?|
                        r"|hands? (?:entering|reaching|coming) (?:in )?(?:from|into) (?:the )?(?:frame|edge)|just (?:the |a )?hands?)\b", re.I)
 BODY_SAID = re.compile(r"\b(?:waist[- ]up|from behind|shoulders?|whole (?:arm|body|figure)|full figure|torso|upper body)\b", re.I)
 TIPPED = re.compile(r"\b(?:tipped|tips? over|on its side|overturned|knocked over|toppled|upside[- ]down|fallen over|lying on its)\b", re.I)
+# a worn thing tipped on a head is a pose, not a spill (cel test, 2026-11-28: "hard hat tipped far back")
+TIPPED_WORN = re.compile(r"\b(?:hat|cap|helmet|visor|brim|beret|hood|head|chin)\s+(?:\w+\s+){0,1}(?:tipped|tips?)\b"
+                         r"|\btipped\s+(?:\w+\s+){0,2}(?:back|forward|up|sideways)\b(?=[^.;]*\b(?:hat|cap|helmet|visor|brim|beret)\b)", re.I)
+# "No money or coins anywhere" asks for none (cel test, 2026-11-28): a money word after no/without/never in its clause
+MONEY_NEG = re.compile(r"\b(?:no|without|never|not|nor|zero|free of)\b[^.;,]*$", re.I)
 INSIDE_SAID = re.compile(r"\b(?:shut|closed|latched|now (?:on|faces|points|lies)|sideways|rotated|turned with it)\b", re.I)
 XRAY = re.compile(r"\b(?:hidden (?:inside|behind|under|in)|buried|underground|beneath the (?:floor|ground|surface)|inside the walls?|behind the wall)\b", re.I)
 # "face hidden in black shadow" is how a faceless hero is written, not a hidden object to show X-ray style
@@ -151,7 +156,7 @@ def lint(items, boiler_re=None, route="klein"):
         elif dark and not SKY_SAID.search(p):
             w.append(f"a dark scene (\"{dark.group(0)}\") that doesn't say its sky: models default to a bright one; say "
                      "\"night, dark navy sky, the only light is the flashlight\" or set it indoors")
-        mo = MONEY.search(p)
+        mo = next((m for m in MONEY.finditer(p) if not MONEY_NEG.search(p[max(p.rfind(".", 0, m.start()), p.rfind(";", 0, m.start()), 0):m.start()])), None)
         if mo:
             w.append(f"money in the picture (\"{mo.group(0)}\"): drawn cash and wallets read as weird (owner's rule); show the "
                      "number in a stat scene and what it buys or costs in the still")
@@ -159,7 +164,7 @@ def lint(items, boiler_re=None, route="klein"):
         if ho and not BODY_SAID.search(p):
             w.append("hands with no body (a hand close-up or insert): bent arms and extra hands come from the frame edge; frame the "
                      "action waist-up with the arm and shoulder in shot, or from behind")
-        tp = TIPPED.search(p)
+        tp = next((m for m in TIPPED.finditer(p) if not any(wm.start() <= m.start() < wm.end() for wm in TIPPED_WORN.finditer(p))), None)
         if tp and not INSIDE_SAID.search(p):
             w.append(f"a tipped object (\"{tp.group(0)}\") that doesn't say where its insides are: say it's shut (\"door shut and "
                      "latched\") or where each inside part now lies, or the model draws them upright")
