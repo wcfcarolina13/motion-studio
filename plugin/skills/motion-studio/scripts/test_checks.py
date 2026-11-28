@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -1694,6 +1695,79 @@ class BeatSync(unittest.TestCase):
             (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
             os.utime(film / "script.json", (time.time() + 60, time.time() + 60))
             self.assertIn("newer than", longform.stale_timeline(film))
+
+
+class SoundMatchesCut(unittest.TestCase):
+    """The sound under the picture is the cut's own (2026-11-28: the dashboard played a Nov 25 mix under a Nov 27 cut
+    for weeks, and every sync complaint came from that)."""
+    def film(self, d, dur=3.0):
+        import longform
+        film = Path(d); (film / "out").mkdir()
+        (film / "script.json").write_text(json.dumps({"title": "t", "segments": []}))
+        tl = {"duration": dur, "segments": [], "script_sha": longform.script_sha(film)}
+        (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+        for n, sec in (("narration.wav", dur), ("mix.wav", dur)):
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=f=220:d={sec}", "-ar", "48000",
+                            str(film / "out" / n)], check=True)
+        return film, tl
+
+    def test_stamp_and_refusals(self):
+        import longform, preview
+        with tempfile.TemporaryDirectory() as d:
+            film, tl = self.film(d)
+            longform.write_mix_stamp(film)
+            self.assertIsNone(longform.stale_mix(film))
+            self.assertEqual(preview.sound(film, "/w/f/")["mix"], "/w/f/out/mix.wav")
+            longform.require_fresh_mix(film, "check")                       # no refusal
+            # a new cut: the script and the timeline's length change, the mix stays
+            (film / "script.json").write_text(json.dumps({"title": "t2", "segments": []}))
+            tl.update(duration=4.0, script_sha=longform.script_sha(film))
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+            self.assertIn("another version of script.json", longform.stale_mix(film))
+            with self.assertRaises(SystemExit) as e:
+                longform.require_fresh_mix(film, "final")
+            self.assertIn("final refused", str(e.exception))
+            snd = preview.sound(film, "/w/f/")
+            self.assertEqual(snd["mix"], "/w/f/out/narration.wav")           # the voice alone, never the old mix
+            self.assertIn("playing the voice alone", snd["mix_stale"])
+
+    def test_unstamped_mix_by_length(self):
+        import longform
+        with tempfile.TemporaryDirectory() as d:
+            film, tl = self.film(d)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=220:d=1.5", "-ar", "48000",
+                            str(film / "out" / "mix.wav")], check=True)
+            os.utime(film / "timeline.js", (time.time() - 5, time.time() - 5))
+            self.assertIn("is 1.5 s and the cut is 3.0 s", longform.stale_mix(film))
+
+    def test_listen_without_whisper_says_so(self):
+        import longform, align
+        with tempfile.TemporaryDirectory() as d:
+            film, tl = self.film(d)
+            tl["segments"] = [{"id": "a", "t0": 0, "t1": 3, "words": [["hello", 0.2, 0.5]]}]
+            real = align._whisper_python
+            align._whisper_python = lambda: (_ for _ in ()).throw(RuntimeError("no whisper here"))
+            try:
+                line, flags = longform.listen(film, tl)
+            finally:
+                align._whisper_python = real
+            self.assertIn("not run (no whisper here)", line); self.assertEqual(flags, [])
+
+    def test_listen_flags_another_cut(self):
+        import longform, align
+        with tempfile.TemporaryDirectory() as d:
+            film, tl = self.film(d, dur=40.0)
+            text = "the porta potty business pays well when you plan the routes and keep the trucks full every single week".split()
+            tl["segments"] = [{"id": "a", "t0": 0, "t1": 40, "words": [[w, 0.4 * i, 0.4 * i + 0.3] for i, w in enumerate(text * 5)]}]
+            real_py, real_ww = align._whisper_python, align.whisper_words
+            align._whisper_python = lambda: "python3"
+            try:
+                align.whisper_words = lambda wav: [("Completely", 0.1, 0.4), ("different", 0.5, 0.9), ("words", 1.0, 1.3)] * 4
+                line, flags = longform.listen(film, tl)
+                self.assertEqual(len(flags), 3, line)
+                self.assertIn("another cut", flags[0])
+            finally:
+                align._whisper_python, align.whisper_words = real_py, real_ww
 
 class SpokenNumbers(unittest.TestCase):
     """Every spoken amount is on screen at its word (editing-quality study, 2026-11-27: 6 of 83 were)."""

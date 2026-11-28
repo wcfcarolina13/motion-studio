@@ -44,6 +44,8 @@ import math
 import os
 import re
 import shutil
+import tempfile
+import time
 import subprocess
 import sys
 import hashlib
@@ -109,6 +111,116 @@ def stale_timeline(film, tl=None):
     if (film / "script.json").stat().st_mtime > (film / "timeline.js").stat().st_mtime + 1:
         return "script.json is newer than timeline.js"
     return None
+
+
+# ── the soundtrack must be the cut's own ──
+# 2026-11-28: the studio dashboard played a Nov 25 mix.wav (664.8 s, the old hook order) under a Nov 27 picture
+# (752.7 s) for weeks of review, and every cue check read word times, never the served sound. mix writes out/mix.json,
+# what the mix was made from (the script's hash, the timeline's length, the narration's hash); preview, check and final
+# compare it with the film now.
+MIX_TOL = 0.5      # s a mix may differ from its stamped length (encoder padding)
+
+
+def _sha_file(path, _cache={}):
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if key not in _cache:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for b in iter(lambda: fh.read(1 << 20), b""):
+                h.update(b)
+        _cache[key] = h.hexdigest()[:16]
+    return _cache[key]
+
+
+def mix_sources(film, tl=None):
+    tl = tl if tl is not None else load_timeline(film)
+    narr = film / "out" / "narration.wav"
+    return {"script_sha": tl.get("script_sha"), "duration": round(float(tl["duration"]), 3),
+            "narration_sha": _sha_file(narr) if narr.exists() else None}
+
+
+def write_mix_stamp(film, tl=None):
+    mix = film / "out" / "mix.wav"
+    st = dict(mix_sources(film, tl), length=round(duration(mix), 3), made=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    (film / "out" / "mix.json").write_text(json.dumps(st, indent=1) + "\n")
+
+
+def stale_mix(film, tl=None):
+    """Why out/mix.wav is not this cut's sound, or None (also None when there is no mix yet)."""
+    mix = film / "out" / "mix.wav"
+    if not mix.exists() or not (film / "timeline.js").exists():
+        return None
+    tl = tl if tl is not None else load_timeline(film)
+    stamp = film / "out" / "mix.json"
+    if not stamp.exists():                  # a mix made before the stamp: file time and length decide
+        if mix.stat().st_mtime < (film / "timeline.js").stat().st_mtime - 1:
+            return "out/mix.wav is older than timeline.js"
+        n = duration(mix)
+        if n < float(tl["duration"]) - MIX_TOL:
+            return f"out/mix.wav is {n:.1f} s and the cut is {float(tl['duration']):.1f} s"
+        return None
+    was, now = json.loads(stamp.read_text()), mix_sources(film, tl)
+    if was.get("script_sha") != now["script_sha"]:
+        return f"out/mix.wav was made for another version of script.json (mixed {was.get('made', '?')})"
+    if abs(float(was.get("duration", 0)) - now["duration"]) > 0.01:
+        return f"out/mix.wav was made for a {was.get('duration')} s cut; the cut is now {now['duration']} s"
+    if was.get("narration_sha") != now["narration_sha"]:
+        return "out/narration.wav has changed since out/mix.wav was made"
+    n = duration(mix)
+    if abs(n - float(was.get("length", n))) > MIX_TOL:
+        return f"out/mix.wav is {n:.1f} s, not the {was.get('length')} s that mix wrote"
+    return None
+
+
+def require_fresh_mix(film, what, tl=None):
+    why = stale_mix(film, tl)
+    if why:
+        raise SystemExit(f"{what} refused: {why}, so it would play another cut's sound. Run `longform.py mix {film}` "
+                         "(a Short: `timeline` cuts its sound again).")
+
+
+def listen(film, tl, windows=3, span=12.0):
+    """(report line, flags): spot-transcribe the served mix at a few points and compare with the timeline's words.
+    Whisper only (align.py); without it the line says so and nothing is flagged."""
+    import difflib, statistics, align
+    mix = film / "out" / "mix.wav"
+    if not mix.exists():
+        return "listen: no out/mix.wav yet", []
+    words = sorted((w for s in tl["segments"] for w in (s.get("words") or [])), key=lambda w: w[1])
+    if not words:
+        return "listen: no timed words", []
+    try:
+        align._whisper_python()
+    except RuntimeError as e:
+        return f"listen: not run ({e})", []
+    norm = lambda w: re.sub(r"[^a-z0-9]", "", str(w).lower())
+    total, flags, offs, parts = float(tl["duration"]), [], [], []
+    with tempfile.TemporaryDirectory() as d:
+        for k in range(windows):
+            a = max(0.0, total * (k + 1) / (windows + 1) - span / 2)
+            clip = Path(d) / f"w{k}.wav"
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-t", f"{span:.3f}", "-i", str(mix), "-ar", "16000", "-ac", "1", str(clip)])
+            try:
+                heard = align.whisper_words(clip)
+            except RuntimeError as e:
+                return f"listen: whisper failed ({e})", []
+            ours = [w for w in words if a + 0.5 <= w[1] <= a + span - 0.5]
+            if len(ours) < 4:
+                continue
+            A, B = [norm(w[0]) for w in ours], [norm(h[0]) for h in heard]
+            sm = difflib.SequenceMatcher(a=A, b=B, autojunk=False)
+            pairs = [(ours[b.a + i], heard[b.b + i]) for b in sm.get_matching_blocks() for i in range(b.size)]
+            share = len(pairs) / len(ours)
+            off = statistics.median(h[1] + a - w[1] for w, h in pairs) if pairs else None
+            parts.append(f"{a:.0f} s: {share:.0%} heard" + (f", {off * 1000:+.0f} ms" if off is not None else ""))
+            if off is not None:
+                offs.append(off)
+            if share < 0.5 or off is None or abs(off) > 0.25:
+                flags.append(f"listen: the served mix at {a:.0f}-{a + span:.0f} s doesn't say the timeline's words there "
+                             f"({share:.0%} heard" + (f", {off * 1000:+.0f} ms off" if off is not None else "") +
+                             "): the sound is from another cut. Run `longform.py mix`")
+    return "listen: " + ("; ".join(parts) if parts else "no window had enough words"), flags
 
 
 def require_fresh_timeline(film, what):
@@ -1231,6 +1343,7 @@ def short_audio(film, short, segs, lead):
     af = (f"atrim=start={start:.3f}:duration={span:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.08,"
           f"afade=t=out:st={max(0.0, span - 0.4):.3f}:d=0.4,adelay={int(delay * 1000)}:all=1,apad=pad_dur={SHORT_TAIL}")
     run(["ffmpeg", "-v", "error", "-y", "-i", str(mix), "-af", af, "-ar", "48000", str(film / "out" / "mix.wav")])
+    write_mix_stamp(film)
     used = parent / "out" / "sounds_used.json"
     if used.exists():
         shutil.copy2(used, film / "out" / "sounds_used.json")
@@ -2253,7 +2366,7 @@ def cmd_mix(a):
     if load_script(film).get("short_of") and not a.remix:
         raise SystemExit("this is a Short: `timeline` already cut its sound from the long-form mix (out/mix.wav). "
                          "Pass --remix to build a separate mix for it instead")
-    tl = load_timeline(film)
+    tl = require_fresh_timeline(film, "mix")
     total = tl["duration"]
     narr = film / "out" / "narration.wav"
     sounds = {}                                          # what the mix used, for `credits`
@@ -2379,6 +2492,7 @@ def cmd_mix(a):
     ln = (f"loudnorm=I=-14:TP=-2.5:LRA=11:measured_I={j['input_i']}:measured_TP={j['input_tp']}:measured_LRA={j['input_lra']}:"
           f"measured_thresh={j['input_thresh']}:offset={j['target_offset']}:linear=true")
     run(["ffmpeg", "-v", "error", "-y", "-i", str(pre), "-af", ln, "-ar", "48000", str(film / "out" / "mix.wav")])
+    write_mix_stamp(film, tl)
     (film / "out" / "sounds_used.json").write_text(json.dumps(sounds, indent=1) + "\n")
     print("mix ->", film / "out" / "mix.wav", "(sounds used -> out/sounds_used.json; run `credits` for the description)")
 
@@ -2689,6 +2803,7 @@ def _final(a):
     film = Path(a.film).resolve()
     if not (film / "out" / "mix.wav").exists():     # render makes only the picture; the sound is its own step
         raise SystemExit(f"final needs out/mix.wav, which `render` doesn't make: run `longform.py mix {a.film}` first")
+    require_fresh_mix(film, "final")
     import render
     out = render.mux(film / "out" / "silent.mp4", film / "out" / "mix.wav", film / "out" / f"{film.name}.mp4")
     # scene wipes, stamps and drama panels' hard cuts are meant to hit: don't call them pops
@@ -4196,6 +4311,7 @@ def _check(a, film):
     """Dead air, text-only stretches, cue landings and one-frame flashes, measured from the timeline and the render."""
     import numpy as np
     tl = require_fresh_timeline(film, "check")
+    require_fresh_mix(film, "check", tl)
     segs, total = tl["segments"], tl["duration"]
     seg_at = lambda t: next((s["id"] for s in segs if s["t0"] <= t < s["t1"]), "end")
     report, flags = [], []
@@ -4232,6 +4348,9 @@ def _check(a, film):
         raise SystemExit("check stopped: the film's page can't draw every segment:\n" + "\n".join(drift))
     flags += drift_warn
     report.append("page: clean (no errors at any segment's start, middle or end)")
+    if not getattr(a, "no_listen", False):
+        line, lf = listen(film, tl)           # the served sound, heard: does it say the timeline's words?
+        report.append(line); print(line); flags += lf
     flags += [f"page: {w}" for w in page_warnings(film)]
     # dead space: room in a still while the voice says something worth showing, and nothing showing it
     if a.deadspace:
@@ -4683,6 +4802,7 @@ def main():
     p = sp.add_parser("check"); p.add_argument("film"); p.add_argument("--hold", type=float, default=4.0)
     p.add_argument("--icon-min", type=float, default=18, help="smallest longer side of a data-icon, px, with the frame 360 px wide (0 skips)")
     p.add_argument("--no-brand", action="store_true", help="skip the logo colour check (final still runs it)")
+    p.add_argument("--no-listen", action="store_true", help="skip spot-transcribing the served mix (Whisper) against the timeline")
     p.add_argument("--transition-hold", type=float, default=TRANSITION_HOLD, help="a transition's voice gap must beat the usual gap by this (0 skips)")
     p.add_argument("--event", type=float, default=0.0008, help="mean luma change that counts as something happening")
     p.add_argument("--local", type=float, default=0.02, help="change in one small block that counts as a cue landing (small reveals)")
