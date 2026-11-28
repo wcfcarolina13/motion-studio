@@ -965,20 +965,23 @@ Image.new("RGB", (1536, 1024), (120, 110, 100)).save("image.png")
                 Image.new("RGB", (900, 600)).save(Path(d, f))
             Path(d, "shots.json").write_text(json.dumps({"style": "ink on cream", "style_refs": [f"{d}/style.png"], "shots": [
                 {"id": "a", "prompt": "a wedding trailer", "photo": f"{d}/photo.jpg", "photo_licence": "own"},
-                {"id": "b", "prompt": "a gate by a fence", "blockout": f"{d}/block.png"}]}))
+                {"id": "b", "prompt": "a gate by a fence", "blockout": f"{d}/block.png"},
+                {"id": "c", "prompt": "a truck at dawn"}]}))                   # plain: the style ref is its only image
             env = dict(os.environ, CODEX_CMD=f"python3 {d}/fake.py", CODEX_ARGS="", CODEX_IMAGES=f"{d}/none",
                        FAKE_LOG=f"{d}/log", FACE_CHECK_CMD="off", ANATOMY_CHECK_CMD="off")
             r = subprocess.run(["python3", str(Path(__file__).with_name("codex_stills.py")), f"{d}/shots.json", f"{d}/out",
                                 "--allow-codex"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             calls = [eval(x) for x in Path(d, "log").read_text().splitlines()]
-            self.assertEqual(len(calls), 3)                                     # the photo, then blockout + style pass
+            self.assertEqual(len(calls), 4)                                     # the photo, blockout + style pass, plain
             self.assertEqual(calls[0][:2], [f"--image={d}/photo.jpg", f"--image={d}/style.png"])   # the photo is image 1
             self.assertIn("Image 1 is a reference photo", calls[0][-1]); self.assertIn("Image 2 is a style reference", calls[0][-1])
             self.assertEqual(calls[1][0], f"--image={d}/block.png"); self.assertIn("blockout", calls[1][-1])
             self.assertIn("Repaint only the surfaces", calls[2][-1])
             self.assertIn("ink on cream", calls[2][-1])
-            self.assertIn("3 codex calls", Path(d, "out", "usage.log").read_text())
+            self.assertEqual(calls[3][0], f"--image={d}/style.png")                 # cel test: refs were dropped here
+            self.assertTrue(calls[3][-1].startswith("Image 1 is a style reference only"))
+            self.assertIn("4 codex calls", Path(d, "out", "usage.log").read_text())
 
     def test_gate_holds_new_takes_and_ruler(self):
         import gate, preview
