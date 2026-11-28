@@ -1557,6 +1557,17 @@ def frange(a, b, step):
         x += step
 
 
+def encoder_cmd(out, crf, preset, scale=1.0):
+    """The ffmpeg command a render chunk pipes its frames into. The frames go to plain RGB first: a JPEG frame decodes
+    as full-range BT.601 YUV, and leaving that conversion to the scale filter's guess at the input's range and matrix
+    put JPEG renders 1-2 levels darker than PNG ones here, and how ffmpeg tags a JPEG's range changed in version 7, so
+    the guess is not one to lean on. PNG frames are RGB already, so they are unchanged."""
+    vf = f"format=rgb24,scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:out_color_matrix=bt709:out_range=tv,format=yuv420p"
+    return ["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(FPS), "-i", "-",
+            "-vf", vf, "-r", str(FPS), "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", str(out)]
+
+
 def _render_chunk(args):
     """One chunk of frames to its own mp4. A page error raises render.PageError (never retried); a chunk stops early
     when another chunk's page error has written the stop file."""
@@ -1565,12 +1576,7 @@ def _render_chunk(args):
     stop = Path(dest).parent / "stop"
     tmp = Path(dest).with_suffix(".part.mp4")   # renamed when whole, so a finished chunk is one whose name exists
     with render.Film(Path(film), video=True) as f:
-        vf = f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:out_color_matrix=bt709:out_range=tv,format=yuv420p"
-        enc = lambda out, crf, preset: subprocess.Popen(
-            ["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(FPS), "-i", "-",
-             "-vf", vf, "-r", str(FPS), "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-             str(out)], stdin=subprocess.PIPE)
+        enc = lambda out, crf, preset: subprocess.Popen(encoder_cmd(out, crf, preset, scale), stdin=subprocess.PIPE)
         ff = enc(tmp, 18, "medium")
         # with a finish, the unfinished frames go to a proxy too: final's motion check reads it, since grain and mottle
         # would count as motion on every frame and hide a frozen shot
@@ -1672,7 +1678,7 @@ def write_manifest(film, tl, parts, scale):
     """out/parts/manifest.json: what the kept parts were rendered from, which a partial render compares against."""
     code, files = _code_and_files(film)
     (parts / "manifest.json").write_text(json.dumps({"scale": scale, "fps": FPS, "timeline": tl, "code": code,
-                                                      "files": files}) + "\n")
+                                                      "files": files, "engine": engine_stamp()}) + "\n")
 
 
 def partial_problems(film, tl, parts, only, scale, ranges):
@@ -1705,6 +1711,9 @@ def partial_problems(film, tl, parts, only, scale, ranges):
         map_keys, map_files = (), []
     if old.get("scale") != scale or old.get("fps") != FPS:
         probs.append(f"render settings changed (scale {old.get('scale')} -> {scale})")
+    if old.get("engine") != engine_stamp():
+        probs.append("the engine's render code changed since the last render (render.py, finish.py or the chunk encoder), "
+                     "so new parts would not match the kept ones")
     probs += [f"page code changed: {k}" for k in sorted(set(code) | set(old["code"])) if code.get(k) != old["code"].get(k)]
     if [(s["id"], round(s["t0"], 4), round(s["t1"], 4)) for s in ot["segments"]] != \
             [(s["id"], round(s["t0"], 4), round(s["t1"], 4)) for s in tl["segments"]] or ot["duration"] != tl["duration"]:
@@ -1715,9 +1724,15 @@ def partial_problems(film, tl, parts, only, scale, ranges):
                 probs.append(f"{sn['id']} changed but is not named")
             elif sn["id"] in only and {k: v for k, v in so.items() if k != "data"} != {k: v for k, v in sn.items() if k != "data"}:
                 probs.append(f"{sn['id']} changed outside its data (a counter, tag or caption carries into later segments)")
-    rest = lambda t: {k: v for k, v in t.items() if k != "segments" and k not in map_keys}
-    if rest(ot) != rest(tl):
-        probs.append("film-wide timeline settings changed (captions, chapters, cues, grade, map)")
+    # the cue list is film-wide but each cue belongs to its segment: only cues outside the named segments must match
+    # (a fix to 17 segments' cues was refused as a film-wide change, 2026-11-28)
+    cues_out = lambda t: [c for c in t.get("cues", []) if c.get("seg") not in only]
+    if cues_out(ot) != cues_out(tl):
+        probs.append("word cues changed in segments that are not named")
+    rest = lambda t: {k: v for k, v in t.items() if k not in ("segments", "cues") and k not in map_keys}
+    diff = sorted(k for k in set(rest(ot)) | set(rest(tl)) if rest(ot).get(k) != rest(tl).get(k))
+    if diff:
+        probs.append(f"film-wide timeline settings changed: {', '.join(diff)}")
     named = json.dumps([sg for sg in tl["segments"] if sg["id"] in only])
     for k in sorted(set(files) | set(old["files"])):
         if files.get(k) != old["files"].get(k) and k not in named and not (k.startswith(CLIP_DIR + "/") and k.rsplit("/", 1)[0] in named) and k not in map_files:
@@ -1764,11 +1779,26 @@ def available_gb():
         return None
 
 
+def engine_stamp():
+    """The engine code a frame passes through outside the film folder: the screenshot and finish (render.py,
+    finish.py), the chunk encoder (_render_chunk, encoder_cmd) and the frame format. Without it a render resumed after
+    an engine pull keeps chunks made by the old code next to new ones, and a change in the picture path (frame format,
+    colour conversion) shows as a one-frame step at every old/new join."""
+    import inspect
+    h = hashlib.sha256()
+    for name in ("render.py", "finish.py"):
+        h.update((HERE / name).read_bytes())
+    h.update(inspect.getsource(_render_chunk).encode())
+    h.update(inspect.getsource(encoder_cmd).encode())
+    h.update(os.environ.get("MS_FRAME_FORMAT", "jpeg").encode())
+    return h.hexdigest()[:16]
+
+
 def render_stamp(film, scale):
     """What the frames depend on: the page, its scripts and timeline (by content), every other file the page can load
-    (by size and time; see _stamp for what is left out) and the render settings. Kept chunks are reused only while
-    this is unchanged."""
-    return _stamp(film, hashlib.sha256(f"{scale} {FPS} {CHUNK} {HEAD} segment-parts".encode()))
+    (by size and time; see _stamp for what is left out), the engine's own render code (engine_stamp) and the render
+    settings. Kept chunks are reused only while this is unchanged."""
+    return _stamp(film, hashlib.sha256(f"{scale} {FPS} {CHUNK} {HEAD} segment-parts {engine_stamp()}".encode()))
 
 
 def film_stamp(film):
