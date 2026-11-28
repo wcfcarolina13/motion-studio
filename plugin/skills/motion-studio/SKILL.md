@@ -62,7 +62,7 @@ For the 2.5D look (code-drawn paper cutouts acting in a toon-lit 3D set, a camer
 
 For a story told on a map (a war, a voyage, a trade route), a `map` segment flies a camera across an engraved paper map with collage pieces pinned to places: `scripts/mapart.py` builds the map and the cut-outs, `scripts/mapscene.js` draws it. → `references/maps.md`
 
-For the old hand-inked cartoon look (vertical Shorts or long-form), `references/styles/cel.md` is the style bible: the prompt block, cast and acting rules, the `"finish": "cel"` print pass, `"chunk"` captions, and blank props the engine letters.
+For the old hand-inked cartoon look (vertical Shorts or long-form), `references/styles/cel.md` is the style bible: the prompt block, cast and acting rules, the `"finish": "cel"` print pass, `"chunk"` captions, and blank props the engine letters. `references/styles/README.md` lists every built style and the ones studied but not built yet.
 
 For pixel-art films, props that turn (a bin, a stall, a van) are sprite stacks: four flat drawings carved into layers by `scripts/stack.py carve`, drawn on a canvas by `scripts/stack.js`. Look at the check sheet it writes before using a strip. → `references/sprite-stacks.md`
 
