@@ -4285,8 +4285,12 @@ def number_flags(film, segs):
 INTRO_MAX = 45.0     # seconds: the intro states the promise, opens its gaps and gets out
 MUTE_S = 5.0         # the first seconds must name the subject with the sound off
 INTRO_WORDS = re.compile(r"\b(intro|cold open|opening|hook)\b", re.I)
+# A screen line's blurred copy ("pre": "blur": data-aux with a blur filter) can't be read, so it doesn't count as the
+# number on screen; without this, every blurred number read as up a second before its word ("early"; Survive Year 1,
+# 2026-11-28: 59 of 91 numbers on their word fell to 44). Other labels (source lines, kickers) still count.
 VISIBLE_TEXT = """() => { const out = [];
   document.querySelectorAll('#svg text').forEach(el => { let o = 1;
+    if (el.closest('[data-aux]') && /blur/.test(el.getAttribute('filter') || '')) return;
     for (let n = el; n && n.nodeType === 1 && n.id !== 'svg'; n = n.parentNode) { const cs = getComputedStyle(n);
       if (cs.display === 'none' || cs.visibility === 'hidden') { o = 0; break; } o *= +cs.opacity; }
     const r = el.getBoundingClientRect();
