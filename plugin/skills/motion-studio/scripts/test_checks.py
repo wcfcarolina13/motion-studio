@@ -2512,6 +2512,41 @@ class ReviewDashboard(unittest.TestCase):
             self.assertIn("on m1c · take 2 (seed 19", out.getvalue())          # agents read which take it is
 
 
+class BeatLandings(unittest.TestCase):
+    """cuecheck: beats timed on the finished video (render-layer test, 2026-11-28)."""
+
+    def film(self, d, box_at, cue_at, sound_delay_ms=0):
+        # a grey 4 s film where a white box appears at each time in box_at; timeline cues sit at cue_at
+        f = Path(d, "f"); (f / "out").mkdir(parents=True)
+        draw = ",".join(f"drawbox=x={40 + 300 * k}:y=40:w=200:h=160:color=white:t=fill:enable='gte(t,{t})'" for k, t in enumerate(box_at))
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=30:d=4",
+                        "-vf", draw, "-pix_fmt", "yuv420p", str(f / "out" / "silent.mp4")], check=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anoisesrc=d=4:r=48000:seed=7",
+                        str(f / "out" / "mix.wav")], check=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(f / "out" / "silent.mp4"), "-i", str(f / "out" / "mix.wav"),
+                        "-af", f"adelay={sound_delay_ms}", "-c:v", "copy", "-shortest", str(f / "out" / "f.mp4")], check=True)
+        tl = {"duration": 4, "segments": [{"id": "a", "type": "panel", "t0": 0, "t1": 4}],
+              "cues": [{"seg": "a", "at": f"w{k}", "t": t} for k, t in enumerate(cue_at)]}
+        (f / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";")
+        return f
+
+    def test_on_time_late_and_sound(self):
+        import cuecheck
+        with tempfile.TemporaryDirectory() as d:
+            lines, probs = cuecheck.run(self.film(d, [1.0, 2.5], [1.0, 2.5]))
+            self.assertEqual(probs, [], lines)
+            self.assertIn("2 measured", lines[0])
+        with tempfile.TemporaryDirectory() as d:
+            lines, probs = cuecheck.run(self.film(d, [1.4, 2.5], [1.0, 2.5]))        # the first box lands 0.4 s late
+            self.assertEqual(len(probs), 1, probs); self.assertIn("after its word", probs[0]); self.assertIn("\"w0\"", probs[0])
+        with tempfile.TemporaryDirectory() as d:
+            lines, probs = cuecheck.run(self.film(d, [1.0, 2.5], [1.0, 2.5], sound_delay_ms=120))
+            self.assertEqual(len(probs), 1, probs); self.assertIn("sound is 120 ms late", probs[0])
+        with tempfile.TemporaryDirectory() as d:                                       # nothing changes near a cue
+            lines, probs = cuecheck.run(self.film(d, [1.0], [1.0, 3.0]))
+            self.assertEqual(probs, []); self.assertIn("1 with no clear change", lines[0])
+
+
 class StillReviewRules(unittest.TestCase):
     """The owner's review of the first 85 ChatGPT stills (picture-truth.md, rule 12), as lint and prompt defaults."""
     def lint(self, p, shot="MED"):
