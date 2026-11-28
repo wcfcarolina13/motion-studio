@@ -9,7 +9,9 @@ Judgement calls, stated. A bare number word counts when a noun follows it ("fort
 function word ("two of them", "three or four"); "one" never counts, so "one of them" and "one day" are left alone. Years (1900-2099 written as four digits) and
 ordinals are not amounts. A range counts at both ends ("forty-five to sixty days", "$35–40k"), and its second end is
 marked range_of, because a range on screen lands on its first number. A spoken value matches a shown one within 0.5% (a spoken "about forty-eight hundred"
-against a shown $4,860 does not). Values are compared without their sign, so "lost $3,925" matches "−$3,925".
+against a shown $4,860 does not), or when one is a round amount of 1,000 or more and the other rounds to it at its
+precision, kept to two significant figures: "twenty-five thousand" matches $25,375, "thirty thousand" does not, and
+numbers under 1,000 must match ("sixty days" is not 64). Values are compared without their sign, so "lost $3,925" matches "−$3,925".
 A number said with a scale word or a decimal point ("twenty-five thousand.", "four point three million in sales")
 counts with or without a noun after it. A number joined to its noun ("sixty-day", "60-day") counts. A clock time said
 as an hour and its minutes joined by hyphens ("five-thirty", "six-oh-five"), or written "5:30", is a time, matched
@@ -229,6 +231,28 @@ def on_screen(texts):
     return vals
 
 
+def _rounded_to(x):
+    """The rounding step of a round amount (25,000 -> 1,000; 4,300,000 -> 100,000), kept to at least two significant
+    figures (30,000 -> 1,000, so "thirty thousand" is not a 25,375). None under 1,000 or for a figure that isn't round."""
+    if x < 1000 or x != int(x):
+        return None
+    n, zeros = int(x), 0
+    while n % 10 == 0:
+        n //= 10; zeros += 1
+    step = min(10 ** zeros, 10 ** (len(str(int(x))) - 2))
+    return step if step >= 100 else None
+
+
 def matches(value, shown):
+    """A spoken value against the numbers on screen: within 0.5%, or one is a round amount (1,000 or more) and the other
+    rounds to it at its own precision ("twenty-five thousand dollars" against an inked "-$25,375"; "$25k" on screen
+    against a spoken "twenty-five thousand three hundred"). Small numbers must match: "sixty days" is not a 64."""
     v = abs(value)
-    return any(abs(s - v) <= 0.005 * max(v, 1e-9) for s in shown)
+    for x in shown:
+        if abs(x - v) <= 0.005 * max(v, 1e-9):
+            return True
+        for rnd, exact in ((v, x), (x, v)):
+            step = _rounded_to(rnd)
+            if step and abs(exact - rnd) <= step / 2:
+                return True
+    return False

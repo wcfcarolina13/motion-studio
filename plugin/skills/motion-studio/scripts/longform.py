@@ -4554,9 +4554,9 @@ def _check(a, film):
     if a.motion_estimate:
         floor0 = a.motion_floor
         vid = film / "out" / ("silent-raw.mp4" if tl.get("finish") else "silent.mp4")   # a finish's grain isn't motion
+        import motioncheck      # here, not in the branch below: floor_of further down needs it too (a map film, 2026-11-28)
         if floor0 is None and vid.exists():                                # final's floor rides on the whole film's median,
-            import motioncheck                                            # which the last render gives far better than the
-            floor0 = motioncheck.check(motioncheck.windows(vid))[0]       # panels alone
+            floor0 = motioncheck.check(motioncheck.windows(vid))[0]       # which the last render gives far better than the panels alone
         est = panel_motion(film, segs)
         mest = map_motion(film, segs)
         if floor0 is None and est and mest:     # no render yet: the floor comes from panels and maps together
