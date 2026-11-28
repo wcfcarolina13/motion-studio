@@ -66,7 +66,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 - **What it is:** a 3D city to the horizon with the real neighbouring buildings. You are the designer, each site problem gets its fix, and the building's name comes in the last line. Sky fills most frames, from a long lens and a low camera.
 - **Reuses:** set3d's camera-on-words, and three.js if we build it in the browser.
 - **New work:** a city from OpenStreetMap footprints and heights. OSM is ODbL, so every render needs the credit "© OpenStreetMap contributors" in the description. It also needs a sky (a CC0 HDRI from Poly Haven) and a lens and camera spec measured from the original. In the browser, three.js can extrude the footprints, which avoids Blender at the cost of a plainer look.
-- **Fit:** a Longtok niche (architecture "why"), not a stream we run today.
+- **Fit:** an explainer-channel niche (architecture "why"), not a stream we run today.
 - **Trade-off:** fetching OSM data, sky files and models needs the Mac, because the cloud can't reach those sites. Real buildings shown as designed by named firms need the facts sourced.
 
 #### Order if we build any
