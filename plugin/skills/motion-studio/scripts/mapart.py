@@ -39,6 +39,7 @@ FONTS = {
     "Anton-Regular.ttf": ("ofl/anton", "Anton-Regular.ttf", "OFL-1.1", "OFL.txt"),
     "PermanentMarker-Regular.ttf": ("apache/permanentmarker", "PermanentMarker-Regular.ttf", "Apache-2.0", "LICENSE.txt"),
     "SpecialElite-Regular.ttf": ("apache/specialelite", "SpecialElite-Regular.ttf", "Apache-2.0", "LICENSE.txt"),
+    "Nunito.ttf": ("ofl/nunito", "Nunito%5Bwght%5D.ttf", "OFL-1.1", "OFL.txt"),      # chunk captions (Black, 900)
 }
 LEVELS = 4
 TILE = 1024        # images are cut into tiles: Chrome's software raster re-decodes a 7200 px image every frame (1.3 s), a few tiles it keeps

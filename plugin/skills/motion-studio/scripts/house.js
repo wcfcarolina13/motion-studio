@@ -5,22 +5,24 @@
 // Every value is a pure function of t. Overlay motion is on twos and paper pieces boil, as on the map.
 (function () {
   const PAL = { board: "#EFEBE3", ink: "#1D1C20", yellow: "#EDBD2E", beige: "#F1EDE4", tape: "#E8DDB5", red: "#B3261E" };
-  const FONTS = { caslon: "MS Caslon", caslonI: "MS Caslon Italic", marker: "MS Marker", elite: "MS Elite", anton: "MS Anton" };
+  const FONTS = { caslon: "MS Caslon", caslonI: "MS Caslon Italic", marker: "MS Marker", elite: "MS Elite", anton: "MS Anton", nunito: "MS Nunito" };
   const FILES = { caslon: "LibreCaslonText.ttf", caslonI: "LibreCaslonText-Italic.ttf", marker: "PermanentMarker-Regular.ttf",
-                  elite: "SpecialElite-Regular.ttf", anton: "Anton-Regular.ttf" };
+                  elite: "SpecialElite-Regular.ttf", anton: "Anton-Regular.ttf", nunito: "Nunito.ttf" };
   // font-family values with a fallback, for attributes
   const FAM = { caslon: `"${FONTS.caslon}", Georgia, serif`, caslonI: `"${FONTS.caslonI}", Georgia, serif`,
                 marker: `"${FONTS.marker}", "Comic Sans MS", cursive`, elite: `"${FONTS.elite}", "Courier New", monospace`,
-                anton: `"${FONTS.anton}", Impact, sans-serif` };
+                anton: `"${FONTS.anton}", Impact, sans-serif`, nunito: `"${FONTS.nunito}", "Arial Rounded MT Bold", Arial, sans-serif` };
 
   // the fonts are read from the film's fonts/ folder (mapart.py fonts, or timeline for a collage film) and added before any
   // text is laid out: an @font-face loads late, and the engine measures text once at build time, so cards sized with the
   // fallback font came out the wrong width. A file read synchronously becomes a loaded FontFace at once.
+  // keys: the faces this film needs (default: the collage and map set); only those are warned about when missing
   let installed = null;
-  function installFonts() {
-    if (installed) return installed;
-    installed = { missing: [] };
-    Object.keys(FILES).forEach(k => {
+  const BASE = ["caslon", "caslonI", "marker", "elite", "anton"];
+  function installFonts(keys) {
+    installed = installed || { missing: [] };
+    const miss = [];
+    (keys || BASE).filter(k => !(k in installed)).forEach(k => {
       try {
         const x = new XMLHttpRequest();
         x.open("GET", "fonts/" + FILES[k], false);
@@ -30,13 +32,13 @@
         if ((x.status && x.status !== 200) || !s || s.length < 1000) throw new Error("empty");
         const b = new Uint8Array(s.length);
         for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 255;
-        const ff = new FontFace(FONTS[k], b.buffer, k === "caslon" || k === "caslonI" ? { weight: "100 900" } : {});
+        const ff = new FontFace(FONTS[k], b.buffer, k === "caslon" || k === "caslonI" || k === "nunito" ? { weight: "100 1000" } : {});
         document.fonts.add(ff);
         installed[k] = true;
-      } catch (e) { installed.missing.push(FILES[k]); }
+      } catch (e) { installed[k] = false; installed.missing.push(FILES[k]); miss.push(FILES[k]); }
     });
-    if (installed.missing.length && window.STUDIO) (window.STUDIO.warnings = window.STUDIO.warnings || [])
-      .push(`house style: fonts missing (${installed.missing.join(", ")}): run mapart.py fonts <film>`);
+    if (miss.length && window.STUDIO) (window.STUDIO.warnings = window.STUDIO.warnings || [])
+      .push(`house style: fonts missing (${miss.join(", ")}): run mapart.py fonts <film>`);
     return installed;
   }
 

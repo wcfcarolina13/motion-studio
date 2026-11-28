@@ -1881,6 +1881,38 @@ class CelFinish(unittest.TestCase):
             longform._render_chunk((str(film), 0, 6, str(dest), 0.5))
             self.assertTrue(dest.exists()); self.assertTrue(dest.with_suffix(".raw.mp4").exists())
 
+
+class ChunkCaptions(unittest.TestCase):
+    """Shorts captions in chunks of 1 to 3 words (cel style test, 2026-11-28)."""
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_chunks(self):
+        import longform, render
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            text = "Rent is due on the first, every month. Extraordinarily-expensive-portapotties cost more"
+            words = [[w, round(0.2 + 0.3 * i, 3), round(0.45 + 0.3 * i, 3)] for i, w in enumerate(text.split())]
+            seg = {"id": "a", "type": "statement", "t0": 0, "t1": 4.5, "data": {"text": "Rent"}, "words": words}
+            tl = {"duration": 4.5, "segments": [seg], "captions": True, "caption_style": "chunk", "format": "9x16"}
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+            with render.Film(film) as f:
+                pages = [x["text"] for x in f.page.evaluate("window.STUDIO.text") if x["where"] == "caption"]
+                f.seek(0.2 + 1 / 30)                             # one frame into the first chunk: dim
+                dim = f.page.evaluate("[...document.querySelectorAll('#caps > div')].filter(b => b.style.visibility === 'visible').map(b => +b.style.opacity)")
+                f.seek(0.5)
+                full = f.page.evaluate("""[...document.querySelectorAll('#caps > div')].filter(b => b.style.visibility === 'visible')
+                    .map(b => [+b.style.opacity, getComputedStyle(b).fontWeight, getComputedStyle(b).color, b.scrollWidth <= b.clientWidth + 1])""")
+                f.seek(3.9)
+                fit = f.page.evaluate("""[...document.querySelectorAll('#caps > div')].filter(b => b.style.visibility === 'visible')
+                    .map(b => [[...b.querySelectorAll('span')].reduce((a, s) => a + s.getBoundingClientRect().width, 0), b.clientWidth])""")
+                self.assertFalse(f.errors)
+        self.assertTrue(all(1 <= len(p.split()) <= 3 for p in pages), pages)
+        self.assertIn("Rent is due", pages); self.assertIn("on the first,", pages)       # breaks at the comma
+        self.assertEqual(dim, [0.55]); self.assertEqual(full[0][:3], [1, "900", "rgb(255, 226, 26)"])
+        self.assertTrue(fit and fit[0][0] <= fit[0][1] + 1, fit)                         # the long word shrinks to fit
+
 class SpokenNumbers(unittest.TestCase):
     """Every spoken amount is on screen at its word (editing-quality study, 2026-11-27: 6 of 83 were)."""
     def test_parse(self):
