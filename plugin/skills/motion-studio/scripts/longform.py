@@ -1157,6 +1157,8 @@ def cmd_timeline(a):
             flips, fp = panel_flips(seg)
             problems += fp
             seg["data"]["flips"] = flips
+        if seg.get("type") == "panel":
+            problems += screen_spans(seg, cues)
         if seg.get("sfx"):      # drama foley: "sfx": ["paper slap", {"kind": "low hit", "at": "envelope"}]
             seg["sfx"] = [dict(x, kind=kind_key(x["kind"])) if isinstance(x, dict) else {"kind": kind_key(x)} for x in seg["sfx"]]
             resolve_cues(seg["sfx"], seg.get("words"), seg, problems, cues)
@@ -2745,6 +2747,58 @@ def clip_steps(segs, fps=FPS):
     return out
 
 
+def frame_spans(seg, k):
+    """[[a, b], ...]: the times frame k of a flipbook panel is on screen (more than one span when it loops)."""
+    d = seg.get("data") or {}
+    flips = d.get("flips") or [[seg["t0"], 0]]
+    ends = [f[0] for f in flips[1:]] + [seg["t1"]]
+    return [[a, b] for (a, i), b in zip(flips, ends) if i == k and b > a]
+
+
+def screen_spans(seg, cues):
+    """A panel screen's time on screen, written as screen["spans"] for the page: the panel's whole length, or only while
+    its "frame" (an index into data.frames) is showing, cut off at its "until" word. A line cued before its frame shows
+    lands when the frame does, so its "t" (and the cue check sees) moves to the flip; the word's own time stays in
+    "t_word". Survive Year 1 cel, 2026-11-28: writing on one drawing stayed up over the next drawings. Returns problems."""
+    d, out = seg.get("data") or {}, []
+    scr = d.get("screen")
+    for j, sc in enumerate(scr if isinstance(scr, list) else [scr]):
+        if not isinstance(sc, dict):
+            continue
+        name = f"{seg['id']}: screen" + (f" {j}" if isinstance(scr, list) else "")
+        if "frame" in sc:
+            k, n = sc["frame"], len(d.get("frames") or [])
+            if not n:
+                out.append(f"{name} names frame {k}, but the panel has no flipbook \"frames\""); continue
+            if not isinstance(k, int) or isinstance(k, bool) or not 0 <= k < n:
+                out.append(f"{name}: \"frame\" must be a whole number from 0 to {n - 1} (an index into data.frames)"); continue
+            spans = frame_spans(seg, k)
+            if not spans:
+                out.append(f"{name}: frame {k} never shows in this segment, so its writing never would"); continue
+        else:
+            spans = [[seg["t0"], seg["t1"]]]
+        u = sc.get("until")
+        if isinstance(u, dict) and u.get("t") is not None:
+            spans = [[a, min(b, u["t"])] for a, b in spans if a < u["t"]]
+            if not spans:
+                out.append(f"{name}: its \"until\" word comes before it is ever on screen"); continue
+        elif u is not None:
+            out.append(f"{name}: \"until\" takes a word cue, {{\"at\": \"word\"}}"); continue
+        sc["spans"] = [[round(a, 4), round(b, 4)] for a, b in spans]
+        for ln in sc.get("lines") or []:
+            if not isinstance(ln, dict) or ln.get("t") is None:
+                continue
+            live = next(([a, b] for a, b in spans if b > ln["t"]), None)
+            if live is None:
+                out.append(f"{name}: line \"{str(ln.get('text', ''))[:30]}\" is cued after its screen has gone"); continue
+            if live[0] > ln["t"]:
+                for c in cues:
+                    if c["seg"] == seg["id"] and c.get("at") == ln.get("at") and abs(c["t"] - ln["t"]) < 1e-6:
+                        c["t"] = round(live[0], 3)
+                ln["t_word"], ln["t"] = ln["t"], round(live[0], 3)
+    return out
+
+
 def panel_flips(seg, fps=FPS):
     """A flipbook panel's schedule, [[t, frame index], ...] in absolute seconds, every t on a whole video frame. With
     any "at" cue on a frame, every frame after the first needs one and shows from its word (hold-on-cue). Otherwise the
@@ -2860,6 +2914,10 @@ def _final(a):
     allow = [(sg["t0"], sg["t0"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
     allow += [(sg["t1"], sg["t1"] + 0.5) for sg in tl["segments"] if sg["type"] in ("stage", "board", "crowd")]
     allow += [(t, t + 0.1) for sg in tl["segments"] if sg["type"] in ("panel", "map") for t in (sg["t0"], sg["t1"])]
+    # a whip between flipbook frames is a fast blurred pan either side of the flip (longform.html WHIP = 0.13 s)
+    allow += [(ft - 0.15, ft + 0.15) for sg in tl["segments"] if sg["type"] == "panel"
+              for ft, k in ((sg.get("data") or {}).get("flips") or [])[1:]
+              if str(((sg["data"].get("frames") or [{}])[k] if isinstance((sg["data"].get("frames") or [None])[k], dict) else {}).get("enter", "")).startswith("whip")]
     # map pieces slap in (scale 1.1, 0.98, 1.0 on twos) and ransom letters land one by one: hits on purpose
     allow += [(x["t"] - 0.1, x["t"] + 0.6) for sg in tl["segments"] if sg["type"] == "map"
               for x in (sg.get("data") or {}).get("pieces", []) if x.get("t") is not None]

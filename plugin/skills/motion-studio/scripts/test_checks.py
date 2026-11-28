@@ -1645,6 +1645,62 @@ class BlankProps(unittest.TestCase):
                 self.assertFalse(f.errors)
 
 
+    def test_screen_on_one_frame_and_until(self):
+        # Survive Year 1 cel, 2026-11-28: writing on drawing 1 stayed up over drawings 2 and 3
+        import longform
+        q = [[0.1, 0.1], [0.4, 0.1], [0.4, 0.3], [0.1, 0.3]]
+        seg = {"id": "p", "type": "panel", "t0": 0, "t1": 6,
+               "data": {"frames": ["a.png", {"image": "b.png", "t": 2.0}, {"image": "c.png", "t": 4.0}],
+                        "flips": [[0, 0], [2.0, 1], [4.0, 2]],
+                        "screen": [{"quad": q, "frame": 1, "lines": [{"text": "$1,200", "at": "twelve", "t": 1.2}]},
+                                   {"quad": q, "frame": 2, "until": {"at": "gone", "t": 5.0}, "lines": [{"text": "RENT", "at": "rent", "t": 4.5}]},
+                                   {"quad": q, "lines": ["A"]}]}}
+        cues = [{"seg": "p", "at": "twelve", "t": 1.2}, {"seg": "p", "at": "rent", "t": 4.5}]
+        self.assertEqual(longform.screen_spans(seg, cues), [])
+        a, b, c = seg["data"]["screen"]
+        self.assertEqual(a["spans"], [[2.0, 4.0]]); self.assertEqual(b["spans"], [[4.0, 5.0]]); self.assertEqual(c["spans"], [[0, 6]])
+        self.assertEqual((a["lines"][0]["t"], a["lines"][0]["t_word"]), (2.0, 1.2))     # said before its frame: lands on the flip
+        self.assertEqual(cues[0]["t"], 2.0); self.assertEqual(b["lines"][0]["t"], 4.5)
+        bad = {"id": "q", "type": "panel", "t0": 0, "t1": 2, "data": {"image": "a.png", "screen": {"quad": q, "frame": 1, "lines": ["x"]}}}
+        self.assertIn("no flipbook", longform.screen_spans(bad, [])[0])
+        bad = {"id": "q", "type": "panel", "t0": 0, "t1": 2, "data": {"frames": ["a.png", "b.png"], "flips": [[0, 0], [1, 1]],
+                                                                    "screen": {"quad": q, "frame": 5, "lines": ["x"]}}}
+        self.assertIn("from 0 to 1", longform.screen_spans(bad, [])[0])
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_frame_screen_camera_and_whip_in_the_page(self):
+        import json, longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            for n, c in (("a", (226, 214, 190)), ("b", (200, 190, 170))):
+                Image.new("RGB", (1920, 1080), c).save(film / "panels" / f"{n}.png")
+            q = [[0.1, 0.1], [0.4, 0.12], [0.4, 0.3], [0.1, 0.28]]
+            segs = [{"id": "p", "type": "panel", "t0": 0, "t1": 4,
+                     "data": {"image": "panels/a.png", "camera": "hold",
+                              "frames": ["panels/a.png", {"image": "panels/b.png", "t": 2.0, "enter": "whip",
+                                                          "camera": {"from": {"x": 0.3, "y": 0.4, "z": 1.3}, "to": {"x": 0.32, "y": 0.4, "z": 1.35}}}],
+                              "flips": [[0, 0], [2.0, 1]],
+                              "screen": [{"quad": q, "bg": False, "frame": 0, "spans": [[0, 2.0]], "lines": [{"text": "$1,200", "t": 0.5}]},
+                                         {"quad": q, "bg": False, "frame": 1, "spans": [[2.0, 4]], "lines": [{"text": "RENT", "t": 1.0}]}]}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4, "segments": segs}) + ";\n")
+            vis = "[...document.querySelectorAll('[data-screen] text')].filter(e => getComputedStyle(e).display !== 'none').map(e => e.textContent)"
+            cam = "(() => { const c = window.STUDIO.panelCam.p.at(%s); return [c.z, c.cx, c.blur || 0]; })()"
+            with render.Film(film) as f:
+                f.seek(1.5); self.assertEqual(f.page.evaluate(vis), ["$1,200"])
+                f.seek(2.6); self.assertEqual(f.page.evaluate(vis), ["RENT"])          # gone with its frame; RENT cued early waits for its own
+                z0, z1 = f.page.evaluate(cam % "1.0")[0], f.page.evaluate(cam % "3.0")[0]
+                self.assertLess(z0, 1.1); self.assertGreater(z1, 1.29)          # the frame's own camera reframes on the cut
+                self.assertGreater(f.page.evaluate(cam % "1.95")[2], 0.5)                # mid-whip: blurred
+                self.assertEqual(f.page.evaluate(cam % "2.5")[2], 0)
+                f.seek(1.95); self.assertTrue(f.page.evaluate("!!document.querySelector('[filter^=\"url(#pw\"]')"))
+                f.seek(2.5); self.assertFalse(f.page.evaluate("!!document.querySelector('[filter^=\"url(#pw\"]')"))
+                self.assertFalse(f.page.evaluate("window.STUDIO.warnings || []")); self.assertFalse(f.errors)
+
+
 class VideoFrames(unittest.TestCase):
     """Frames for the encoder come as JPEG q100 (6x faster than Chromium's PNG); stills and checks stay PNG."""
 
