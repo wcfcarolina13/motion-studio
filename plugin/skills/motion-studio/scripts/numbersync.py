@@ -10,6 +10,10 @@ function word ("two of them", "three or four"); "one" never counts, so "one of t
 ordinals are not amounts. A range counts at both ends ("forty-five to sixty days", "$35–40k"), and its second end is
 marked range_of, because a range on screen lands on its first number. A spoken value matches a shown one within 0.5% (a spoken "about forty-eight hundred"
 against a shown $4,860 does not). Values are compared without their sign, so "lost $3,925" matches "−$3,925".
+A number said with a scale word or a decimal point ("twenty-five thousand.", "four point three million in sales")
+counts with or without a noun after it. A number joined to its noun ("sixty-day", "60-day") counts. A clock time said
+as an hour and its minutes joined by hyphens ("five-thirty", "six-oh-five"), or written "5:30", is a time, matched
+against a "5:30" on screen as one value (5.5) and never as a 5 and a 30.
 """
 import re
 
@@ -40,33 +44,78 @@ def _digits(tok):
     return v * SUFFIX.get(m.group(2) or "", 1)
 
 
-def _words_value(ws):
-    """(value, n words used) for a run of spoken number words at the start of ws, or (None, 0)."""
-    total, cur, used, k = 0, 0, 0, 0
+CLOCK = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+
+
+def _clock(tok):
+    """Hours (5.5 for half past five) of a spoken or written clock time: "five-thirty", "six-oh-five", "5:30", "5:30pm";
+    else None. A spoken one is an hour word and then its minutes, joined by hyphens, so "twenty-five" is never a time."""
+    t = _clean(tok)
+    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)(am|pm|a\.m|p\.m)?\.?", t)
+    if m:
+        return int(m.group(1)) + int(m.group(2)) / 60
+    parts = t.split("-")
+    if len(parts) < 2 or parts[0] not in ONES or not 1 <= ONES[parts[0]] <= 12:
+        return None
+    rest = parts[1:]
+    if rest[0] == "oh" and len(rest) == 2 and rest[1] in ONES and 1 <= ONES[rest[1]] <= 9:
+        mins = ONES[rest[1]]
+    elif len(rest) == 1 and rest[0] in ONES and 10 <= ONES[rest[0]] <= 19:
+        mins = ONES[rest[0]]
+    elif rest[0] in TENS and TENS[rest[0]] <= 50 and (len(rest) == 1 or (len(rest) == 2 and rest[1] in ONES and 1 <= ONES[rest[1]] <= 9)):
+        mins = TENS[rest[0]] + (ONES[rest[1]] if len(rest) == 2 else 0)
+    else:
+        return None
+    return ONES[parts[0]] + mins / 60
+
+
+def _words_value(ws, info=None):
+    """(value, n words used) for a run of spoken number words at the start of ws, or (None, 0). "four point three
+    million" is 4,300,000. info, a dict, is told whether a scale word or a decimal point was said ("big")."""
+    total, cur, used, k, dec = 0, 0, 0, 0, 0
     while k < len(ws):
+        if _clean(ws[k]) == "point" and used and not dec and k + 1 < len(ws) and _clean(ws[k + 1]) in ONES and ONES[_clean(ws[k + 1])] <= 9:
+            dec = 0.1; k += 1
+            if info is not None:
+                info["big"] = True
+            continue
         w = _clean(ws[k]).replace("-", " ").split()
         if not w:
             break
-        ok = True
-        for p in w:
-            if p in ONES:
+        ok, compound = True, False
+        for j, p in enumerate(w):
+            if j and not dec and p not in ONES and p not in TENS and p not in SCALE and re.fullmatch(r"[a-z]+", p):
+                compound = True; break                  # "sixty-day", "five-year": the number carries its noun
+            if dec and p in ONES and ONES[p] <= 9:
+                cur += ONES[p] * dec; dec /= 10
+            elif dec and p not in SCALE:
+                ok = False; break
+            elif p in ONES:
                 cur += ONES[p]
             elif p in TENS:
                 cur += TENS[p]
             elif p == "hundred":
                 cur = max(cur, 1) * 100
+                if info is not None:
+                    info["big"] = True
             elif p in ("thousand", "million", "billion"):
-                total += max(cur, 1) * SCALE[p]; cur = 0
+                total += max(cur, 1) * SCALE[p]; cur = 0; dec = 0
+                if info is not None:
+                    info["big"] = True
             else:
                 ok = False; break
         if not ok:
             break
         k += 1; used = k
+        if compound:
+            if info is not None:
+                info["unit"] = True
+            break
         if re.search(r"[,.;:!?—–]$", ws[k - 1].strip()):     # a comma ends the number: "four, ten" is two numbers
             break
         if k < len(ws) and _clean(ws[k]) == "and" and k + 1 < len(ws) and (_clean(ws[k + 1]).split("-")[0] in ONES or _clean(ws[k + 1]).split("-")[0] in TENS):
             k += 1
-    return (total + cur, used) if used else (None, 0)
+    return (round(total + cur, 6), used) if used else (None, 0)
 
 
 RANGE = {"to", "or"}
@@ -106,7 +155,14 @@ def spoken(words):
             out.append({"text": toks[i], "value": _scale_to(a, b), "t": words[i][1], "i": i})
             out.append({"text": toks[i], "value": b, "t": words[i][1], "i": i, "range_of": _scale_to(a, b)})
             i += 1; continue
+        c = _clock(toks[i])
+        if c is not None:                               # "five-thirty", "5:30": a time, shown as 5:30
+            out.append({"text": toks[i], "value": c, "t": words[i][1], "i": i, "clock": True})
+            i += 1; continue
         v = _digits(toks[i])
+        hy = re.fullmatch(r"(\$?\d[\d,]*(?:\.\d+)?)-[a-z]+", _clean(toks[i]))
+        if v is None and hy and not re.fullmatch(r"(19|20)\d\d", hy.group(1)):   # "60-day"
+            v = _digits(hy.group(1))
         if v is not None and not re.search(r"\d(st|nd|rd|th)\b", toks[i].lower()):
             n = 1
             nxt = _clean(toks[i + 1]) if i + 1 < len(toks) else ""
@@ -121,7 +177,8 @@ def spoken(words):
                     e["value"] = _scale_to(v, v2); ends[i + n + 1] = e["value"]
             out.append(e)
             i += n; continue
-        v, n = _words_value(toks[i:])
+        info = {}
+        v, n = _words_value(toks[i:], info)
         if n:
             unit = _clean(toks[i + n]) if i + n < len(toks) else ""
             ended = re.search(r"[,.;:!?—–]$", toks[i + n - 1].strip())
@@ -134,6 +191,12 @@ def spoken(words):
                     i += n; continue
             if i in ends and v:                         # a range's second end counts with or without a noun after it
                 out.append({"text": " ".join(toks[i:i + n]), "value": float(v), "t": words[i][1], "i": i, "range_of": ends[i]})
+            elif v and v >= 2 and info.get("unit"):
+                out.append({"text": toks[i], "value": float(v), "t": words[i][1], "i": i})
+            elif v and info.get("big") and (ended or not unit or unit in STOP):
+                # "we lost twenty-five thousand." or "four point three million in sales": a scale word or a decimal
+                # point makes it an amount with or without a noun after it
+                out.append({"text": " ".join(toks[i:i + n]), "value": float(v), "t": words[i][1], "i": i})
             elif v and v >= 2 and unit and not ended and unit not in STOP and re.match(r"[a-z]", unit):
                 e = {"text": " ".join(toks[i:i + n + 1]), "value": float(v), "t": words[i][1], "i": i}
                 if i in ends:
@@ -151,6 +214,10 @@ def on_screen(texts):
     """Every number in visible strings, as absolute values."""
     vals = set()
     for s in texts:
+        s = str(s)
+        for m in CLOCK.finditer(s):                     # "5:30" is half past five, not a 5 and a 30
+            vals.add(int(m.group(1)) + int(m.group(2)) / 60)
+        s = CLOCK.sub(" ", s)
         # "$35–40k": the suffix belongs to both ends
         s = re.sub(r"(\d[\d,]*(?:\.\d+)?)\s?[–—-]\s?(\$?)(\d[\d,]*(?:\.\d+)?)\s?(k|K|M|bn|B)\b",
                    lambda m: f"{m.group(1)}{m.group(4)} {m.group(2)}{m.group(3)}{m.group(4)}", str(s))
