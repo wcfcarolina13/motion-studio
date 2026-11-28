@@ -33,7 +33,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 - **What it is:** a 45 to 60 second Short. A globe dives from place to place while big lowercase words land one phrase at a time, fast enough that people watch it twice. The subject is one thing that travelled, such as a food, a drink or an invention. The originals run no music under the voice.
 - **Reuses:** three.js (already in `scripts/`, MIT) for the globe, the map pipeline's camera-on-words timing, and the panel's word cues for the type.
 - **New work:** a globe segment (a sphere textured from Natural Earth, which is public domain) and a kinetic-type layer of big lowercase phrases cued to words.
-- **Fit:** Longtok Shorts. A trend topic that travelled becomes a 60 second history.
+- **Fit:** explainer-channel Shorts. A trend topic that travelled becomes a 60 second history.
 - **Trade-off:** most of the appeal is the creator's own deadpan voice and timing. A Kokoro voice may make it feel flat, which the article itself found with its free voice. The look is plain on purpose, so it can read as a copy of one person. It needs our own type and palette to stand apart.
 
 #### 2. Stick figure against the screen (after Alan Becker)
@@ -41,7 +41,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 - **What it is:** a 30 to 50 second wordless cartoon. A stick figure fights an app on the screen, friends join in, and it ends in a smash. The sound is all effects and the originals run no music.
 - **Reuses:** `figure.js` posing and blending, panel UI screens, and the foley pipeline.
 - **New work:** a thin stick-figure rig with fast action poses (a fight needs speed that `figure.js` poses weren't built for), smear frames, and UI parts that break apart. The article says the figure's size against the screen mattered and had to be measured from the originals.
-- **Fit:** weak. Neither K-factory nor Longtok is wordless.
+- **Fit:** weak. Neither K-factory nor the explainer channel is wordless.
 - **Trade-off:** this is the highest look-alike risk of the five. The creator's characters are distinctive and well known, so anything close reads as a rip-off. If built at all, it needs our own figure, colours and screens. Recommended last.
 
 #### 3. One odd act, then "You see," (after Zack D. Films)
@@ -49,7 +49,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 - **What it is:** a 38 to 50 second 3D story Short. Line one is the strangest act, every sentence after it is one visible action, and the reason comes last, after "You see,". The article says to keep the camera calm because fast action looks stiff in Blender.
 - **Reuses:** the story grammar needs no new code. It is a script template for `contract-and-story.md` and works with any look, set3d included.
 - **New work for the full look:** the engine has no Blender route. A 3D build needs one: Blender (GPL, and what it renders is ours), CC0 characters and props (Quaternius, Kenney or Poly Haven, licence recorded per asset), and a headless render step with word cues. That is a large build.
-- **Fit:** strong for K-factory Shorts and Longtok hooks, as a grammar first.
+- **Fit:** strong for K-factory Shorts and explainer hooks, as a grammar first.
 - **Trade-off:** the grammar is cheap and portable. The Blender look is the costliest build here, and the article warns that it looks stiff.
 
 #### 4. Science Short in flat shapes (after Kurzgesagt)
@@ -57,7 +57,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 - **What it is:** a science Short of about a minute. Flat shapes in a few tones on a dark indigo base, round-eyed characters, and one surprising answer to an everyday question (why onions make you cry), with every action the script names happening on screen. A quiet music bed is fine here.
 - **Reuses:** the code-drawn pipeline, `figure.js` restyled with round-eyed faces, panel reveals, and the mix with its gap check.
 - **New work:** a flat-vector house look (palette, soft glows, round-eyed figures) and a "the script names it, the picture does it" check, which is close to our picture-truth rules.
-- **Fit:** strong for Longtok explainers.
+- **Fit:** strong for the explainer channel.
 - **Already queued:** the Content Factory research queue has an open item for the same look from a different author's prompt ("Can't replicate kurgezakt? Bah! Examine this"). Do them as one study.
 - **Trade-off:** the original's polish is very high, and a near miss looks cheap. It is also the most imitated look on YouTube, so ours needs its own palette to stand out.
 
@@ -72,7 +72,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 #### Order if we build any
 
 1. Story grammar from #3, as a script template. It costs little and K-factory can use it straight away.
-2. #4 science Short, together with the queued Kurzgesagt item. It has the most engine reuse and fits Longtok.
+2. #4 science Short, together with the queued Kurzgesagt item. It has the most engine reuse and fits the explainer channel.
 3. #1 globe whirlwind. It reuses three.js and the map timing.
-4. #5 building Short, only if Longtok takes on the niche.
+4. #5 building Short, only if the explainer channel takes on the niche.
 5. #2 stick figure, last or never, because of the look-alike risk and the weak fit.
