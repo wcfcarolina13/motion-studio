@@ -55,7 +55,8 @@ Codex call and the test suggests a re-roll rarely holds still either.
 How to redraw (picture-truth.md rule 16, 2026-11-27): a shot with "photo": path and "photo_licence" restyles that real
 photo, keeping its layout and changing setting, light and style (a photo with no licence recorded stops the run). A
 shot with "blockout": path paints over a to-scale blockout and then makes a second call, a style pass over its
-surfaces. "style_refs": [paths] (per shot, or for the file) are attached after the picture as style references. Every
+surfaces. "style_refs": [paths] (per shot, or for the file) are attached after the picture as style references (on a plain
+shot they are the only images; an edit takes none, because its base already carries the look). Every
 prompt names each image by number and role, with the picture to work from first, and codex takes at most 5 images.
 An edit that names a "note" is refused (a note is fixed with `longform.py repair --box` or a reframe), and so is an
 edit "change" of more than one sentence. A shot with two or more sized things and neither a photo nor a blockout is
@@ -239,8 +240,12 @@ def cast_sentence(cfg, shot=None):
             + (" " + write_on_sentence(shot) if write_on_sentence(shot) else ""))
 
 
-def ask(shot, style, faceless, scale="", w=1536, h=1024, cast=""):
-    parts = [shot["prompt"].strip(), cast]
+def ask(shot, style, faceless, scale="", w=1536, h=1024, cast="", refs=()):
+    """A shot drawn from words. Its "style_refs", when it has any, are attached as images 1..n (cel test, 2026-11-28:
+    they were dropped on this path, so plain shots never saw the look they were given)."""
+    lead = " ".join(f"Image {i} is a style reference only: take its medium, palette, line weight and paper texture, "
+                    "never its subject, layout or objects." for i, _ in enumerate(refs, 1))
+    parts = [lead, shot["prompt"].strip(), cast]
     if scale:
         parts.append(scale + " Keep these proportions exactly, even where they look unusual.")
     parts.append((shot.get("style") or style).strip())
@@ -337,7 +342,7 @@ def shot_problems(shots, cfg):
             out.append(f"{i}: one change per edit (rule 16.2); split it into one shot per change")
         if aspect_of(x, cfg) not in ASPECTS:
             out.append(f'{i}: "aspect" is "{aspect_of(x, cfg)}"; use "landscape" or "portrait"')
-        n = 1 + len(refs_of(x, cfg))
+        n = (1 if x.get("photo") or x.get("blockout") else 0) + len(refs_of(x, cfg))   # a plain shot sends refs only
         if n > MAX_IMAGES:
             out.append(f"{i}: {n} images attached; codex takes at most {MAX_IMAGES}")
     return out
@@ -563,7 +568,9 @@ def main():
                 prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw, cast_sentence(cfg, s))
                 extra = [f"--image={os.path.abspath(p)}" for p in [s["blockout"]] + refs]
             else:
-                prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw, cast_sentence(cfg, s)), []
+                refs = refs_of(s, cfg)
+                prompt = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw, cast_sentence(cfg, s), refs)
+                extra = [f"--image={os.path.abspath(p)}" for p in refs]
             done = False
             last_why = ""
             resends = 0
