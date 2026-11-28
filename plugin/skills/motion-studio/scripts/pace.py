@@ -129,6 +129,11 @@ def sites(seg):
         for i, it in enumerate(items):
             if isinstance(it, dict):
                 yield (key, i), it, False
+    scr = d.get("screen")                               # words lettered onto a screen, sign or blank prop in the still
+    for j, one in enumerate(scr if isinstance(scr, list) else [scr]):
+        for i, ln in enumerate((one or {}).get("lines") or [] if isinstance(one, dict) else []):
+            path = ("screen",) + ((j,) if isinstance(scr, list) else ()) + ("lines", i)
+            yield path, ln if isinstance(ln, dict) else {"text": str(ln)}, False
 
 
 def _said_number(text, spoken_nums):
@@ -192,22 +197,26 @@ def cued_early(seg, late=0.7):
 
 
 def label(path):
-    return "data" if not path else path[0] if len(path) == 1 else f"{path[0]}[{path[1]}]"
+    if not path:
+        return "data"
+    return path[0] + "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in path[1:])
 
 
 def set_at(data, path, at):
     """Write "at" at a sites() path inside a script segment's data; False when the place is missing or already cued."""
     if not isinstance(data, dict):
         return False
-    if not path:
-        node = data
-    elif len(path) == 1:
-        node = data.get(path[0])
-        if isinstance(node, str):
-            node = data[path[0]] = {"text": node}
-    else:
-        items = data.get(path[0])
-        node = items[path[1]] if isinstance(items, list) and path[1] < len(items) else None
+    node, parent, key = data, None, None
+    for p in path:                                      # keys and list indices, e.g. ("screen", 0, "lines", 2)
+        parent, key = node, p
+        if isinstance(node, dict) and isinstance(p, str):
+            node = node.get(p)
+        elif isinstance(node, list) and isinstance(p, int) and p < len(node):
+            node = node[p]
+        else:
+            return False
+    if isinstance(node, str) and parent is not None:   # a plain string item ("caption_card", a screen line) becomes {text}
+        node = parent[key] = {"text": node}
     if not isinstance(node, dict) or "at" in node:
         return False
     node["at"] = at

@@ -344,6 +344,8 @@ def gate_real_assets(film, segs, step):
 # "stat_drift": a stat scene rises slowly from its count on, so a long stat never holds still (longform.html; 2026-11-25)
 ENGINE_DEFAULTS = {"anticipate": True, "map_drift": True, "stat_drift": True}
 CAPTION_STYLES = ("pages", "chunk")
+SCREEN_FONTS = {"caslon": "LibreCaslonText.ttf", "marker": "PermanentMarker-Regular.ttf", "elite": "SpecialElite-Regular.ttf",
+                "anton": "Anton-Regular.ttf", "nunito": "Nunito.ttf"}
 HOUSE_FONTS = ("LibreCaslonText.ttf", "LibreCaslonText-Italic.ttf", "PermanentMarker-Regular.ttf", "SpecialElite-Regular.ttf", "Anton-Regular.ttf")
 
 
@@ -1210,6 +1212,11 @@ def cmd_timeline(a):
             tl["caption_style"] = sc["caption_style"]
     need = HOUSE_FONTS if sc.get("style") == "collage" else ()
     need += ("Nunito.ttf",) if tl.get("caption_style") == "chunk" else ()
+    for seg in tl.get("segments", []):                 # a screen lettered in a house face (a hand-written price: "marker")
+        scr = (seg.get("data") or {}).get("screen") if isinstance(seg.get("data"), dict) else None
+        for one in (scr if isinstance(scr, list) else [scr] if scr else []):
+            if isinstance(one, dict) and one.get("font") in SCREEN_FONTS:
+                need += (SCREEN_FONTS[one["font"]],)
     if need and not all((film / "fonts" / f).exists() for f in need):
         import mapart                                   # the house typefaces (OFL, Apache-2.0), with their licences
         mapart.cmd_fonts(film)

@@ -80,6 +80,11 @@ if (TL.style === "collage" && !HO) (window.STUDIO.warnings = window.STUDIO.warni
 if (HO && (COLLAGE || TL.segments.some(s => s.type === "map"))) HO.installFonts();
 const CHUNK = TL.captions && TL.caption_style === "chunk";
 if (HO && CHUNK) HO.installFonts(["nunito"]);
+// a panel "screen" (or a list of them: words written onto a blank sign, tag, receipt or paper the still draws) may name a
+// house face as its "font" ("marker" for a hand-lettered price, "elite", "caslon", "anton", "nunito")
+const screensOf = d => (Array.isArray(d && d.screen) ? d.screen : d && d.screen ? [d.screen] : []).filter(Boolean);
+const SCREEN_FONTS = [...new Set(TL.segments.flatMap(s => screensOf(s.data)).map(sc => sc.font).filter(f => HO && f in HO.FAM))];
+if (SCREEN_FONTS.length) HO.installFonts(SCREEN_FONTS);
 const HC = HO ? HO.clock(TL.fps || 30) : null;
 // the collage's yellow (tags, tape, the paint sweep, a FIG label): palette HIGHLIGHT, else the house yellow. Not ACCENT, which
 // a warm palette often makes a dark ochre that ink can't be read on
@@ -1546,7 +1551,7 @@ function homography(q) {
   const a = x1 - x0 + g * x1, b = x3 - x0 + h * x3, c = x0, d = y1 - y0 + g * y1, e = y3 - y0 + h * y3, f = y0;
   return (u, v) => { const w = g * u + h * v + 1; return [(a * u + b * v + c) / w, (d * u + e * v + f) / w]; };
 }
-function panelScreen(sc, g, IW, IH, s) {
+function panelScreen(sc, g, IW, IH, s, idx = 0) {
   if (!sc || !Array.isArray(sc.quad) || sc.quad.length !== 4 || !(sc.lines || []).length) {
     if (sc) (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: screen needs a quad of 4 [x, y] points and at least one line`);
     return () => {};
@@ -1558,12 +1563,12 @@ function panelScreen(sc, g, IW, IH, s) {
   const J = (u, v) => { const e = 1, a = P(u + e, v), b = P(u - e, v), c = P(u, v + e), d = P(u, v - e);
     return [(a[0] - b[0]) / 2, (a[1] - b[1]) / 2, (c[0] - d[0]) / 2, (c[1] - d[1]) / 2]; };
   const grp = K.el("g", { "data-screen": s.id }, g);
-  const cid = "scr" + s.id.replace(/\W/g, "");
+  const cid = "scr" + s.id.replace(/\W/g, "") + (idx ? "_" + idx : "");
   const cp = K.el("clipPath", { id: cid }, K.defs);
   K.el("polygon", { points: q.map(p => p.join(",")).join(" ") }, cp);
   grp.setAttribute("clip-path", `url(#${cid})`);
   if (sc.bg !== false) K.el("polygon", { points: q.map(p => p.join(",")).join(" "), fill: sc.bg || "#0e1720" }, grp);
-  const ink = sc.ink || "#e9f1f7", font = sc.font || SANS, lines = sc.lines.map(l => typeof l === "string" ? { text: l } : l);
+  const ink = sc.ink || "#e9f1f7", font = HO && sc.font in HO.FAM ? HO.FAM[sc.font] : sc.font || SANS, lines = sc.lines.map(l => typeof l === "string" ? { text: l } : l);
   const pad = SW * 0.07, lh = sc.size ? sc.size * SH : Math.min((SH - 2 * pad) / lines.length, SH * 0.3);
   // the font fills the line height unless the longest line would run past the screen's width
   const meas = K.text("", { "font-family": font, "font-size": 100, "font-weight": 600 }, grp);
@@ -2050,7 +2055,7 @@ B.panel = (s, g) => {
   const frameAt = t => { let k = flips[0][1]; for (const [ft, i] of flips) { if (t + 1e-4 >= ft) k = i; else break; } return k; };
   let shown = -1;
   const fxDraw = panelFx(d.fx, g, IW, IH, s, srcs[0]);
-  const screenDraw = panelScreen(d.screen, g, IW, IH, s);
+  const screenDraws = screensOf(d).map((sc, i) => panelScreen(sc, g, IW, IH, s, i)), screenDraw = t => screenDraws.forEach(f => f(t));
   if (d.flashback) {
     if (!fbVig) {
       const gr = K.el("radialGradient", { id: "fbvig", cx: "50%", cy: "50%", r: "70%" }, K.defs);
