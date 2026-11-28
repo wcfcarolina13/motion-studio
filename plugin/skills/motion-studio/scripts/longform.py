@@ -343,6 +343,7 @@ def gate_real_assets(film, segs, step):
 # "map_drift": a map camera pushes in slowly across every hold instead of sitting still (mapscene.js; 2026-11-25)
 # "stat_drift": a stat scene rises slowly from its count on, so a long stat never holds still (longform.html; 2026-11-25)
 ENGINE_DEFAULTS = {"anticipate": True, "map_drift": True, "stat_drift": True}
+CAPTION_STYLES = ("pages", "chunk")
 HOUSE_FONTS = ("LibreCaslonText.ttf", "LibreCaslonText-Italic.ttf", "PermanentMarker-Regular.ttf", "SpecialElite-Regular.ttf", "Anton-Regular.ttf")
 
 
@@ -1202,8 +1203,15 @@ def cmd_timeline(a):
             problems.append(f"finish {sc['finish']!r}: use one of {', '.join(finish_.FINISHES)} (or {{\"kind\": ..., \"seed\": n}})")
         else:
             tl["finish"] = sc["finish"]
-    if sc.get("style") == "collage" and not all((film / "fonts" / f).exists() for f in HOUSE_FONTS):
-        import mapart                                   # the map's typefaces (OFL, Apache-2.0), with their licences
+    if sc.get("caption_style"):              # burned captions: "pages" (the default) or "chunk" (Shorts, 1 to 3 words)
+        if sc["caption_style"] not in CAPTION_STYLES:
+            problems.append(f"caption_style {sc['caption_style']!r}: use one of {', '.join(CAPTION_STYLES)}")
+        else:
+            tl["caption_style"] = sc["caption_style"]
+    need = HOUSE_FONTS if sc.get("style") == "collage" else ()
+    need += ("Nunito.ttf",) if tl.get("caption_style") == "chunk" else ()
+    if need and not all((film / "fonts" / f).exists() for f in need):
+        import mapart                                   # the house typefaces (OFL, Apache-2.0), with their licences
         mapart.cmd_fonts(film)
     if sc.get("sizes"):
         tl["sizes"] = sc["sizes"]
@@ -1307,7 +1315,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say", "set3d", "style", "paper_grain", "finish") if k in sc}
+    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say", "set3d", "style", "paper_grain", "finish", "caption_style") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")

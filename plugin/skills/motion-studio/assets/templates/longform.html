@@ -78,6 +78,8 @@ const FONT = "Georgia, serif", SANS = "Helvetica Neue, Helvetica, Arial, sans-se
 const HO = window.House || null, COLLAGE = TL.style === "collage" && !!HO;
 if (TL.style === "collage" && !HO) (window.STUDIO.warnings = window.STUDIO.warnings || []).push("style collage: house.js is missing: run longform.py init");
 if (HO && (COLLAGE || TL.segments.some(s => s.type === "map"))) HO.installFonts();
+const CHUNK = TL.captions && TL.caption_style === "chunk";
+if (HO && CHUNK) HO.installFonts(["nunito"]);
 const HC = HO ? HO.clock(TL.fps || 30) : null;
 // the collage's yellow (tags, tape, the paint sweep, a FIG label): palette HIGHLIGHT, else the house yellow. Not ACCENT, which
 // a warm palette often makes a dark ochre that ink can't be read on
@@ -2331,8 +2333,10 @@ if (TL.captions) {
     ws.forEach((w, k) => {
       page.push(w);
       const chars = page.map(x => x[0]).join(" ").length, end = /[.!?]$/.test(w[0]), comma = /[,;:]$/.test(w[0]);
-      // short pages (about four words) so the eye can't run ahead of the voice
-      if (end || page.length >= 4 || chars > 26 || (comma && page.length >= 2)) flush();
+      // short pages (about four words) so the eye can't run ahead of the voice; chunk captions: one to three words,
+      // broken at any punctuation and before a line too wide for the big type
+      if (CHUNK ? (end || comma || /[—–-]$/.test(w[0]) || page.length >= 3 || chars > 14)
+                : (end || page.length >= 4 || chars > 26 || (comma && page.length >= 2))) flush();
     });
     flush();
   });
@@ -2341,11 +2345,23 @@ if (TL.captions) {
     pg.t0 = pg.words[0][1] - 0.05;
     pg.t1 = next && next.s === pg.s ? next.words[0][1] - 0.05 : Math.min(pg.s.t1, pg.words[pg.words.length - 1][2] + 0.5);
     const box = document.createElement("div"), inner = document.createElement("div");
-    const ch = V(64, 84);
+    const ch = CHUNK ? V(120, 150) : V(64, 84);
     Object.assign(box.style, { position: "absolute", left: V(80, 60) + "px", width: (W - V(160, 120)) + "px", top: V(H - 128, SAFE.y1 + 40) + "px", height: ch + "px", overflow: "hidden", textAlign: "center",
       fontFamily: SANS, fontSize: V(44, 60) + "px", fontWeight: "600", lineHeight: ch + "px", fontStyle: pg.s.mono ? "italic" : "normal" });
+    if (CHUNK) {
+      // chunk captions (cel style test, 2026-11-28): bold rounded yellow with a dark outline, lower middle, above the
+      // Shorts overlay zone. Nunito Black's caps are 0.705 em, so 100 px type (1080 wide) gives 70 px caps, over the
+      // 52 px floor, at 1080 wide and below (cap height scales with the frame)
+      Object.assign(box.style, { top: V(H - 190, SAFE.y1 + 10) + "px", overflow: "visible", fontFamily: HO ? HO.FAM.nunito : SANS,
+        fontSize: Math.round(V(84, 100) * W / V(1920, 1080)) + "px", fontWeight: "900", color: "#ffe21a", fontStyle: "normal",
+        WebkitTextStroke: V(9, 12) + "px #1a1208", paintOrder: "stroke fill", textShadow: "0 6px 0 rgba(26,18,8,0.55)" });
+    }
     pg.spans = pg.words.map(w => { const sp = document.createElement("span"); sp.textContent = w[0] + " "; sp.style.whiteSpace = "pre"; inner.appendChild(sp); return sp; });
     box.appendChild(inner); capsDiv.appendChild(box);
+    if (CHUNK) {                       // one long word can be wider than the band: shrink that chunk to fit
+      const wide = pg.spans.reduce((a, sp) => a + sp.getBoundingClientRect().width, 0), room = box.clientWidth;
+      if (wide > room) box.style.fontSize = Math.floor(parseFloat(box.style.fontSize) * room / wide) + "px";
+    }
     pg.box = box; pg.inner = inner;
     window.STUDIO.text.push({ t0: pg.t0, t1: pg.t1, where: "caption", text: pg.words.map(w => w[0]).join(" ") });
   });
@@ -2699,6 +2715,10 @@ K.run(t => {
     const vis = t >= pg.t0 && t < pg.t1;
     pg.box.style.visibility = vis ? "visible" : "hidden";
     if (!vis) return;
+    if (CHUNK) {                       // the whole chunk at once, dim for its first 3 frames, then full; no slide, no word lighting
+      pg.box.style.opacity = (t - pg.t0) < 3 / (TL.fps || 30) - 1e-3 ? 0.55 : 1;
+      return;
+    }
     const up = K.eout(K.prog(t, pg.t0, pg.t0 + 0.12)), gone = K.ein(K.prog(t, pg.t1 - 0.1, pg.t1));
     pg.inner.style.transform = `translateY(${(1 - up) * 100 - gone * 100}%)`;
     pg.spans.forEach((sp, k) => {
