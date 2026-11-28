@@ -214,6 +214,36 @@ class PartialRender(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 longform.partial_problems(film, other, parts, ["b", "c"], 1.0, ranges)
 
+    def test_engine_code_and_named_cues(self):
+        # the first cel render mixed chunks from before and after an engine pull: a step at every old/new join
+        import copy, os
+        import longform
+        with tempfile.TemporaryDirectory() as d:
+            film, parts = Path(d), Path(d, "out", "parts")
+            parts.mkdir(parents=True)
+            tl = copy.deepcopy(self.TL); tl["cues"] = [{"seg": "a", "at": "x", "t": 1.0}, {"seg": "c", "at": "y", "t": 12.0}]
+            n = int(tl["duration"] * 30); ranges = longform.part_ranges(tl, n)
+            for i0, i1 in ranges:
+                (parts / f"p{i0:07d}-{i1:07d}.mp4").write_bytes(b"v")
+            longform.write_manifest(film, tl, parts, 1.0)
+            new = copy.deepcopy(tl); new["cues"][1]["t"] = 12.5; new["segments"][2]["data"] = {"x": 1}
+            longform.partial_problems(film, new, parts, ["c"], 1.0, ranges)          # c's own cue moved: fine
+            other = copy.deepcopy(new); other["cues"][0]["t"] = 1.5
+            with self.assertRaises(SystemExit) as e:
+                longform.partial_problems(film, other, parts, ["c"], 1.0, ranges)
+            self.assertIn("cues changed in segments that are not named", str(e.exception))
+            s0 = longform.render_stamp(film, 1.0)
+            old = os.environ.get("MS_FRAME_FORMAT")
+            os.environ["MS_FRAME_FORMAT"] = "png"
+            try:
+                self.assertNotEqual(longform.render_stamp(film, 1.0), s0)            # engine render settings are in the stamp
+                with self.assertRaises(SystemExit) as e:
+                    longform.partial_problems(film, new, parts, ["c"], 1.0, ranges)
+                self.assertIn("render code changed", str(e.exception))
+            finally:
+                if old is None: os.environ.pop("MS_FRAME_FORMAT", None)
+                else: os.environ["MS_FRAME_FORMAT"] = old
+
 
 class PanelMotion(unittest.TestCase):
     def test_flags_only_quiet_panels(self):
@@ -1786,6 +1816,26 @@ class PopDiag(unittest.TestCase):
             self.assertEqual(sorted(fr), [4, 5, 6, 8])
             a, b, c = popdiag.pop_row(fr, 5)
             self.assertGreater(min(a, b), 50); self.assertLess(c, 1)
+            self.assertEqual(len(popdiag.video_frames(v, [-1], 160, 90)), 1)    # the last frame, by count
+
+    def test_jpeg_and_png_frames_encode_alike_and_joins_hold(self):
+        # JPEG frames (#186) went through the scale filter's guess at a JPEG's range: 1-2 levels darker than PNG frames
+        import io, popdiag
+        import numpy as np
+        from PIL import Image
+        base = np.zeros((180, 320, 3), np.uint8); base[:] = np.linspace(60, 200, 320).astype(np.uint8)[None, :, None]
+        base[40:120, 60:140] = (200, 120, 60); base[90:160, 180:260] = (40, 90, 170)     # flat panels, like a cel frame
+        def enc(im, fmt):
+            b = io.BytesIO(); Image.fromarray(im).save(b, fmt, **({"quality": 100, "subsampling": 0} if fmt == "JPEG" else {})); return b.getvalue()
+        frames = [np.roll(base, i, axis=1) for i in range(6)]
+        with tempfile.TemporaryDirectory() as d:
+            got = {}
+            for fmt in ("JPEG", "PNG"):
+                src = [enc(f, fmt) for f in frames]
+                whole, cut = popdiag.encode_test(src, 3, 320, 180, Path(d))
+                self.assertLess(abs(cut - whole), 0.3, fmt)                   # a chunk join adds no step
+                got[fmt] = popdiag.video_frames(Path(d, "whole.mp4"), [2], 320, 180)[2]
+            self.assertLess(abs(popdiag.level(got["JPEG"], got["PNG"])), 0.3)
 
 class VideoFrames(unittest.TestCase):
     """Frames for the encoder come as JPEG q100 (6x faster than Chromium's PNG); stills and checks stay PNG."""
