@@ -2184,6 +2184,23 @@ class CelFinish(unittest.TestCase):
             dest = film / "parts" / "p0000000-0000006.mp4"; dest.parent.mkdir()
             longform._render_chunk((str(film), 0, 6, str(dest), 0.5))
             self.assertTrue(dest.exists()); self.assertTrue(dest.with_suffix(".raw.mp4").exists())
+            # final's frame-0 reference is the finished frame 0, like the video's (first cel render, 2026-11-28)
+            with render.Film(film) as f:
+                fin0 = np.asarray(Image.open(io.BytesIO(f.frame(0, 30)[0])).convert("RGB")).astype(int)
+                raw0 = np.asarray(Image.open(io.BytesIO(f.shot(0))).convert("RGB")).astype(int)
+            ref = longform.film_frame0(film).astype(int)
+            self.assertLess(np.abs(ref - fin0).mean(), 1.0); self.assertGreater(np.abs(ref - raw0).mean(), 2)
+            # every chunk draws one frame and throws it away before its first kept frame
+            calls, real = [], render.Film.frame
+            def spy(self_, t, fps=30):
+                calls.append(round(t * 30)); return real(self_, t, fps)
+            render.Film.frame = spy
+            try:
+                d2 = film / "parts" / "p0000010-0000012.mp4"
+                longform._render_chunk((str(film), 10, 12, str(d2), 0.5))
+            finally:
+                render.Film.frame = real
+            self.assertEqual(calls, [9, 10, 11])
 
 
 class ChunkCaptions(unittest.TestCase):

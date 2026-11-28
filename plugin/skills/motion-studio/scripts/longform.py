@@ -1578,6 +1578,10 @@ def _render_chunk(args):
         px = enc(proxy_tmp, 23, "veryfast") if f.finish else None
         pipes = [p for p in (ff, px) if p]
         try:
+            # one frame drawn and thrown away first: the first screenshot of a fresh page can differ from the same frame
+            # drawn in sequence, and every chunk starts a fresh page. The first cel render (on the Mac) had a one-frame
+            # whole-picture jump at 5 chunk starts, each 0.6 s into a panel, where a chunk is cut (HEAD)
+            f.frame(max(i0 - 1, 0) / FPS, FPS)
             for i in range(i0, i1):
                 if (i - i0) % 30 == 0 and stop.exists():
                     raise ChunkStopped(f"chunk {i0} stopped: another chunk hit a page error")
@@ -2588,7 +2592,9 @@ def film_frame0(film):
     import numpy as np
     import render
     with render.Film(film) as f:
-        png = f.shot(0)
+        # with a finish, the video's frame 0 is the finished one: compare like with like (the cel finish warms and lifts
+        # the paper, (242, 228, 196) to (248, 230, 187) on the first cel render, 2026-11-28, past the 4-level tolerance)
+        png = f.frame(0, FPS)[0] if f.finish else f.shot(0)
         w, h = f.w, f.h
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", "-", "-vf", f"scale={w}:{h},format=rgb24", "-f", "rawvideo", "-"],
                          input=png, capture_output=True, check=True).stdout
