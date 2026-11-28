@@ -1748,6 +1748,41 @@ class BlankProps(unittest.TestCase):
                 self.assertFalse(f.errors)
 
 
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_screen_pre_blur_and_line_ink(self):
+        # Survive Year 1 review, 2026-11-28: a prop's writing sits blurred before its word, then sharpens; per-line ink
+        import json, longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            Image.new("RGB", (1920, 1080), (226, 214, 190)).save(film / "panels" / "yard.png")
+            q = [[0.1, 0.1], [0.5, 0.1], [0.5, 0.4], [0.1, 0.4]]
+            segs = [{"id": "p", "type": "panel", "t0": 0, "t1": 4,
+                     "data": {"image": "panels/yard.png", "screen": {"quad": q, "bg": False, "pre": "blur", "ink": "#222222",
+                                                                    "lines": [{"text": "LOSS", "t": 1.0, "ink": "#C8402F"},
+                                                                              {"text": "GAIN", "t": 2.0, "pre": False}]}}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4, "segments": segs}) + ";\n")
+            vis = """[...document.querySelectorAll('[data-screen] text')].filter(e => getComputedStyle(e).display !== 'none')
+                     .map(e => [e.textContent, e.hasAttribute('data-aux') ? 1 : 0, e.getAttribute('fill'), +(e.getAttribute('opacity') || 1)])"""
+            with render.Film(film) as f:
+                f.seek(0.5)
+                self.assertEqual([(t, a) for t, a, _, _ in f.page.evaluate(vis)], [("LOSS", 1)])   # blurred copy only; GAIN (pre false) blank
+                self.assertEqual(f.page.evaluate(longform.TEXT_STATE), [])                          # checks don't read the blur
+                f.seek(2.5)
+                got = f.page.evaluate(vis)
+                self.assertEqual(sorted((t, a, c) for t, a, c, _ in got), [("GAIN", 0, "#222222"), ("LOSS", 0, "#C8402F")])
+                self.assertTrue(all(o > 0.99 for *_, o in got))
+                self.assertEqual(sorted(r[2] for r in f.page.evaluate(longform.TEXT_STATE)), ["GAIN", "LOSS"])
+                self.assertFalse(f.page.evaluate("window.STUDIO.warnings || []"))
+                self.assertFalse(f.errors)
+            segs[0]["data"]["screen"]["pre"] = "fog"
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4, "segments": segs}) + ";\n")
+            with render.Film(film) as f:
+                self.assertIn('"pre" is "blur" or false', " ".join(f.page.evaluate("window.STUDIO.warnings || []")))
+
     def test_screen_on_one_frame_and_until(self):
         # Survive Year 1 cel, 2026-11-28: writing on drawing 1 stayed up over drawings 2 and 3
         import longform

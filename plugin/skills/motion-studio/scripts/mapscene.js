@@ -297,6 +297,24 @@
         }
         q.fixed = [W / 2, VERT ? SAFE.y1 - 20 : H - 40]; q.rot = d.rot != null ? d.rot : 0.6;
         K.label(d.text + (d.word ? " " + d.word : ""), q.t0, q.t1, "map sheet");
+      } else if (kind === "icon") {
+        // a small inked drawing pinned to a place: "icon": "trees" (a few conifers; owner's note on the national-forest
+        // map, 2026-11-28). "size" is its height in px on screen (default 120), "n" the number of trees (default 3).
+        const name = d.icon || "trees", size = d.size || 120;
+        if (name === "trees" || name === "tree" || name === "forest") {
+          const n = Math.max(1, d.n || (name === "tree" ? 1 : 3));
+          // on a scrap of paper, so the ink reads over a region's cross-hatch ("paper": false leaves it bare)
+          if (d.paper !== false) {
+            const rx = (n - 1) * size * 0.21 + size * 0.42, ry = size * 0.66;
+            el("ellipse", { cx: 0, cy: -size * 0.02, rx: rx.toFixed(1), ry: ry.toFixed(1), fill: PAL.beige }, inner);
+            el("ellipse", { cx: 0, cy: -size * 0.02, rx: rx.toFixed(1), ry: ry.toFixed(1), fill: "none", stroke: PAL.ink, "stroke-opacity": 0.14, "stroke-width": 2 }, inner);
+          }
+          for (let i = 0; i < n; i++) {
+            const hh = size * (i % 2 ? 0.78 : 1) * (0.92 + 0.16 * hash(q.id, i, 1)), ww = hh * 0.56;
+            const x = (i - (n - 1) / 2) * size * 0.42 + (hash(q.id, i, 2) - 0.5) * size * 0.08, y = size * 0.5;
+            el("path", { d: conifer(x, y, ww, hh, q.id * 7 + i), fill: PAL.ink }, inner);
+          }
+        } else warn(`${s.id}: map icon "${name}" is not one of: trees`);
       } else warn(`${s.id}: unknown piece kind "${kind}"`);
       if (d.splash && kind !== "splash") {
         [...Array(5)].forEach((_, i) => {
@@ -310,6 +328,16 @@
     function blob(x, y, r, seed) {
       const n = 10;
       return "M" + [...Array(n)].map((_, i) => { const a = i / n * 6.283, rr = r * (0.7 + 0.5 * hash(seed, i)); return (x + Math.cos(a) * rr).toFixed(1) + " " + (y + Math.sin(a) * rr).toFixed(1); }).join("L") + "Z";
+    }
+    // a conifer standing on (x, y): a trunk and three tiers, each with a slightly ragged hem, like a pen drawing
+    function conifer(x, y, w, h, seed) {
+      const trunk = h * 0.14, tw = w * 0.12, top = y - h, parts = [`M${(x - tw / 2).toFixed(1)} ${y.toFixed(1)} h${tw.toFixed(1)} v${(-trunk).toFixed(1)} h${(-tw).toFixed(1)} Z`];
+      for (let k = 0; k < 3; k++) {
+        const ty = top + (h - trunk) * k * 0.26, by = top + (h - trunk) * (0.42 + k * 0.29), hw = w / 2 * (0.55 + k * 0.22);
+        const hem = [...Array(5)].map((_, i) => { const u = i / 4; return `${(x + hw - 2 * hw * u).toFixed(1)} ${(by + (hash(seed, k, i) - 0.5) * h * 0.05).toFixed(1)}`; });
+        parts.push(`M${x.toFixed(1)} ${ty.toFixed(1)} L${hem.join(" L")} Z`);
+      }
+      return parts.join(" ");
     }
     // cut-paper letters: each its own square of ink, beige or yellow, in Caslon Bold, Anton or Special Elite
     function ransom(g, text, size, seed) {
