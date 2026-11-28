@@ -24,6 +24,7 @@ that word of the segment's narration once `align` has run, so beats land on what
   longform.py pace <film> [--apply]             review/pace.md: narration with nothing new landing, reveals not on a word (--apply cues them)
   longform.py tsheet <film> [--all]             review/intro-tsheet.md (or tsheet.md): audio | visual rows, numbers marked
   longform.py captions <film> --lang es --text es.json   a caption track in another language -> out/captions.es.vtt
+  longform.py finish <film> [--at 4 12]          the film's finish ("finish": "cel") before | after -> review/finish-<t>.png
   longform.py stills <film> [--every 20]        one still per segment (or every N s) + contact sheet
   longform.py cast-sheet <film>                 set3d cast design sheet (review/cast-sheet.png); render needs it current
   longform.py music <film>                      rank the audio library per chapter mood -> out/music_plan.json
@@ -1195,6 +1196,12 @@ def cmd_timeline(a):
             problems.append(f"style \"{sc['style']}\": use \"collage\" or \"plain\"")
     if sc.get("paper_grain"):
         tl["paper_grain"] = True
+    if sc.get("finish"):                     # a look on the composed frames at render time (finish.py), under the captions
+        import finish as finish_
+        if finish_.kind_of(sc["finish"]) not in finish_.FINISHES:
+            problems.append(f"finish {sc['finish']!r}: use one of {', '.join(finish_.FINISHES)} (or {{\"kind\": ..., \"seed\": n}})")
+        else:
+            tl["finish"] = sc["finish"]
     if sc.get("style") == "collage" and not all((film / "fonts" / f).exists() for f in HOUSE_FONTS):
         import mapart                                   # the map's typefaces (OFL, Apache-2.0), with their licences
         mapart.cmd_fonts(film)
@@ -1300,7 +1307,7 @@ def cmd_short(a):
             if src and src.exists():
                 (dest / src.relative_to(film)).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.relative_to(film))
-    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say", "set3d", "style", "paper_grain") if k in sc}
+    out = {k: sc[k] for k in ("palette", "theme", "grade", "moods", "ui_sounds", "type_scale", "voice", "voices", "say", "set3d", "style", "paper_grain", "finish") if k in sc}
     out.update(title=a.title or sc["title"], format="9x16", captions=True,
                short_of={"film": os.path.relpath(film, dest), "from": a.first, "to": a.last}, segments=segs)
     (dest / "script.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
@@ -1542,23 +1549,37 @@ def _render_chunk(args):
     tmp = Path(dest).with_suffix(".part.mp4")   # renamed when whole, so a finished chunk is one whose name exists
     with render.Film(Path(film)) as f:
         vf = f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:out_color_matrix=bt709:out_range=tv,format=yuv420p"
-        ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(FPS), "-i", "-",
-                               "-vf", vf, "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                               "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-                               str(tmp)], stdin=subprocess.PIPE)
+        enc = lambda out, crf, preset: subprocess.Popen(
+            ["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(FPS), "-i", "-",
+             "-vf", vf, "-r", str(FPS), "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
+             str(out)], stdin=subprocess.PIPE)
+        ff = enc(tmp, 18, "medium")
+        # with a finish, the unfinished frames go to a proxy too: final's motion check reads it, since grain and mottle
+        # would count as motion on every frame and hide a frozen shot
+        proxy_dest, proxy_tmp = Path(dest).with_suffix(".raw.mp4"), Path(dest).with_suffix(".raw.part.mp4")
+        px = enc(proxy_tmp, 23, "veryfast") if f.finish else None
+        pipes = [p for p in (ff, px) if p]
         try:
             for i in range(i0, i1):
                 if (i - i0) % 30 == 0 and stop.exists():
                     raise ChunkStopped(f"chunk {i0} stopped: another chunk hit a page error")
-                ff.stdin.write(f.shot(i / FPS))
+                png, raw = f.frame(i / FPS, FPS)
+                ff.stdin.write(png)
+                if px:
+                    px.stdin.write(raw)
                 if (i - i0) % 900 == 0:
                     print(f"  chunk {i0}: frame {i - i0}/{i1 - i0}", flush=True)
         except BaseException:
-            ff.stdin.close(); ff.wait()
+            for p in pipes:
+                p.stdin.close(); p.wait()
             raise
-        ff.stdin.close()
-        if ff.wait() != 0:
+        for p in pipes:
+            p.stdin.close()
+        if any(p.wait() != 0 for p in pipes):
             raise RuntimeError("ffmpeg failed")
+        if px:
+            proxy_tmp.rename(proxy_dest)
         tmp.rename(dest)
         return dest
 
@@ -1933,6 +1954,15 @@ def _render(a, film, st):
     lst = parts / "list.txt"
     lst.write_text("".join(f"file '{Path(j[3]).name}'\n" for j in jobs))
     run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(film / "out" / "silent.mp4")])
+    raw = film / "out" / "silent-raw.mp4"
+    raw.unlink(missing_ok=True)
+    if tl.get("finish"):                      # the unfinished picture, for final's motion check (see _render_chunk)
+        rl = parts / "list-raw.txt"
+        miss = [j for j in jobs if not Path(j[3]).with_suffix(".raw.mp4").exists()]
+        if miss:
+            raise SystemExit(f"render stopped: {len(miss)} chunk(s) have no unfinished copy for the motion check; run render --fresh")
+        rl.write_text("".join(f"file '{Path(j[3]).with_suffix('.raw.mp4').name}'\n" for j in jobs))
+        run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(rl), "-c", "copy", str(raw)])
     write_manifest(film, tl, parts, a.scale)
     print(f"{n} frames -> {film / 'out' / 'silent.mp4'}")
 
@@ -2836,7 +2866,17 @@ def _final(a):
     allow += [(sg["data"]["stamp"]["t"], sg["data"]["stamp"]["t"] + 0.25) for sg in tl["segments"]
               if sg["type"] == "board" and sg.get("data", {}).get("stamp", {}).get("t") is not None]
     # "loop": true in script.json: a Short cut to loop, whose end jumps back to the opening on purpose (verify checks it does)
-    ok = verify.verify(out, bpm=None, sheet_dest=None, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")) | flip_frames(tl["segments"]) | stat_ticks(tl["segments"]) | clip_steps(tl["segments"]), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
+    finished = bool(tl.get("finish"))
+    if finished and not (film / "out" / "silent-raw.mp4").exists():
+        raise SystemExit("final stopped: the film has a finish but no out/silent-raw.mp4 (the unfinished copy the motion "
+                         "check reads): run render again")
+    ok = verify.verify(out, bpm=None, sheet_dest=None, motion=not finished, allow=allow, allow_frames=map_boil_steps(tl["segments"], end=tl.get("duration")) | flip_frames(tl["segments"]) | stat_ticks(tl["segments"]) | clip_steps(tl["segments"]), ground=film_frame0(film), loop=bool(load_script(film).get("loop")))
+    if finished:                     # motion is judged on the unfinished picture: grain would pass a frozen shot
+        import motioncheck
+        floor, mf = motioncheck.check(motioncheck.windows(film / "out" / "silent-raw.mp4"))
+        print(("PASS " if not mf else "FAIL ") + f"motion from frame 0, no 2 s hold, on the unfinished picture (floor {floor:.3f})"
+              + (": " + "; ".join(mf[:4]) if mf else ""))
+        ok = ok and not mf
     # the channel logo in its own colours wherever it appears: a style pack or grade must never recolour it
     import brand
     rep, probs = brand.brand_problems(film, load_script(film))
@@ -4011,6 +4051,29 @@ def pace_flags(segs, gap=PACE_GAP):
     return lines, flags
 
 
+def cmd_finish(a):
+    """review/finish-<t>.png: the film's finish (script.json "finish") before and after, side by side, at a few times.
+    The dashboard and contact sheets show the clean page, so this is where the finished look is judged before a render."""
+    import io
+    import render
+    from PIL import Image
+    film = Path(a.film).resolve()
+    tl = require_fresh_timeline(film, "finish")
+    if not tl.get("finish"):
+        raise SystemExit('this film has no "finish" in script.json (then run timeline)')
+    times = a.at or [round(tl["duration"] * k / 4, 2) for k in (1, 2, 3)]
+    (film / "review").mkdir(exist_ok=True)
+    with render.Film(film) as f:
+        for t in times:
+            done, raw = f.frame(t, FPS)
+            A, B = Image.open(io.BytesIO(raw)), Image.open(io.BytesIO(done))
+            sheet = Image.new("RGB", (A.width * 2 + 16, A.height), (20, 20, 20))
+            sheet.paste(A, (0, 0)); sheet.paste(B, (A.width + 16, 0))
+            dest = film / "review" / f"finish-{t:g}.png"
+            sheet.save(dest)
+            print(f"{t:g} s: before | after -> {dest}")
+
+
 def cmd_pace(a):
     """review/pace.md: every gap in the narration with nothing new on screen (with a suggested cue word) and every reveal
     that isn't on a word, and every number cued to a word said before it. --apply writes the matched words into
@@ -4404,9 +4467,10 @@ def _check(a, film):
     # out there costs a whole render (a padlock close-up and a dark room under the default push, Shoestring, 2026-11-25)
     if a.motion_estimate:
         floor0 = a.motion_floor
-        if floor0 is None and (film / "out" / "silent.mp4").exists():    # final's floor rides on the whole film's median,
+        vid = film / "out" / ("silent-raw.mp4" if tl.get("finish") else "silent.mp4")   # a finish's grain isn't motion
+        if floor0 is None and vid.exists():                                # final's floor rides on the whole film's median,
             import motioncheck                                            # which the last render gives far better than the
-            floor0 = motioncheck.check(motioncheck.windows(film / "out" / "silent.mp4"))[0]   # panels alone
+            floor0 = motioncheck.check(motioncheck.windows(vid))[0]       # panels alone
         est = panel_motion(film, segs)
         mest = map_motion(film, segs)
         if floor0 is None and est and mest:     # no render yet: the floor comes from panels and maps together
@@ -4763,6 +4827,9 @@ def main():
     p.add_argument("--lead", type=float, default=0.3); p.add_argument("--tail", type=float, default=1.5)
     p.add_argument("--transition-hold", type=float, default=TRANSITION_HOLD, help="extra seconds before a transition segment starts (0: none)")
     p.set_defaults(fn=cmd_timeline)
+    p = sp.add_parser("finish", help="before/after stills of the film's finish (script.json \"finish\")"); p.add_argument("film")
+    p.add_argument("--at", type=float, nargs="+", help="times in seconds (default: a quarter, half and three quarters in)")
+    p.set_defaults(fn=cmd_finish)
     p = sp.add_parser("captions"); p.add_argument("film"); p.add_argument("--lang", required=True)
     p.add_argument("--text", required=True, help='JSON {"<segment id>": "translated line"}'); p.set_defaults(fn=cmd_captions)
     p = sp.add_parser("cast-sheet"); p.add_argument("film"); p.set_defaults(fn=cmd_cast_sheet)

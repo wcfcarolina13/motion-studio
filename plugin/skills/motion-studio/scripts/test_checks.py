@@ -1833,6 +1833,54 @@ class SoundMatchesCut(unittest.TestCase):
             finally:
                 align._whisper_python, align.whisper_words = real_py, real_ww
 
+
+class CelFinish(unittest.TestCase):
+    """The cel finish (finish.py) on the composed picture, under crisp burned captions (cel style test, 2026-11-28)."""
+    def test_pure_and_slow(self):
+        import finish
+        rgb = np.full((360, 640, 3), 128, np.uint8)
+        a, b = finish.cel(rgb, 10), finish.cel(rgb, 10)
+        self.assertTrue(np.array_equal(a, b))                                    # a pure function of frame and seed
+        step = lambda i, j: np.abs(finish.cel(rgb, i).astype(int) - finish.cel(rgb, j).astype(int)).mean()
+        self.assertLess(step(10, 11), 0.5)                     # grain on twos: frames 10 and 11 share it, the mottle drifts
+        self.assertGreater(step(11, 12), 1.0)                  # a new grain field on frame 12
+        self.assertLess(step(11, 12), 6)                       # fine grain, not a flash
+        black = finish.cel(np.zeros((360, 640, 3), np.uint8), 0)[160:200, 300:340].reshape(-1, 3).mean(0)
+        self.assertTrue(black[0] > black[2] and black[0] > 10, black)            # blacks lifted toward warm brown
+        with self.assertRaises(ValueError):
+            finish.apply("sepia", rgb, 0)
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_frames_finish_under_captions(self):
+        import io, longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            words = [[w, 0.3 + 0.3 * i, 0.55 + 0.3 * i] for i, w in enumerate("Rent is due on the first".split())]
+            seg = {"id": "a", "type": "statement", "t0": 0, "t1": 3, "data": {"text": "Rent"}, "words": words}
+            tl = {"duration": 3, "segments": [seg], "captions": True, "finish": "cel"}
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+            with render.Film(film) as f:
+                done, raw = f.frame(1.0)
+                plain = f.shot(1.0)
+                f.page.evaluate("document.getElementById('caps').style.display = 'none'")
+                bare = f.page.locator("#stage").screenshot(type="png")
+                self.assertFalse(f.errors)
+            A, B, P, N = (np.asarray(Image.open(io.BytesIO(x)).convert("RGB")).astype(int) for x in (raw, done, plain, bare))
+            self.assertLess(np.abs(A - P).mean(), 0.5)                           # raw is the page as it is
+            self.assertGreater(np.abs(B - A).mean(), 2)                          # the finish changed the picture
+            # the caption's solid letters come through untouched: they go on after the finish
+            m = np.abs(P - N).sum(-1) > 300
+            self.assertGreater(m.sum(), 50)
+            self.assertLess(np.abs(B[m] - P[m]).mean(), 4)
+            # a render chunk writes the finished frames and the unfinished copy final's motion check reads
+            dest = film / "parts" / "p0000000-0000006.mp4"; dest.parent.mkdir()
+            longform._render_chunk((str(film), 0, 6, str(dest), 0.5))
+            self.assertTrue(dest.exists()); self.assertTrue(dest.with_suffix(".raw.mp4").exists())
+
 class SpokenNumbers(unittest.TestCase):
     """Every spoken amount is on screen at its word (editing-quality study, 2026-11-27: 6 of 83 were)."""
     def test_parse(self):
