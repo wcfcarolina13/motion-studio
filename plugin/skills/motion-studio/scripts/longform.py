@@ -1557,15 +1557,29 @@ def frange(a, b, step):
         x += step
 
 
+COLOR_TAGS = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
+LOSSLESS = ["-c:v", "libx264", "-preset", "veryfast", "-qp", "0"]
+FINAL_X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "18"]
+
+
 def encoder_cmd(out, crf, preset, scale=1.0):
-    """The ffmpeg command a render chunk pipes its frames into. The frames go to plain RGB first: a JPEG frame decodes
-    as full-range BT.601 YUV, and leaving that conversion to the scale filter's guess at the input's range and matrix
-    put JPEG renders 1-2 levels darker than PNG ones here, and how ffmpeg tags a JPEG's range changed in version 7, so
-    the guess is not one to lean on. PNG frames are RGB already, so they are unchanged."""
+    """The ffmpeg command a render chunk pipes its frames into; crf None is lossless (the picture chunks, see
+    join_parts). The frames go to plain RGB first: a JPEG frame decodes as full-range BT.601 YUV, and leaving that
+    conversion to the scale filter's guess at the input's range and matrix put JPEG renders 1-2 levels darker than PNG
+    ones here, and how ffmpeg tags a JPEG's range changed in version 7, so the guess is not one to lean on."""
     vf = f"format=rgb24,scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:out_color_matrix=bt709:out_range=tv,format=yuv420p"
+    codec = LOSSLESS if crf is None else ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)]
     return ["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(FPS), "-i", "-",
-            "-vf", vf, "-r", str(FPS), "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", str(out)]
+            "-vf", vf, "-r", str(FPS), *codec, *COLOR_TAGS, str(out)]
+
+
+def join_parts(lst, out):
+    """The lossless picture chunks, joined and encoded once. Each chunk used to be the final encode: a chunk starts on a
+    keyframe drawn sharp against the end of the chunk before, which rate control had smoothed, and on grainy cel frames
+    that was a one-frame pop at chunk starts mid-shot (first cel render, 2026-11-28; on the Mac's ffmpeg page frames
+    stepped 1.1-1.3 levels cut in two against 0.1-0.35 as one encode). One encode over the whole film has no chunk
+    starts, and the chunks keep partial renders possible."""
+    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), *FINAL_X264, *COLOR_TAGS, str(out)])
 
 
 def _render_chunk(args):
@@ -1577,7 +1591,7 @@ def _render_chunk(args):
     tmp = Path(dest).with_suffix(".part.mp4")   # renamed when whole, so a finished chunk is one whose name exists
     with render.Film(Path(film), video=True) as f:
         enc = lambda out, crf, preset: subprocess.Popen(encoder_cmd(out, crf, preset, scale), stdin=subprocess.PIPE)
-        ff = enc(tmp, 18, "medium")
+        ff = enc(tmp, None, None)          # lossless: join_parts makes the one lossy encode
         # with a finish, the unfinished frames go to a proxy too: final's motion check reads it, since grain and mottle
         # would count as motion on every frame and hide a frozen shot
         proxy_dest, proxy_tmp = Path(dest).with_suffix(".raw.mp4"), Path(dest).with_suffix(".raw.part.mp4")
@@ -1790,6 +1804,7 @@ def engine_stamp():
         h.update((HERE / name).read_bytes())
     h.update(inspect.getsource(_render_chunk).encode())
     h.update(inspect.getsource(encoder_cmd).encode())
+    h.update(repr((LOSSLESS, COLOR_TAGS)).encode())
     h.update(os.environ.get("MS_FRAME_FORMAT", "jpeg").encode())
     return h.hexdigest()[:16]
 
@@ -2004,7 +2019,8 @@ def _render(a, film, st):
                          f"{len(jobs) - len(todo)} finished ones are kept, so running render again picks up from here")
     lst = parts / "list.txt"
     lst.write_text("".join(f"file '{Path(j[3]).name}'\n" for j in jobs))
-    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(film / "out" / "silent.mp4")])
+    print(f"encoding {n} frames once from {len(jobs)} lossless chunk(s)", flush=True)
+    join_parts(lst, film / "out" / "silent.mp4")
     raw = film / "out" / "silent-raw.mp4"
     raw.unlink(missing_ok=True)
     if tl.get("finish"):                      # the unfinished picture, for final's motion check (see _render_chunk)

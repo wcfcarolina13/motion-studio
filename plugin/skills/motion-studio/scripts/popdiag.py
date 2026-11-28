@@ -65,15 +65,15 @@ def level(a, b):
 
 
 def encode_test(frames, cut, w, h, tmp):
-    """Encode a run of frame images (bytes) with the render's encoder, whole and cut in two at index cut, joined the way
-    render joins chunks. (step at the cut, whole; step at the cut, cut in two) in mean levels."""
+    """Encode a run of frame images (bytes) the way render does (lossless chunks, joined and encoded once), whole and
+    cut in two at index cut. (step at the cut, whole; step at the cut, cut in two) in mean levels."""
     import longform
     out = {}
     for name, groups in (("whole", [frames]), ("cut", [frames[:cut], frames[cut:]])):
         files = []
         for i, g in enumerate(groups):
             f = tmp / f"{name}{i}.mp4"
-            p = subprocess.Popen(longform.encoder_cmd(f, 18, "medium"), stdin=subprocess.PIPE)
+            p = subprocess.Popen(longform.encoder_cmd(f, None, None), stdin=subprocess.PIPE)
             for b in g:
                 p.stdin.write(b)
             p.stdin.close()
@@ -83,7 +83,7 @@ def encode_test(frames, cut, w, h, tmp):
         lst = tmp / f"{name}.txt"
         lst.write_text("".join(f"file '{f}'\n" for f in files))
         joined = tmp / f"{name}.mp4"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(joined)], check=True)
+        longform.join_parts(lst, joined)
         fr = video_frames(joined, list(range(len(frames))), w, h)
         out[name] = d(fr[cut], fr[cut - 1])
     return out["whole"], out["cut"]
