@@ -99,6 +99,7 @@
 <body>
 <header>
   <span class="name" id="name">motion-studio</span>
+  <div id="stalemix" role="alert" style="display:none;position:fixed;top:0;left:0;right:0;z-index:50;padding:10px 16px;background:#b3261e;color:#fff;font:600 15px/1.35 system-ui,sans-serif"></div>
   <button id="barBack" title="previous bar ([)">⏮</button>
   <button id="play" title="play / pause (space)">▶</button>
   <button id="barFwd" title="next bar (])">⏭</button>
@@ -158,7 +159,11 @@ async function init() {
   setInterval(loadReview, 3000);
 }
 
-function loadFilm(keepT) {
+async function loadFilm(keepT) {
+  try { info = await (await fetch("/api/info")).json(); } catch (e) {}
+  const bar = $("stalemix");
+  bar.textContent = info.mix_stale ? "Sound is not this cut's: " + info.mix_stale + ". Run longform.py mix." : "";
+  bar.style.display = info.mix_stale ? "block" : "none";
   const f = $("film");
   f.onload = () => {
     W = f.contentWindow;
@@ -174,6 +179,7 @@ function loadFilm(keepT) {
   };
   f.src = info.url + "?v=" + Date.now();
   if (info.mix) { audio.src = info.mix + "?v=" + Date.now(); audio.muted = muted; }
+  else { audio.pause(); audio.removeAttribute("src"); audio.load(); }
 }
 
 function fit() {

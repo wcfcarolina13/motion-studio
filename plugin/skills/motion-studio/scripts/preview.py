@@ -2,7 +2,7 @@
 
 Serves preview.html at "/" (the Browser pane only accepts an origin), the film's folder tree under /w/,
 and a small API:
-  GET  /api/info            film name, film URL, mix URL (out/mix.wav if present)
+  GET  /api/info            film name, film URL, sound URL (out/mix.wav when it is this cut's, else out/narration.wav) and why
   GET  /api/mtime           newest mtime of the film's sources and mix: the page polls it to hot-reload
   GET  /api/notes           notes.json
   POST /api/notes/<id>/done|open   the owner ticks a note done, or reopens it
@@ -38,6 +38,25 @@ WATCH = ("*.html", "*.js", "*.css", "*.json", "*.svg", "*.png", "*.jpg")
 
 LOCK = threading.Lock()       # notes.json is written by request threads and still threads
 
+
+
+def sound(film, base):
+    """What the dashboard plays under the picture: out/mix.wav when it is this cut's sound, else out/narration.wav (the
+    voice alone, which timeline makes with the cut) and the reason, which the page shows in a red bar. 2026-11-28: the
+    dashboard served a Nov 25 mix under a Nov 27 cut for weeks, and every sync complaint came from that."""
+    mix, narr = film / "out" / "mix.wav", film / "out" / "narration.wav"
+    why = None
+    if mix.exists():
+        try:
+            import longform
+            why = longform.stale_mix(film)
+        except Exception as e:                       # can't tell: say so rather than play it as if it were current
+            why = f"could not check out/mix.wav ({str(e)[:120]})"
+        if not why:
+            return {"mix": base + "out/mix.wav", "mix_stale": None}
+    if narr.exists():
+        return {"mix": base + "out/narration.wav", "mix_stale": (why + ": playing the voice alone (out/narration.wav)") if why else None}
+    return {"mix": None, "mix_stale": (why + ": nothing played") if why else None}
 
 def notes_path(film):
     return film / "notes.json"
@@ -238,10 +257,9 @@ def make_handler(film: Path, key=None):
             if path == "/":
                 return self._file(HERE / "preview.html")
             if path == "/api/info":
-                mix = film / "out" / "mix.wav"
-                return self._json({"film": film.name, "url": base + "film.html", "mix": base + "out/mix.wav" if mix.exists() else None})
+                return self._json(dict({"film": film.name, "url": base + "film.html"}, **sound(film, base)))
             if path == "/api/mtime":
-                files = [p for pat in WATCH for p in film.glob(pat) if p.name != "notes.json"] + [film / "out" / "mix.wav"]   # notes must not reload the film
+                files = [p for pat in WATCH for p in film.glob(pat) if p.name != "notes.json"] + [film / "out" / n for n in ("mix.wav", "mix.json", "narration.wav")]   # notes must not reload the film
                 return self._json({"mtime": max((p.stat().st_mtime for p in files if p.exists()), default=0)})
             if path == "/api/notes":
                 return self._json(load_notes(film))

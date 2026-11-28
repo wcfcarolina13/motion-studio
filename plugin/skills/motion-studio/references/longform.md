@@ -254,6 +254,15 @@ Then lay it out in the Short's own `script.json`, which is never overwritten. Pu
 
 Trade-offs: each Short needs a layout and review pass instead of a free crop. A Short has to be a contiguous run of segments, because its sound is one cut from the long-form mix. A panel still is enlarged to 1920 tall, so a 9:16 panel is softer than the same panel in 16:9; draw panels meant for Shorts at 2K. The safe-area numbers are from YouTube's layout as of 2026-10 and may change.
 
+## The sound is the cut's own
+
+2026-11-28: the review dashboard played a Nov 25 mix.wav (664.8 s, the old hook order) under a Nov 27 cut (752.7 s) for weeks. Every cue check read word-timing files, never the sound actually served, so the owner's sync notes were about a soundtrack nobody checked. Now:
+
+- `timeline` writes the script's hash into timeline.js, and `mix` (and a Short's sound cut in `timeline`) writes out/mix.json: the script hash, the cut's length and narration.wav's hash it was made from, and the mix's own length.
+- `mix` refuses a stale timeline.js. `check` and `final` refuse a mix.wav that doesn't match the cut, and say to run `mix`. A mix made before the stamp is compared by file time and length.
+- The dashboard (preview.py) plays mix.wav only when it matches the cut. Otherwise it plays narration.wav, the voice alone, which `timeline` makes with every cut, under a red bar saying why. It rechecks whenever the film reloads.
+- `check` listens: it spot-transcribes three 12 s windows of the served mix with Whisper (align.py) and compares them with the timeline's words. Under half heard, or a median offset over 250 ms, is flagged. Without Whisper the line says it didn't listen. `--no-listen` skips it.
+
 ## Music by mood
 
 `music` measures every library track once (loudness, onset density, pulse strength, brightness, major/minor lean; stored in `catalog.json` as `mood`) and ranks tracks against each chapter's mood: `tension`, `mystery`, `serious`, `calm`, `warm`, `drive`, `uplift` (targets in `audio.MOODS`). Consecutive chapters with one mood share a track; a mood change brings a different track on a 3 s crossfade at the chapter line; the last track is back-timed so its own ending lands on the film's end. A run whose best fit is under 0.6 prints NO GOOD FIT with search words for the library source: fetch better tracks rather than shipping a club track under a tense chapter. Edit `track` in `out/music_plan.json` to override. Music sits at -25.5 dB under the voice (the channel owner found -24 a little loud) and ducks further while it speaks. Never put music with vocals under narration.
