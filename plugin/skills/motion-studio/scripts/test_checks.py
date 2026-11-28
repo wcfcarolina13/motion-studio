@@ -318,6 +318,21 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
         return subprocess.run(["python3", str(Path(__file__).with_name("codex_stills.py")), f"{d}/shots.json", f"{d}/out",
                                *(["--allow-codex"] if ok else []), *extra], capture_output=True, text=True, env=env)
 
+    def test_portrait(self):
+        # cel style test, 2026-11-28: a vertical Short needs a portrait still, not a 576x1024 crop of a landscape one
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            shots = {"style": "ink", "aspect": "portrait", "shots": [{"id": "v", "prompt": "a yard"}]}
+            r = self.run_it(d, "1536x1024 1024x1536", "", shots=shots)           # a landscape result is re-rolled
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("is not portrait", r.stdout)
+            self.assertEqual(Image.open(f"{d}/out/v.png").size, (864, 1536))      # 9:16
+            self.assertEqual(Image.open(f"{d}/out/originals/v.png").size, (1024, 1536))
+            self.assertIn("portrait, 1024x1536", Path(d, "n.prompts").read_text())
+            bad = {"style": "ink", "shots": [{"id": "w", "prompt": "a yard", "aspect": "square"}]}
+            r = self.run_it(d, "1536x1024", "", "--check", ok=False, shots=bad)
+            self.assertIn('"aspect" is "square"', r.stdout)
+
     def test_check_is_a_dry_run(self):
         # 2026-11-27: the one-change rule refused a 39-shot job only after it was queued; --check fails it in seconds
         with tempfile.TemporaryDirectory() as d:

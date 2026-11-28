@@ -19,10 +19,11 @@ stops the run before any Codex call.
 
 For each shot without output yet (a rerun redoes only the missing ones):
   1. Runs CODEX_CMD (default `codex exec --skip-git-repo-check`) plus CODEX_ARGS (default `-m gpt-6-luna -c
-     model_reasoning_effort="low"`) in a fresh empty folder, asking for one landscape 1536x1024 image.
+     model_reasoning_effort="low"`) in a fresh empty folder, asking for one landscape 1536x1024 image (portrait 1024x1536 with "aspect": "portrait",
+     per shot or for the file, for vertical Shorts; cropped to 9:16).
   2. Takes the newest PNG written during that call, either in the folder or under CODEX_IMAGES
      (~/.codex/generated_images). Shots run one at a time, so a new file can't belong to another shot.
-  3. Re-rolls, up to --tries, when the picture isn't landscape between 1.4:1 and 1.85:1 (2 of 9 came out at an odd
+  3. Re-rolls, up to --tries, when the picture isn't landscape between 1.4:1 and 1.85:1 (portrait: 0.55 to 0.72) (2 of 9 came out at an odd
      aspect in the bake-off), or when the shot is faceless and the face check says FACE (a face showed in 3 of 5 hero
      shots although the prompt said faceless).
   4. Keeps the untouched original at <out>/originals/<id>.png, byte for byte, so its provenance metadata (OpenAI's
@@ -136,12 +137,26 @@ def edit_image(prompt, images, dest, timeout=None):
     return None if png else (note or "codex returned without an image")
 
 
+ASPECTS = {"landscape": ((1536, 1024), (1.4, 1.85), 16 / 9), "portrait": ((1024, 1536), (0.55, 0.72), 9 / 16)}
+
+
+def orient(w, h):
+    return "portrait" if h > w else "landscape"
+
+
+def aspect_of(shot, cfg):
+    """"landscape" (default) or "portrait", per shot or for the file. Portrait asks for 1024x1536, accepts 0.55 to 0.72
+    width/height and crops the still to 9:16 (cel style test for Shorts, 2026-11-28: a 9:16 crop of a landscape still
+    came out 576x1024 and had to be upscaled, which blurred fine ink)."""
+    return shot.get("aspect") or cfg.get("aspect") or "landscape"
+
+
 def ask(shot, style, faceless, scale="", w=1536, h=1024):
     parts = [shot["prompt"].strip()]
     if scale:
         parts.append(scale + " Keep these proportions exactly, even where they look unusual.")
     parts.append((shot.get("style") or style).strip())
-    parts.append(f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.")
+    parts.append(f"Make exactly one image, {orient(w, h)}, {w}x{h}, and save it as image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
     parts.append(HANDS)
     if faceless:
@@ -177,7 +192,7 @@ def ask_photo(shot, style, faceless, scale="", refs=(), w=1536, h=1024):
     if scale:
         parts.append(scale + " Keep these proportions exactly.")
     parts.append((shot.get("style") or style).strip())
-    parts.append(f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.")
+    parts.append(f"Make exactly one image, {orient(w, h)}, {w}x{h}, and save it as image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
     parts.append(HANDS)
     if faceless:
@@ -195,7 +210,7 @@ def ask_blockout(shot, style, faceless, scale="", refs=(), w=1536, h=1024):
     if scale:
         parts.append(scale + " Keep these proportions exactly.")
     parts.append((shot.get("style") or style).strip())
-    parts.append(f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.")
+    parts.append(f"Make exactly one image, {orient(w, h)}, {w}x{h}, and save it as image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
     parts.append(HANDS)
     if faceless:
@@ -208,7 +223,7 @@ def ask_style_pass(style, refs=(), w=1536, h=1024):
     parts = [ref_lines("the picture to restyle: keep its composition, every object's position, size and silhouette, and "
                        "every person's pose exactly", refs),
              "Repaint only the surfaces of image 1 in this style: " + style.strip(),
-             f"Make exactly one image, landscape, {w}x{h}, and save it as image.png in the current folder.",
+             f"Make exactly one image, {orient(w, h)}, {w}x{h}, and save it as image.png in the current folder.",
              "No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame."]
     return " ".join(parts)
 
@@ -232,6 +247,8 @@ def shot_problems(shots, cfg):
                        "edit (rule 16.2): the whole frame is redrawn and other parts change")
         if x.get("change") and len([t for t in re.split(r"(?<=[.;!?])\s+", x["change"].strip()) if t.strip()]) > 1:
             out.append(f"{i}: one change per edit (rule 16.2); split it into one shot per change")
+        if aspect_of(x, cfg) not in ASPECTS:
+            out.append(f'{i}: "aspect" is "{aspect_of(x, cfg)}"; use "landscape" or "portrait"')
         n = 1 + len(refs_of(x, cfg))
         if n > MAX_IMAGES:
             out.append(f"{i}: {n} images attached; codex takes at most {MAX_IMAGES}")
@@ -242,7 +259,7 @@ def ask_edit(shot, faceless, w=1536, h=1024):
     parts = ["Edit the attached picture. Keep it the same picture: the same composition, camera angle, framing, people, "
              "objects, colours, line work and light, everything in the same place. Change only this: "
              + shot["change"].strip().rstrip(".") + "."]
-    parts.append(f"Make exactly one image, landscape, {w}x{h}, the same size as the attached picture, and save it as "
+    parts.append(f"Make exactly one image, {orient(w, h)}, {w}x{h}, the same size as the attached picture, and save it as "
                  "image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
     parts.append(HANDS)
@@ -299,6 +316,10 @@ def snap_to(dst, frame):
     return f"snapped {w}x{h} to its base frame's {fw}x{fh}"
 
 
+def crop_16x9(src, dst, original_rel):
+    crop_to(src, dst, original_rel, 16 / 9)
+
+
 def edit_base(shot, out, default):
     """The base picture for an edit: an earlier shot's untouched original, a PNG path, or --edit-from."""
     ref = shot.get("edit_from") or default
@@ -334,15 +355,16 @@ def stamp(path, key, value):
     im.save(path + ".part", format="PNG", pnginfo=info); os.replace(path + ".part", path)
 
 
-def crop_16x9(src, dst, original_rel):
+def crop_to(src, dst, original_rel, ratio=16 / 9):
+    """Centre-crop to width/height `ratio` (16:9 for landscape, 9:16 for portrait), with the model and original tagged."""
     from PIL import Image
     from PIL.PngImagePlugin import PngInfo
     im = Image.open(src); im.load()
     W, H = im.size
-    if W / H > 16 / 9:
-        nw = round(H * 16 / 9); box = ((W - nw) // 2, 0, (W - nw) // 2 + nw, H)
+    if W / H > ratio:
+        nw = round(H * ratio); box = ((W - nw) // 2, 0, (W - nw) // 2 + nw, H)
     else:
-        nh = round(W * 9 / 16); box = (0, (H - nh) // 2, W, (H - nh) // 2 + nh)
+        nh = round(W / ratio); box = (0, (H - nh) // 2, W, (H - nh) // 2 + nh)
     info = PngInfo()
     info.add_text("motion-studio-model", MODEL_TAG)
     info.add_text("motion-studio-original", original_rel)
@@ -413,6 +435,8 @@ def main():
             print(f"have {s['id']}"); continue
         faceless = s.get("faceless", cfg.get("faceless", False))
         base = edit_base(s, a.out, a.edit_from) if s.get("change") else None
+        aspect = aspect_of(s, cfg)
+        aw, (lo, hi), ratio = ASPECTS[aspect]
         if base == "":
             failed.append(s["id"]); review.append((s["id"], f"edit base {s.get('edit_from') or a.edit_from} not found (run its shot first)"))
             print(f"{s['id']}: no edit base"); continue
@@ -420,19 +444,21 @@ def main():
             from PIL import Image
             with Image.open(base) as im:
                 bw, bh = im.size
+            aspect = orient(bw, bh)                 # an edit keeps its base's orientation
+            aw, (lo, hi), ratio = ASPECTS[aspect]
             # --image=<path> as one argument: codex's -i takes any number of files, so a prompt after "-i <path>" was
             # read as a second image and codex exited with "No prompt provided via stdin" (22 of 22 edits, 2026-11-25)
             prompt, extra = ask_edit(s, faceless, bw, bh), [f"--image={os.path.abspath(base)}"]
         elif s.get("photo"):
             refs = refs_of(s, cfg)
-            prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs)
+            prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
             extra = [f"--image={os.path.abspath(p)}" for p in [s["photo"]] + refs]
         elif s.get("blockout"):
             refs = refs_of(s, cfg)
-            prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs)
+            prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
             extra = [f"--image={os.path.abspath(p)}" for p in [s["blockout"]] + refs]
         else:
-            prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes)), []
+            prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw), []
         done = False
         for t in range(1, a.tries + 1):
             work = tempfile.mkdtemp(prefix="codex-still-")
@@ -449,7 +475,7 @@ def main():
             if s.get("blockout"):         # pass 2, the style pass over the painted blockout (rule 16.3)
                 styled = os.path.join(work, "styled.png")
                 calls += 1
-                why = edit_image(ask_style_pass(s.get("style") or cfg.get("style", ""), refs_of(s, cfg)),
+                why = edit_image(ask_style_pass(s.get("style") or cfg.get("style", ""), refs_of(s, cfg), *aw),
                                  [png] + refs_of(s, cfg), styled, timeout)
                 if why:
                     print(f"{s['id']} try {t}: style pass gave no image ({why})"); shutil.rmtree(work, True); continue
@@ -457,8 +483,8 @@ def main():
             from PIL import Image
             with Image.open(png) as im:
                 W, H = im.size
-            if not 1.4 <= W / H <= 1.85:
-                print(f"{s['id']} try {t}: {W}x{H} is not landscape 3:2 to 16:9; re-rolling"); shutil.rmtree(work, True); continue
+            if not lo <= W / H <= hi:
+                print(f"{s['id']} try {t}: {W}x{H} is not {aspect} ({lo:g} to {hi:g} wide per high); re-rolling"); shutil.rmtree(work, True); continue
             if base and (W, H) != (bw, bh) and abs(W / H - bw / bh) > 0.01:
                 print(f"{s['id']} try {t}: {W}x{H} is not its base's shape ({bw}x{bh}); re-rolling"); shutil.rmtree(work, True); continue
             orig = os.path.join(a.out, "originals", f"{s['id']}.png")
@@ -474,7 +500,7 @@ def main():
             if v == "FACE":
                 print(f"{s['id']} try {t}: face check found a face; re-rolling"); os.remove(orig); continue
             src = orig + ".fit.png" if os.path.exists(orig + ".fit.png") else orig
-            crop_16x9(src, dst, f"originals/{s['id']}.png")
+            crop_to(src, dst, f"originals/{s['id']}.png", ratio)
             if base:
                 snapped = snap_to(dst, frame_of(base, a.out))
                 if snapped:
