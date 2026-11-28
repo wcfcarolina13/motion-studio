@@ -1562,7 +1562,7 @@ def _render_chunk(args):
     import render
     stop = Path(dest).parent / "stop"
     tmp = Path(dest).with_suffix(".part.mp4")   # renamed when whole, so a finished chunk is one whose name exists
-    with render.Film(Path(film)) as f:
+    with render.Film(Path(film), video=True) as f:
         vf = f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2:out_color_matrix=bt709:out_range=tv,format=yuv420p"
         enc = lambda out, crf, preset: subprocess.Popen(
             ["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(FPS), "-i", "-",

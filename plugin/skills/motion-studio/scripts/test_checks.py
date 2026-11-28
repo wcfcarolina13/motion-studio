@@ -1587,6 +1587,31 @@ class BlankProps(unittest.TestCase):
                 self.assertFalse(f.errors)
 
 
+class VideoFrames(unittest.TestCase):
+    """Frames for the encoder come as JPEG q100 (6x faster than Chromium's PNG); stills and checks stay PNG."""
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_formats(self):
+        import io, json, longform, render
+        import numpy as np
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            segs = [{"id": "a", "type": "statement", "t0": 0, "t1": 2, "data": {"text": "The first season"}, "counter": {"value": "$1,000", "label": "CASH", "t": 0.3}}]
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 2, "segments": segs}) + ";\n")
+            with render.Film(film) as f:
+                png = f.shot(1.0)
+            with render.Film(film, video=True) as f:
+                jpg = f.shot(1.0)
+                done, raw = f.frame(1.0, 30)
+            self.assertTrue(png.startswith(b"\x89PNG")); self.assertTrue(jpg.startswith(b"\xff\xd8")); self.assertTrue(done.startswith(b"\xff\xd8"))
+            a = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"), float); b = np.asarray(Image.open(io.BytesIO(jpg)).convert("RGB"), float)
+            self.assertGreater(10 * np.log10(255 ** 2 / max(1e-9, ((a - b) ** 2).mean())), 38)   # visually the same frame
+
+
 class CollageStyle(unittest.TestCase):
     """"style": "collage": tags slap on their word on twos, ink and paint draw on stills, the HUD, source and chart take the
     map's paper and fonts, and every frame is a pure function of t (owner, 2026-11-27: "utilize them over the stills too")."""
