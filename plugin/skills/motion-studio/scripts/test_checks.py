@@ -2797,6 +2797,24 @@ class BeatLandings(unittest.TestCase):
             lines, probs = cuecheck.run(f)
             self.assertEqual(probs, [], lines); self.assertIn("1 measured", lines[0])
 
+    def test_gradual_cues_are_counted_not_timed(self):
+        # a chart line drawing from its word, or a map camera easing in, has no one landing frame (first cel film)
+        import cuecheck, longform
+        cues = []
+        seg = {"id": "c", "t0": 0, "words": [["people", 1.0, 1.3], ["county", 2.0, 2.3], ["Portland", 3.0, 3.4]]}
+        longform.resolve_cues({"series": [{"label": "a", "at": "people"}], "camera": [{"lon": 1, "at": "Portland"}],
+                               "marks": [{"text": "x", "at": "county"}]}, seg["words"], seg, [], cues)
+        self.assertEqual({c["at"]: c.get("kind") for c in cues}, {"people": "series", "Portland": "camera", "county": "marks"})
+        tl = {"segments": [{"id": "c", "t0": 0}], "cues": cues}
+        self.assertEqual([lab for _, lab in cuecheck.cues(tl)], ['"county" in c'])
+        with tempfile.TemporaryDirectory() as d:
+            f = self.film(d, [2.0], [2.0])
+            tl = json.loads((f / "timeline.js").read_text().split("=", 1)[1].rstrip(";"))
+            tl["cues"].append({"seg": "a", "at": "draw", "t": 3.0, "kind": "series"})
+            (f / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";")
+            lines, probs = cuecheck.run(f)
+            self.assertEqual(probs, []); self.assertIn("1 camera move(s) and line draw(s) not timed here", lines[0])
+
     def test_change_on_the_next_cue_belongs_to_it(self):
         # a cut at 1.0 into the same picture, whose first mark lands on its first word at 1.4: the cut isn't late
         import cuecheck
