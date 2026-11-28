@@ -69,7 +69,11 @@ the still as PNG text motion-studio-anatomy; a still failing its last try is kep
 `--check` runs every check above that comes before a Codex call and stops, with no call, no files and no --allow-codex: run
 it before handing a job to longjob, so a refused shot fails in seconds instead of after the job is queued.
 
-Exit 0 when every shot has output; 1 when some shot ran out of tries (listed in review.tsv)."""
+A Codex answer that says the plan's usage limit is hit stops the whole run at once, with no retry, the reset time if
+Codex gave one, and every shot not run listed in review.tsv as "not run: Codex usage limit".
+
+Exit 0 when every shot has output; 1 when some shot ran out of tries or the usage limit stopped the run (listed in
+review.tsv)."""
 import argparse, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
@@ -118,6 +122,24 @@ def allowed(flag):
     return bool(flag) or os.environ.get("CODEX_STILLS_OK") == "1"
 
 
+class UsageLimit(Exception):
+    """Codex said the plan's usage limit is spent: no retry can succeed until it resets."""
+
+
+LIMIT = re.compile(r"usage limit|rate.?limit|hit your limit|quota|too many requests|\b429\b", re.I)
+RESETS = re.compile(r"(?:try again|resets?|available again)\s+(?:at|in|on|after)\s+[^.\n]{1,60}", re.I)
+
+
+def limit_hit(*texts):
+    """The limit message ("... try again at 3:14 PM") when Codex output says the usage limit is hit, else None.
+    Cel test on the Mac, 2026-11-28: a limit answer still spent a second try on every shot (4 calls, 0 images)."""
+    t = "\n".join(x for x in texts if x)
+    if not LIMIT.search(t):
+        return None
+    m = RESETS.search(t)
+    return m.group(0).strip() if m else next((ln.strip() for ln in t.splitlines() if LIMIT.search(ln)), "")[:160]
+
+
 def edit_image(prompt, images, dest, timeout=None):
     """One ChatGPT image edit through codex: the pictures go in as --image=<path> (one argument each), the newest PNG it
     writes (in its working folder or ~/.codex/generated_images) is copied to dest. Returns None, or why it gave none."""
@@ -128,6 +150,10 @@ def edit_image(prompt, images, dest, timeout=None):
         r = subprocess.run(codex_cmd() + [f"--image={os.path.abspath(x)}" for x in images] + [prompt], cwd=work,
                            capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=timeout or int(os.environ.get("CODEX_TIMEOUT", 600)))
         note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
+        lim = limit_hit(r.stdout, r.stderr) if r.returncode else None
+        if lim is not None:
+            shutil.rmtree(work, True)
+            raise UsageLimit(lim)
     except subprocess.TimeoutExpired:
         note = "codex timed out"
     png = find_new_png(since, [work, os.path.expanduser(os.environ.get("CODEX_IMAGES", "~/.codex/generated_images"))])
@@ -429,111 +455,122 @@ def main():
     # judge may spend in this run: a quarter of the shots (at least 3), so a judge having a bad day can't run up the bill
     timeout = int(os.environ.get("CODEX_TIMEOUT", 600))
     review, calls, failed = [], 0, []
-    for s in shots:
-        dst = os.path.join(a.out, f"{s['id']}.png")
-        if os.path.exists(dst) and os.path.getsize(dst) > 0:
-            print(f"have {s['id']}"); continue
-        faceless = s.get("faceless", cfg.get("faceless", False))
-        base = edit_base(s, a.out, a.edit_from) if s.get("change") else None
-        aspect = aspect_of(s, cfg)
-        aw, (lo, hi), ratio = ASPECTS[aspect]
-        if base == "":
-            failed.append(s["id"]); review.append((s["id"], f"edit base {s.get('edit_from') or a.edit_from} not found (run its shot first)"))
-            print(f"{s['id']}: no edit base"); continue
-        if base:
-            from PIL import Image
-            with Image.open(base) as im:
-                bw, bh = im.size
-            aspect = orient(bw, bh)                 # an edit keeps its base's orientation
+    limit = None
+    try:
+        for s in shots:
+            dst = os.path.join(a.out, f"{s['id']}.png")
+            if os.path.exists(dst) and os.path.getsize(dst) > 0:
+                print(f"have {s['id']}"); continue
+            faceless = s.get("faceless", cfg.get("faceless", False))
+            base = edit_base(s, a.out, a.edit_from) if s.get("change") else None
+            aspect = aspect_of(s, cfg)
             aw, (lo, hi), ratio = ASPECTS[aspect]
-            # --image=<path> as one argument: codex's -i takes any number of files, so a prompt after "-i <path>" was
-            # read as a second image and codex exited with "No prompt provided via stdin" (22 of 22 edits, 2026-11-25)
-            prompt, extra = ask_edit(s, faceless, bw, bh), [f"--image={os.path.abspath(base)}"]
-        elif s.get("photo"):
-            refs = refs_of(s, cfg)
-            prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
-            extra = [f"--image={os.path.abspath(p)}" for p in [s["photo"]] + refs]
-        elif s.get("blockout"):
-            refs = refs_of(s, cfg)
-            prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
-            extra = [f"--image={os.path.abspath(p)}" for p in [s["blockout"]] + refs]
-        else:
-            prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw), []
-        done = False
-        for t in range(1, a.tries + 1):
-            work = tempfile.mkdtemp(prefix="codex-still-")
-            since = time.time() - 1
-            calls += 1; t0 = time.time()
-            try:
-                r = subprocess.run(cmd + extra + [prompt], cwd=work, capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=timeout)
-                note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
-            except subprocess.TimeoutExpired:
-                note = f"codex timed out after {timeout} s"
-            png = find_new_png(since, [work, images])
-            if not png:
-                print(f"{s['id']} try {t}: no image ({note or 'codex returned without one'})"); shutil.rmtree(work, True); continue
-            if s.get("blockout"):         # pass 2, the style pass over the painted blockout (rule 16.3)
-                styled = os.path.join(work, "styled.png")
-                calls += 1
-                why = edit_image(ask_style_pass(s.get("style") or cfg.get("style", ""), refs_of(s, cfg), *aw),
-                                 [png] + refs_of(s, cfg), styled, timeout)
-                if why:
-                    print(f"{s['id']} try {t}: style pass gave no image ({why})"); shutil.rmtree(work, True); continue
-                png = styled
-            from PIL import Image
-            with Image.open(png) as im:
-                W, H = im.size
-            if not lo <= W / H <= hi:
-                print(f"{s['id']} try {t}: {W}x{H} is not {aspect} ({lo:g} to {hi:g} wide per high); re-rolling"); shutil.rmtree(work, True); continue
-            if base and (W, H) != (bw, bh) and abs(W / H - bw / bh) > 0.01:
-                print(f"{s['id']} try {t}: {W}x{H} is not its base's shape ({bw}x{bh}); re-rolling"); shutil.rmtree(work, True); continue
-            orig = os.path.join(a.out, "originals", f"{s['id']}.png")
-            if os.path.exists(orig + ".fit.png"):
-                os.remove(orig + ".fit.png")
-            shutil.copyfile(png, orig + ".part"); os.replace(orig + ".part", orig)
-            if base and (W, H) != (bw, bh):      # the base's shape at another size: the frame is resized to flip cleanly
-                with Image.open(orig) as im:
-                    im.convert("RGB").resize((bw, bh), Image.LANCZOS).save(orig + ".fit.png")
-                review.append((s["id"], f"resized {W}x{H} to its base's {bw}x{bh}; originals/{s['id']}.png.fit.png was used for the crop"))
-            shutil.rmtree(work, True)
-            v = face_verdict(orig, face_cmd) if faceless else "NOFACE"
-            if v == "FACE":
-                print(f"{s['id']} try {t}: face check found a face; re-rolling"); os.remove(orig); continue
-            src = orig + ".fit.png" if os.path.exists(orig + ".fit.png") else orig
-            crop_to(src, dst, f"originals/{s['id']}.png", ratio)
+            if base == "":
+                failed.append(s["id"]); review.append((s["id"], f"edit base {s.get('edit_from') or a.edit_from} not found (run its shot first)"))
+                print(f"{s['id']}: no edit base"); continue
             if base:
-                snapped = snap_to(dst, frame_of(base, a.out))
-                if snapped:
-                    review.append((s["id"], snapped))
-                k = likeness(base, src)
-                print(f"{s['id']}: likeness to its base {k:.2f}")
-                if k < LIKENESS:
-                    review.append((s["id"], f"composition may have moved from its base (likeness {k:.2f}): look before using it as a frame"))
-            if v == "UNCLEAR":
-                review.append((s["id"], "face check unclear: look at it"))
-            # the anatomy gate (anatomy.py): a FAIL re-rolls within --tries while the run's re-roll budget lasts; every
-            # verdict is logged to judge.tsv and stamped on the still, and one still failing on its last try is kept and
-            # listed for a person
-            if anatomy.needs_check(s):
-                av, why = anatomy.judge(src, faceless)
-                last = t >= a.tries or budget <= 0
-                anatomy.log(a.out, s["id"], t, av if not (av == "FAIL" and last) else "KEPT", why, f"originals/{s['id']}.png")
-                stamp(dst, "motion-studio-anatomy", f"{av}: {why}" if why else av)
-                if av == "FAIL" and not last:
-                    budget -= 1
-                    print(f"{s['id']} try {t}: anatomy FAIL ({why}); re-rolling ({budget} anatomy re-rolls left this run)")
-                    for x in (orig, orig + ".fit.png", dst):
-                        if os.path.exists(x): os.remove(x)
-                    continue
-                if av == "FAIL":
-                    review.append((s["id"], f"anatomy FAIL on its last try ({why}); kept for you to judge"
-                                   + ("" if t >= a.tries else "; the run's anatomy re-roll budget was spent")))
-                elif av == "UNCLEAR":
-                    review.append((s["id"], f"anatomy judge unclear ({why}): look at the people"))
-            print(f"{s['id']}: {W}x{H} -> 16:9 in {time.time() - t0:.0f} s (try {t})")
-            done = True; break
-        if not done:
-            failed.append(s["id"]); review.append((s["id"], f"no usable image in {a.tries} tries"))
+                from PIL import Image
+                with Image.open(base) as im:
+                    bw, bh = im.size
+                aspect = orient(bw, bh)                 # an edit keeps its base's orientation
+                aw, (lo, hi), ratio = ASPECTS[aspect]
+                # --image=<path> as one argument: codex's -i takes any number of files, so a prompt after "-i <path>" was
+                # read as a second image and codex exited with "No prompt provided via stdin" (22 of 22 edits, 2026-11-25)
+                prompt, extra = ask_edit(s, faceless, bw, bh), [f"--image={os.path.abspath(base)}"]
+            elif s.get("photo"):
+                refs = refs_of(s, cfg)
+                prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
+                extra = [f"--image={os.path.abspath(p)}" for p in [s["photo"]] + refs]
+            elif s.get("blockout"):
+                refs = refs_of(s, cfg)
+                prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
+                extra = [f"--image={os.path.abspath(p)}" for p in [s["blockout"]] + refs]
+            else:
+                prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw), []
+            done = False
+            for t in range(1, a.tries + 1):
+                work = tempfile.mkdtemp(prefix="codex-still-")
+                since = time.time() - 1
+                calls += 1; t0 = time.time()
+                try:
+                    r = subprocess.run(cmd + extra + [prompt], cwd=work, capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=timeout)
+                    note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
+                    lim = limit_hit(r.stdout, r.stderr) if r.returncode else None
+                    if lim is not None:
+                        shutil.rmtree(work, True)
+                        raise UsageLimit(lim)
+                except subprocess.TimeoutExpired:
+                    note = f"codex timed out after {timeout} s"
+                png = find_new_png(since, [work, images])
+                if not png:
+                    print(f"{s['id']} try {t}: no image ({note or 'codex returned without one'})"); shutil.rmtree(work, True); continue
+                if s.get("blockout"):         # pass 2, the style pass over the painted blockout (rule 16.3)
+                    styled = os.path.join(work, "styled.png")
+                    calls += 1
+                    why = edit_image(ask_style_pass(s.get("style") or cfg.get("style", ""), refs_of(s, cfg), *aw),
+                                     [png] + refs_of(s, cfg), styled, timeout)
+                    if why:
+                        print(f"{s['id']} try {t}: style pass gave no image ({why})"); shutil.rmtree(work, True); continue
+                    png = styled
+                from PIL import Image
+                with Image.open(png) as im:
+                    W, H = im.size
+                if not lo <= W / H <= hi:
+                    print(f"{s['id']} try {t}: {W}x{H} is not {aspect} ({lo:g} to {hi:g} wide per high); re-rolling"); shutil.rmtree(work, True); continue
+                if base and (W, H) != (bw, bh) and abs(W / H - bw / bh) > 0.01:
+                    print(f"{s['id']} try {t}: {W}x{H} is not its base's shape ({bw}x{bh}); re-rolling"); shutil.rmtree(work, True); continue
+                orig = os.path.join(a.out, "originals", f"{s['id']}.png")
+                if os.path.exists(orig + ".fit.png"):
+                    os.remove(orig + ".fit.png")
+                shutil.copyfile(png, orig + ".part"); os.replace(orig + ".part", orig)
+                if base and (W, H) != (bw, bh):      # the base's shape at another size: the frame is resized to flip cleanly
+                    with Image.open(orig) as im:
+                        im.convert("RGB").resize((bw, bh), Image.LANCZOS).save(orig + ".fit.png")
+                    review.append((s["id"], f"resized {W}x{H} to its base's {bw}x{bh}; originals/{s['id']}.png.fit.png was used for the crop"))
+                shutil.rmtree(work, True)
+                v = face_verdict(orig, face_cmd) if faceless else "NOFACE"
+                if v == "FACE":
+                    print(f"{s['id']} try {t}: face check found a face; re-rolling"); os.remove(orig); continue
+                src = orig + ".fit.png" if os.path.exists(orig + ".fit.png") else orig
+                crop_to(src, dst, f"originals/{s['id']}.png", ratio)
+                if base:
+                    snapped = snap_to(dst, frame_of(base, a.out))
+                    if snapped:
+                        review.append((s["id"], snapped))
+                    k = likeness(base, src)
+                    print(f"{s['id']}: likeness to its base {k:.2f}")
+                    if k < LIKENESS:
+                        review.append((s["id"], f"composition may have moved from its base (likeness {k:.2f}): look before using it as a frame"))
+                if v == "UNCLEAR":
+                    review.append((s["id"], "face check unclear: look at it"))
+                # the anatomy gate (anatomy.py): a FAIL re-rolls within --tries while the run's re-roll budget lasts; every
+                # verdict is logged to judge.tsv and stamped on the still, and one still failing on its last try is kept and
+                # listed for a person
+                if anatomy.needs_check(s):
+                    av, why = anatomy.judge(src, faceless)
+                    last = t >= a.tries or budget <= 0
+                    anatomy.log(a.out, s["id"], t, av if not (av == "FAIL" and last) else "KEPT", why, f"originals/{s['id']}.png")
+                    stamp(dst, "motion-studio-anatomy", f"{av}: {why}" if why else av)
+                    if av == "FAIL" and not last:
+                        budget -= 1
+                        print(f"{s['id']} try {t}: anatomy FAIL ({why}); re-rolling ({budget} anatomy re-rolls left this run)")
+                        for x in (orig, orig + ".fit.png", dst):
+                            if os.path.exists(x): os.remove(x)
+                        continue
+                    if av == "FAIL":
+                        review.append((s["id"], f"anatomy FAIL on its last try ({why}); kept for you to judge"
+                                       + ("" if t >= a.tries else "; the run's anatomy re-roll budget was spent")))
+                    elif av == "UNCLEAR":
+                        review.append((s["id"], f"anatomy judge unclear ({why}): look at the people"))
+                print(f"{s['id']}: {W}x{H} -> 16:9 in {time.time() - t0:.0f} s (try {t})")
+                done = True; break
+            if not done:
+                failed.append(s["id"]); review.append((s["id"], f"no usable image in {a.tries} tries"))
+    except UsageLimit as e:
+        limit = str(e) or "no reset time given"
+        left = [x["id"] for x in shots if not os.path.exists(os.path.join(a.out, f"{x['id']}.png")) and x["id"] not in failed]
+        failed += left
+        review += [(i, f"not run: Codex usage limit ({limit})") for i in left]
     to_mark = [s for s in cfg["shots"] if len(scalecheck.sized_items(s, sizes)) >= 2
                and os.path.exists(os.path.join(a.out, f"{s['id']}.png"))]
     if to_mark:
@@ -552,6 +589,9 @@ def main():
             f.writelines(f"{i}\t{why}\n" for i, why in review)
     print(f"{calls} codex calls for {len(shots)} shots; {len(failed)} without an image"
           + (f"; see {os.path.join(a.out, 'review.tsv')}" if review else ""))
+    if limit is not None:
+        raise SystemExit(f"stopped: Codex usage limit hit ({limit}); nothing was retried. Run again after it resets: shots "
+                         "with a still are skipped.")    # exit 1, message on stderr
     sys.exit(1 if failed else 0)
 
 

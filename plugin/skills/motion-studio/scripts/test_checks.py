@@ -334,6 +334,19 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
             r = self.run_it(d, "1536x1024", "", "--check", ok=False, shots=bad)
             self.assertIn('"aspect" is "square"', r.stdout)
 
+    def test_usage_limit_stops_the_run(self):
+        # cel test, 2026-11-28: a limit answer still spent a second try on every shot (4 calls, 0 images)
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "limit.py").write_text("import os, sys\nst = os.environ['FAKE_STATE']\n"
+                                           "n = int(open(st).read()) if os.path.exists(st) else 0\nopen(st, 'w').write(str(n + 1))\n"
+                                           "sys.stderr.write(\"ERROR: You've hit your usage limit. Try again at 3:14 PM.\\n\"); sys.exit(1)\n")
+            r = self.run_it(d, "1536x1024", "", env_extra={"CODEX_CMD": f"python3 {d}/limit.py"})
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertEqual(Path(d, "n").read_text(), "1")                      # one call, no retry, no second shot
+            self.assertIn("Try again at 3:14 PM", r.stderr)
+            rv = Path(d, "out", "review.tsv").read_text()
+            self.assertIn("a\tnot run: Codex usage limit", rv); self.assertIn("b\tnot run: Codex usage limit", rv)
+
     def test_check_is_a_dry_run(self):
         # 2026-11-27: the one-change rule refused a 39-shot job only after it was queued; --check fails it in seconds
         with tempfile.TemporaryDirectory() as d:
