@@ -83,19 +83,23 @@ def landings(sig, cue_list, fps=FPS):
         a, b = max(0, int((t - 0.3) * fps)), min(len(sig), int((t + 0.6) * fps) + 1)
         if b - a < 3:
             rows.append({**row, "state": "unseen"}); continue
-        before = sig[max(0, a - 15):a]
-        # the scene's own motion just before the cue, block by block (a sparkle in one corner doesn't hide a dot in
-        # another), at its 90th percentile, not its median: a map camera, a boil or a sparkle on twos changes every
-        # other frame, and the median of that is near 0
-        base = np.percentile(before, 90, axis=0) if len(before) else 0.0
-        w = (sig[a:b] - base).max(axis=(1, 2))
+        # novelty: per 12x12 block, how far this frame's change goes past the most that block changed in the half
+        # second before the cue, and the largest of that over the picture. Steady motion (a push-in, a boil, a map
+        # camera on twos, a line already drawing) stays inside each block's own range; a mark that wasn't there does not.
+        env = sig[max(0, a - 15):a].max(axis=0) if a > 0 else np.zeros(sig.shape[1:], np.float32)
+        w = (sig[a:b] - env).max(axis=(1, 2))
+        # the same measure on the frames before the cue, each against its own half second: how much "new" the scene
+        # makes by itself. Over hundreds of blocks some always step a little past their range, and timing the first
+        # frame above a fixed level read every cue of the first cel film 0.3 s early (#199, #200)
+        amb = [float((sig[j] - sig[max(0, j - 15):j].max(axis=0)).max()) for j in range(max(1, a - 15), a)]
+        thr = CLEAR + (float(np.percentile(amb, 90)) if amb else 0.0)
         pk = float(w.max())
         row["strength"] = round(pk, 1)
-        if pk < CLEAR:
+        if pk < thr:
             rows.append({**row, "state": "unseen"}); continue
-        # onset: the first clear change, not the first above a share of the peak. A small first mark (a chart's start
-        # dot, the first letters of a write-on) then a bigger change (the line drawing) was timed on the bigger one
-        k = a + int(np.argmax(w >= CLEAR))
+        # onset: the first frame past both the scene's own level and 40% of the peak. A chart's start dot is a block
+        # that never changed before, so it stands out on its own and isn't lost under the bigger line drawn after it
+        k = a + int(np.argmax(w >= max(thr, 0.4 * pk)))
         nxt = times[i + 1] if i + 1 < len(times) else None
         if nxt is not None and k / fps >= nxt - 1 / fps:
             # the first change comes on the next cue's word, so it is that cue's landing, not this one's: a cut into a

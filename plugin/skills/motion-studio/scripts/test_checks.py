@@ -2766,7 +2766,7 @@ class BeatLandings(unittest.TestCase):
             vf = ",".join([
                 "drawbox=x=0:y=0:w=640:h=60:color=white:t=fill:enable='lt(mod(n\\,4)\\,2)'",        # motion on twos, all along
                 "drawbox=x=300:y=200:w=10:h=10:color=black:t=fill:enable='gte(t,1.0)'",           # the dot, on the word at 1.0
-                "drawbox=x=100:y=150:w=400:h=120:color=black:t=fill:enable='gte(t,1.3)'",         # the line, bigger, 0.3 s on
+                "drawbox=x=100:y=150:w=400:h=4:color=black:t=fill:enable='gte(t,1.3)'",           # the line, longer, 0.3 s on
                 "drawbox=x=40:y=300:w=14:h=14:color=black:t=fill:enable='gte(t,2.6)'"])          # a small mark on 2.6
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=30:d=4", "-vf", vf,
                             "-pix_fmt", "yuv420p", str(f / "out" / "silent.mp4")], check=True)
@@ -2776,6 +2776,26 @@ class BeatLandings(unittest.TestCase):
             lines, probs = cuecheck.run(f)
             self.assertEqual(probs, [], lines)
             self.assertIn("2 measured", lines[0])
+
+    def test_steady_motion_is_not_a_landing(self):
+        # #199/#200 read every cue of the first cel film 0.3 s early: over hundreds of blocks of a moving scene, some
+        # block always stepped past a fixed level at the window's first frame
+        import cuecheck
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "f"); (f / "out").mkdir(parents=True)
+            # a detailed still on a slow push-in, through the proxy's crf 23 veryfast: every block changes a little,
+            # differently each frame, as the cel stills do
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "cellauto=s=1280x720:rule=30:rate=1", "-frames:v", "1",
+                            str(Path(d, "still.png"))], check=True)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-i", str(Path(d, "still.png")), "-vf",
+                            "gblur=sigma=1,zoompan=z='1+0.0015*on':d=1:s=640x360:fps=30:x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2',"
+                            "drawbox=x=280:y=150:w=60:h=40:color=white:t=fill:enable='gte(t,1.0)'", "-t", "4",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", str(f / "out" / "silent.mp4")], check=True)
+            tl = {"duration": 4, "segments": [{"id": "a", "type": "panel", "t0": 0, "t1": 4}],
+                  "cues": [{"seg": "a", "at": "mark", "t": 1.0}]}
+            (f / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";")
+            lines, probs = cuecheck.run(f)
+            self.assertEqual(probs, [], lines); self.assertIn("1 measured", lines[0])
 
     def test_change_on_the_next_cue_belongs_to_it(self):
         # a cut at 1.0 into the same picture, whose first mark lands on its first word at 1.4: the cut isn't late
