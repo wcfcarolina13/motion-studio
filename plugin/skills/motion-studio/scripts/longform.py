@@ -180,7 +180,7 @@ def require_fresh_mix(film, what, tl=None):
                          "(a Short: `timeline` cuts its sound again).")
 
 
-def listen(film, tl, windows=3, span=12.0):
+def listen_mix(film, tl, windows=3, span=12.0):
     """(report line, flags): spot-transcribe the served mix at a few points and compare with the timeline's words.
     Whisper only (align.py); without it the line says so and nothing is flagged."""
     import difflib, statistics, align
@@ -198,7 +198,7 @@ def listen(film, tl, windows=3, span=12.0):
     total, flags, offs, parts = float(tl["duration"]), [], [], []
     with tempfile.TemporaryDirectory() as d:
         for k in range(windows):
-            a = max(0.0, total * (k + 1) / (windows + 1) - span / 2)
+            a = min(max(0.0, total * (k + 1) / (windows + 1) - span / 2), max(0.0, total - span))
             clip = Path(d) / f"w{k}.wav"
             run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-t", f"{span:.3f}", "-i", str(mix), "-ar", "16000", "-ac", "1", str(clip)])
             try:
@@ -4349,7 +4349,7 @@ def _check(a, film):
     flags += drift_warn
     report.append("page: clean (no errors at any segment's start, middle or end)")
     if not getattr(a, "no_listen", False):
-        line, lf = listen(film, tl)           # the served sound, heard: does it say the timeline's words?
+        line, lf = listen_mix(film, tl)       # the served sound, heard: does it say the timeline's words?
         report.append(line); print(line); flags += lf
     flags += [f"page: {w}" for w in page_warnings(film)]
     # dead space: room in a still while the voice says something worth showing, and nothing showing it

@@ -1753,6 +1753,39 @@ class SoundMatchesCut(unittest.TestCase):
             os.utime(film / "timeline.js", (time.time() - 5, time.time() - 5))
             self.assertIn("is 1.5 s and the cut is 3.0 s", longform.stale_mix(film))
 
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_check_listens_end_to_end(self):
+        # 2026-11-28: check crashed at the listen step (a later local named `listen` shadowed the function); only the
+        # function was tested, never check itself
+        import io, sys, longform, align
+        with tempfile.TemporaryDirectory() as d:
+            film, tl = self.film(d, dur=14.0)
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "script.json").write_text(json.dumps({"title": "t", "segments": [{"id": "a", "type": "statement", "narration": "x", "data": {"text": "Rent"}}]}))
+            words = [[w, 0.3 + 0.3 * i, 0.55 + 0.3 * i] for i, w in enumerate(("rent is due on the first of every month " * 4).split())]
+            tl.update(segments=[{"id": "a", "type": "statement", "t0": 0, "t1": 14, "data": {"text": "Rent"}, "words": words}],
+                      script_sha=longform.script_sha(film))
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";\n")
+            longform.write_mix_stamp(film)
+            real = align._whisper_python, align.whisper_words, sys.argv
+            align._whisper_python, align.whisper_words = (lambda: "python3"), (lambda wav: [("rent", 0.1, 0.3)])
+            sys.argv = ["longform.py", "check", str(film)]
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    try:
+                        longform.main()
+                    except SystemExit:
+                        pass
+            finally:
+                align._whisper_python, align.whisper_words, sys.argv = real
+            out = buf.getvalue()
+            self.assertIn("listen: ", out)
+            self.assertIn("the sound is from another cut", out)                 # the fake heard one word: flagged
+            self.assertNotIn("4-16 s", out)                                     # windows stay inside the film
+
     def test_listen_without_whisper_says_so(self):
         import longform, align
         with tempfile.TemporaryDirectory() as d:
@@ -1761,7 +1794,7 @@ class SoundMatchesCut(unittest.TestCase):
             real = align._whisper_python
             align._whisper_python = lambda: (_ for _ in ()).throw(RuntimeError("no whisper here"))
             try:
-                line, flags = longform.listen(film, tl)
+                line, flags = longform.listen_mix(film, tl)
             finally:
                 align._whisper_python = real
             self.assertIn("not run (no whisper here)", line); self.assertEqual(flags, [])
@@ -1776,7 +1809,7 @@ class SoundMatchesCut(unittest.TestCase):
             align._whisper_python = lambda: "python3"
             try:
                 align.whisper_words = lambda wav: [("Completely", 0.1, 0.4), ("different", 0.5, 0.9), ("words", 1.0, 1.3)] * 4
-                line, flags = longform.listen(film, tl)
+                line, flags = longform.listen_mix(film, tl)
                 self.assertEqual(len(flags), 3, line)
                 self.assertIn("another cut", flags[0])
             finally:
