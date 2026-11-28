@@ -1021,8 +1021,9 @@ def find_phrase(words, phrase, nth=1):
     return None
 
 
-def resolve_cues(node, words, seg, problems, cues):
-    """Give every {"at": "..."} inside a segment's data an absolute "t"."""
+def resolve_cues(node, words, seg, problems, cues, key=None):
+    """Give every {"at": "..."} inside a segment's data an absolute "t". Each cue also records the key it sits under
+    ("series", "camera", "pieces", ...) as "kind", so cuecheck can tell a crisp landing from a gradual one."""
     if isinstance(node, dict):
         if isinstance(node.get("at"), str):
             t = find_phrase(words, node["at"], node.get("nth", 1)) if words else None
@@ -1031,12 +1032,12 @@ def resolve_cues(node, words, seg, problems, cues):
                                 f"{seg['id']}: cue \"{node['at']}\" needs `align` first")
                 t = seg["t0"] + 0.5
             node["t"] = round(t + node.get("offset", 0.0), 3)
-            cues.append({"seg": seg["id"], "at": node["at"], "t": node["t"]})
-        for v in node.values():
-            resolve_cues(v, words, seg, problems, cues)
+            cues.append({"seg": seg["id"], "at": node["at"], "t": node["t"], **({"kind": key} if key else {})})
+        for k, v in node.items():
+            resolve_cues(v, words, seg, problems, cues, k)
     elif isinstance(node, list):
         for v in node:
-            resolve_cues(v, words, seg, problems, cues)
+            resolve_cues(v, words, seg, problems, cues, key)
 
 
 TRANSITION_HOLD = 0.3   # s a transition beat waits beyond a continuation before it starts (owner's note, 2026-11-03)

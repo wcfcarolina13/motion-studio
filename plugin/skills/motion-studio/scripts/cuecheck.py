@@ -25,6 +25,10 @@ EARLY, LATE = 0.25, 0.20     # a clear change this far before or after its word 
                              # 2 frames early on purpose, "anticipate"; 0.2 s is 6 frames, past any rounding)
 CLEAR = 3.0                  # the change must stand this far (luma levels, 12x12 block) above the scene's own motion
 CROWD = 0.35                 # a cue this close after another can't be told apart from it: it is listed, not judged
+GRADUAL = {"camera", "series"}   # cues that start something easing in from rest and overlapping its neighbours (a map
+                             # camera move, a chart line's 1.6 s draw): no single frame is their landing. The first cel
+                             # film's last four beat FAILs were all these. They are timed on the page; render drift, the
+                             # thing this check is for, shows on the crisp cues around them
 OFFSET_MS = 45               # soundtrack against the mix: more than this is more than a frame and a bit
 
 
@@ -55,8 +59,10 @@ def signal(video, fps=FPS):
 
 
 def cues(tl):
-    """[(t, label)] for every word cue and every cut, one per frame (several cues on one word are one landing)."""
-    out = [(float(c["t"]), f"\"{c.get('at', '')}\" in {c.get('seg', '?')}") for c in tl.get("cues", []) if c.get("t") is not None]
+    """[(t, label)] for every word cue and every cut, one per frame (several cues on one word are one landing). Gradual
+    cues (GRADUAL) are left out; run() counts them."""
+    out = [(float(c["t"]), f"\"{c.get('at', '')}\" in {c.get('seg', '?')}") for c in tl.get("cues", [])
+           if c.get("t") is not None and c.get("kind") not in GRADUAL]
     segs = tl.get("segments", [])
     for prev, sg in zip(segs, segs[1:]):
         if sg.get("t0") is not None and sg.get("t0") > 0:
@@ -135,8 +141,10 @@ def run(film, video=None, wav=None):
         video = raw if tl.get("finish") and raw.exists() else film / "out" / "silent.mp4"
     rows = landings(signal(video), cues(tl))
     judged = [r for r in rows if r["ms"] is not None]
+    gradual = sum(c.get("kind") in GRADUAL for c in tl.get("cues", []))
     lines = [f"beat landings on the video ({Path(video).name}): {len(rows)} cue(s), {len(judged)} measured, "
-             f"{sum(r['state'] == 'unseen' for r in rows)} with no clear change, {sum(r['state'] == 'crowded' for r in rows)} too close to tell apart"]
+             f"{sum(r['state'] == 'unseen' for r in rows)} with no clear change, {sum(r['state'] == 'crowded' for r in rows)} too close to tell apart"
+             + (f"; {gradual} camera move(s) and line draw(s) not timed here" if gradual else "")]
     if judged:
         ms = [r["ms"] for r in judged]
         lines.append(f"  measured landings from {min(ms):+d} to {max(ms):+d} ms of the word (one frame is {1000 // FPS} ms)")
