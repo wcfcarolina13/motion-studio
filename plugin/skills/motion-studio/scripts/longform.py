@@ -2900,6 +2900,14 @@ def _final(a):
     for p in probs:
         print("FAIL brand:", p)
     ok = ok and not probs
+    # beats measured on the finished video: a cue that drifted in the render, the joins or the mux, and the sound's offset
+    import cuecheck
+    lines, cprobs = cuecheck.run(film)
+    for line in lines:
+        print("INFO", line.strip())
+    for p in cprobs:
+        print("FAIL beat:", p)
+    ok = ok and not cprobs
     print(out)
     sys.exit(0 if ok else 1)
 
@@ -4578,6 +4586,14 @@ def _check(a, film):
         report.append(f"word cues: {len(tl.get('cues', []))}, {len(missed)} with no visible change near the word")
         for c in missed:
             flags.append(f"cue \"{c['at']}\" in {c['seg']} at {c['t']:.1f} s: nothing changes on screen")
+        # 3b. the same cues timed on the video at full rate: how far each landing is from its word (cuecheck.py)
+        if video.stat().st_mtime >= (film / "timeline.js").stat().st_mtime:
+            import cuecheck
+            lines, cprobs = cuecheck.run(film)
+            report.extend(lines)
+            flags.extend(f"beat: {p}" for p in cprobs)
+        else:
+            report.append("beat landings: out/silent.mp4 is older than timeline.js, so they weren't timed; render again")
         # 4. one-frame flashes at full rate: frame n differs from both neighbours while they match each other
         p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-vf", "scale=160:90,format=gray", "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
         win, n, flashes = [], 0, []
