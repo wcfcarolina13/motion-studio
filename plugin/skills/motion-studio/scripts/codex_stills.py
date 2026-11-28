@@ -6,8 +6,10 @@ Every call uses the owner's Codex plan allowance, so nothing runs without --allo
 open-model Colab route is the fallback when the allowance runs short. It won the bake-off on anatomy, scale, night
 skies and text.
 
-shots.json is the stills route's format: {"style", "faceless"?, "sizes"?, "shots": [{"id", "prompt", "style"?,
-"faceless"?, "char_in_frame"?, "props"?}]}. Settings, negative prompts and seeds don't apply here; "model" is ignored.
+shots.json is the stills route's format: {"style", "faceless"?, "sizes"?, "cast"?, "props"?, "shots": [{"id", "prompt",
+"style"?, "faceless"?, "char_in_frame"?, "props"?}]}. File-level "cast" and "props" are {"name": "what it looks like"}
+(the lead, the unit model, the truck) and go into every prompt, edits included, so each picture keeps them the same
+and adds none that aren't there. A shot's own "props" stays a list of size-sheet names. Settings, negative prompts and seeds don't apply here; "model" is ignored.
 
 Scale (picture-truth.md, rule 1): "sizes" is the film's size sheet (script.json's, same format), or pass
 --sizes script.json to read it from there. A shot naming two or more sized things in "char_in_frame" and "props" gets
@@ -177,8 +179,27 @@ def aspect_of(shot, cfg):
     return shot.get("aspect") or cfg.get("aspect") or "landscape"
 
 
-def ask(shot, style, faceless, scale="", w=1536, h=1024):
-    parts = [shot["prompt"].strip()]
+def cast_sentence(cfg):
+    """The job's "cast" and "props" (file level, {"name": "description"}) as one sentence for every prompt, so an edit
+    keeps the lead and the props looking the same (Survive Year 1, 2026-11-28: 31 gap edits went out without them, and 6
+    came back with a porcelain bowl, strangers in place of the lead, a blue truck or a wrong count)."""
+    def items(k):
+        v = cfg.get(k)
+        return [(n, str(d).strip().rstrip(".")) for n, d in v.items() if str(d).strip()] if isinstance(v, dict) else []
+    cast, props = items("cast"), items("props")
+    if not cast and not props:
+        return ""
+    parts = []
+    if cast:
+        parts.append("People: " + "; ".join(f"{n}: {d}" for n, d in cast) + ".")
+    if props:
+        parts.append("Things: " + "; ".join(f"{n}: {d}" for n, d in props) + ".")
+    return ("Whoever and whatever of these is in the picture looks exactly like this, the same in every picture of this "
+            "film. Do not add any that aren't in it, and do not replace them with other people or things. " + " ".join(parts))
+
+
+def ask(shot, style, faceless, scale="", w=1536, h=1024, cast=""):
+    parts = [shot["prompt"].strip(), cast]
     if scale:
         parts.append(scale + " Keep these proportions exactly, even where they look unusual.")
     parts.append((shot.get("style") or style).strip())
@@ -209,12 +230,12 @@ def ref_lines(first, refs, start=2):
     return " ".join(parts)
 
 
-def ask_photo(shot, style, faceless, scale="", refs=(), w=1536, h=1024):
+def ask_photo(shot, style, faceless, scale="", refs=(), w=1536, h=1024, cast=""):
     """Rule 16.1: restyle a real photo. Its layout, camera and the size of everything in it are kept; the setting, light
     and style are changed as the prompt says."""
     parts = [ref_lines("a reference photo: keep its layout, camera angle and height, and the position, size and "
                        "proportions of every object and person in it exactly", refs),
-             "Redraw image 1 as an illustration, changing only the setting, light and style: " + shot["prompt"].strip()]
+             "Redraw image 1 as an illustration, changing only the setting, light and style: " + shot["prompt"].strip(), cast]
     if scale:
         parts.append(scale + " Keep these proportions exactly.")
     parts.append((shot.get("style") or style).strip())
@@ -227,12 +248,12 @@ def ask_photo(shot, style, faceless, scale="", refs=(), w=1536, h=1024):
     return " ".join(p for p in parts if p)
 
 
-def ask_blockout(shot, style, faceless, scale="", refs=(), w=1536, h=1024):
+def ask_blockout(shot, style, faceless, scale="", refs=(), w=1536, h=1024, cast=""):
     """Rule 16.3, pass 1: paint over a to-scale blockout. The blockout is the source of composition and sizes only."""
     parts = [ref_lines("a rough to-scale blockout: it is the source of the composition, camera and the size and position "
                        "of every object only; its flat grey shapes and colours are not the look", refs),
              "Paint the finished picture over image 1, keeping every object exactly where it is and exactly its size: "
-             + shot["prompt"].strip()]
+             + shot["prompt"].strip(), cast]
     if scale:
         parts.append(scale + " Keep these proportions exactly.")
     parts.append((shot.get("style") or style).strip())
@@ -281,10 +302,12 @@ def shot_problems(shots, cfg):
     return out
 
 
-def ask_edit(shot, faceless, w=1536, h=1024):
+def ask_edit(shot, faceless, w=1536, h=1024, cast=""):
     parts = ["Edit the attached picture. Keep it the same picture: the same composition, camera angle, framing, people, "
              "objects, colours, line work and light, everything in the same place. Change only this: "
              + shot["change"].strip().rstrip(".") + "."]
+    if cast:
+        parts.append(cast)
     parts.append(f"Make exactly one image, {orient(w, h)}, {w}x{h}, the same size as the attached picture, and save it as "
                  "image.png in the current folder.")
     parts.append("No writing, letters, numbers, labels or signage anywhere in the picture, and no border or frame.")
@@ -419,6 +442,8 @@ def main():
     bad = scalecheck.sheet_problems(sizes) + [
         f'{s["id"]}: props with no entry in "sizes": {", ".join(k for k in s.get("props") or [] if k not in sizes)}'
         for s in shots if any(k not in sizes for k in s.get("props") or [])]
+    bad += [f'"{k}" at the file level is {{"name": "what they look like"}}, not {type(cfg[k]).__name__}'
+            for k in ("cast", "props") if k in cfg and not isinstance(cfg[k], dict)]
     if bad and not a.check:
         raise SystemExit("size sheet problems, nothing run:\n  " + "\n  ".join(bad))
     if not a.check:
@@ -476,17 +501,17 @@ def main():
                 aw, (lo, hi), ratio = ASPECTS[aspect]
                 # --image=<path> as one argument: codex's -i takes any number of files, so a prompt after "-i <path>" was
                 # read as a second image and codex exited with "No prompt provided via stdin" (22 of 22 edits, 2026-11-25)
-                prompt, extra = ask_edit(s, faceless, bw, bh), [f"--image={os.path.abspath(base)}"]
+                prompt, extra = ask_edit(s, faceless, bw, bh, cast_sentence(cfg)), [f"--image={os.path.abspath(base)}"]
             elif s.get("photo"):
                 refs = refs_of(s, cfg)
-                prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
+                prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw, cast_sentence(cfg))
                 extra = [f"--image={os.path.abspath(p)}" for p in [s["photo"]] + refs]
             elif s.get("blockout"):
                 refs = refs_of(s, cfg)
-                prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw)
+                prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw, cast_sentence(cfg))
                 extra = [f"--image={os.path.abspath(p)}" for p in [s["blockout"]] + refs]
             else:
-                prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw), []
+                prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw, cast_sentence(cfg)), []
             done = False
             for t in range(1, a.tries + 1):
                 work = tempfile.mkdtemp(prefix="codex-still-")

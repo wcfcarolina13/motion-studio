@@ -570,6 +570,24 @@ class CodexEdit(unittest.TestCase):
             self.assertIn("a2\tresized 768x512", rv); self.assertIn("z\tedit base nope not found", rv)
 
 
+    def test_cast_and_props_in_every_prompt(self):
+        # Survive Year 1, 2026-11-28: edits without the lead's description came back with strangers and a blue truck
+        with tempfile.TemporaryDirectory() as d:
+            shots = {"style": "ink.", "cast": {"the owner": "a woman in her 40s, short grey hair, navy work jacket"},
+                     "props": {"the truck": "white box truck with a blue stripe", "the unit": "green plastic porta-potty"},
+                     "shots": [{"id": "a", "prompt": "The owner by the truck."},
+                               {"id": "a2", "edit_from": "a", "change": "the owner opens the truck door"}]}
+            r = self.run_it(d, "1536x1024 1536x1024", "", shots=shots)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            prompts = Path(d, "n.prompts").read_text().splitlines()
+            for pr in prompts:
+                self.assertIn("the owner: a woman in her 40s, short grey hair, navy work jacket", pr)
+                self.assertIn("the truck: white box truck with a blue stripe", pr)
+                self.assertIn("Do not add any that aren't in it", pr)
+            bad = dict(shots, cast=["the owner"])
+            r = self.run_it(d, "1536x1024", "", "--check", ok=False, shots=bad)
+            self.assertIn('"cast" at the file level', r.stdout + r.stderr)
+
     def test_frame_snaps_to_its_base_frame(self):
         # episode thread, 2026-11-27: a 1672x940 base came back cropped to 1671x940 and timeline stopped on
         # "flipbook frames differ in size"
