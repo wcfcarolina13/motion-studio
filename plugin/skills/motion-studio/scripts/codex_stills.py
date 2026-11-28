@@ -615,9 +615,13 @@ def main():
                     if why:
                         print(f"{s['id']} try {t}: style pass gave no image ({why})"); shutil.rmtree(work, True); continue
                     png = styled
-                from PIL import Image
-                with Image.open(png) as im:
-                    W, H = im.size
+                from PIL import Image, UnidentifiedImageError
+                try:                          # a cut-off or corrupt file is a failed try, not the end of the run
+                    with Image.open(png) as im:
+                        W, H = im.size; im.load()
+                except (UnidentifiedImageError, OSError, SyntaxError) as e:
+                    last_why = f"Codex wrote an unreadable image ({type(e).__name__})"
+                    print(f"{s['id']} try {t}: {last_why}; re-rolling"); shutil.rmtree(work, True); continue
                 if not lo <= W / H <= hi:
                     keep_try(png, a.out, s["id"], t)
                     print(f"{s['id']} try {t}: {W}x{H} is not {aspect} ({lo:g} to {hi:g} wide per high); re-rolling"); shutil.rmtree(work, True); continue

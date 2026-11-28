@@ -364,6 +364,19 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
             self.assertIn("Codex said: I made a plan for the picture", r.stdout)
             self.assertIn("(last: Codex said:", Path(d, "out", "review.tsv").read_text())
 
+    def test_unreadable_image_is_a_failed_try(self):
+        # Survive Year 1 cel, 2026-11-28: a corrupt image.png from Codex raised UnidentifiedImageError and ended a 25-shot run
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "bad.py").write_text(
+                "import os\nfrom PIL import Image\nst = os.environ['FAKE_STATE']\n"
+                "n = int(open(st).read()) if os.path.exists(st) else 0\nopen(st, 'w').write(str(n + 1))\n"
+                "d = os.path.join(os.environ['CODEX_IMAGES'], 's%d' % n); os.makedirs(d, exist_ok=True)\n"
+                "if n == 0: open(os.path.join(d, 'ig.png'), 'wb').write(b'\\x89PNG not really')\n"
+                "else: Image.new('RGB', (1536, 1024), (200, 150, 90)).save(os.path.join(d, 'ig.png'))\n")
+            r = self.run_it(d, "1536x1024", "", "--only", "a", env_extra={"CODEX_CMD": f"python3 {d}/bad.py", "FACE_CHECK_CMD": "off"})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("unreadable image", r.stdout); self.assertTrue(Path(d, "out", "a.png").exists())
+
     def test_dropped_image_is_sent_again(self):
         # cel test, 2026-11-28: Codex dropped the --image on 6 of 24 calls and asked for it again, exiting 0
         from PIL import Image
@@ -1699,6 +1712,20 @@ class BlankProps(unittest.TestCase):
                 f.seek(1.95); self.assertTrue(f.page.evaluate("!!document.querySelector('[filter^=\"url(#pw\"]')"))
                 f.seek(2.5); self.assertFalse(f.page.evaluate("!!document.querySelector('[filter^=\"url(#pw\"]')"))
                 self.assertFalse(f.page.evaluate("window.STUDIO.warnings || []")); self.assertFalse(f.errors)
+
+
+    def test_spoken_numbers_as_words_times_and_compounds(self):
+        # Survive Year 1 cel, 2026-11-28: four inked numbers counted as missing ("1 of 6")
+        import numbersync as ns
+        W = lambda t: [[w, i * 0.3, i * 0.3 + 0.2] for i, w in enumerate(t.split())]
+        got = lambda t: [(r["text"], r["value"]) for r in ns.spoken(W(t))]
+        self.assertEqual(got("the bill was four point three million"), [("four point three million", 4300000.0)])
+        self.assertEqual([v for _, v in got("we lost twenty-five thousand three hundred seventy-five.")], [25375.0])
+        self.assertEqual(got("open at five-thirty every day"), [("five-thirty", 5.5)])
+        self.assertEqual(got("a sixty-day wait"), [("sixty-day", 60.0)]); self.assertEqual(got("a 60-day wait"), [("60-day", 60.0)])
+        self.assertEqual(got("two of them"), []); self.assertEqual(got("one-day sale"), []); self.assertEqual(got("twenty-five dollars"), [("twenty-five dollars", 25.0)])
+        shown = ns.on_screen(["5:30", "$4,300,000", "\u2212$25,375", "60 DAYS"])
+        self.assertEqual(shown, {5.5, 4300000.0, 25375.0, 60.0})               # a clock is one value, not a 5 and a 30
 
 
 class VideoFrames(unittest.TestCase):
