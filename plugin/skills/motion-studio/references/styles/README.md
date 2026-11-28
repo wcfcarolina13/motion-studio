@@ -47,7 +47,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 #### 3. One odd act, then "You see," (after Zack D. Films)
 
 - **What it is:** a 38 to 50 second 3D story Short. Line one is the strangest act, every sentence after it is one visible action, and the reason comes last, after "You see,". The article says to keep the camera calm because fast action looks stiff in Blender.
-- **Reuses:** the story grammar needs no new code. It is a script template for `contract-and-story.md` and works with any look, set3d included.
+- **Grammar built (2026-11-27):** the story grammar is now a script chain in `contract-and-story.md` ("Story Short") with a fill-in template, `assets/templates/odd-act-script.md`. It needs no new code and works with any look, cel and set3d included. The 3D look below is still not built.
 - **New work for the full look:** the engine has no Blender route. A 3D build needs one: Blender (GPL, and what it renders is ours), CC0 characters and props (Quaternius, Kenney or Poly Haven, licence recorded per asset), and a headless render step with word cues. That is a large build.
 - **Fit:** strong for K-factory Shorts and explainer hooks, as a grammar first.
 - **Trade-off:** the grammar is cheap and portable. The Blender look is the costliest build here, and the article warns that it looks stiff.
@@ -71,7 +71,7 @@ All five would use Kokoro (Apache-2.0) for every draft voice. ElevenLabs comes i
 
 #### Order if we build any
 
-1. Story grammar from #3, as a script template. It costs little and K-factory can use it straight away.
+1. Story grammar from #3, as a script template. Done 2026-11-27; the 3D look stays unbuilt.
 2. #4 science Short, together with the queued Kurzgesagt item. It has the most engine reuse and fits the explainer channel.
 3. #1 globe whirlwind. It reuses three.js and the map timing.
 4. #5 building Short, only if the explainer channel takes on the niche.
