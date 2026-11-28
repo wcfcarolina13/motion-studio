@@ -1825,15 +1825,17 @@ class PopDiag(unittest.TestCase):
         from PIL import Image
         base = np.zeros((180, 320, 3), np.uint8); base[:] = np.linspace(60, 200, 320).astype(np.uint8)[None, :, None]
         base[40:120, 60:140] = (200, 120, 60); base[90:160, 180:260] = (40, 90, 170)     # flat panels, like a cel frame
+        rng = np.random.default_rng(3)                       # and the cel finish's grain, new every frame: chunks that
+        grain = lambda: rng.normal(0, 9, base.shape[:2])[..., None]   # were each a lossy encode stepped at their starts
         def enc(im, fmt):
             b = io.BytesIO(); Image.fromarray(im).save(b, fmt, **({"quality": 100, "subsampling": 0} if fmt == "JPEG" else {})); return b.getvalue()
-        frames = [np.roll(base, i, axis=1) for i in range(6)]
+        frames = [np.clip(np.roll(base, i, axis=1) + grain(), 0, 255).astype(np.uint8) for i in range(12)]
         with tempfile.TemporaryDirectory() as d:
             got = {}
             for fmt in ("JPEG", "PNG"):
                 src = [enc(f, fmt) for f in frames]
-                whole, cut = popdiag.encode_test(src, 3, 320, 180, Path(d))
-                self.assertLess(abs(cut - whole), 0.3, fmt)                   # a chunk join adds no step
+                whole, cut = popdiag.encode_test(src, 6, 320, 180, Path(d))
+                self.assertLess(abs(cut - whole), 0.05, fmt)                   # a chunk join adds no step
                 got[fmt] = popdiag.video_frames(Path(d, "whole.mp4"), [2], 320, 180)[2]
             self.assertLess(abs(popdiag.level(got["JPEG"], got["PNG"])), 0.3)
 
