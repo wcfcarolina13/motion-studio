@@ -1572,6 +1572,17 @@ function panelScreen(sc, g, IW, IH, s, idx = 0) {
   if (sc.bg !== false) K.el("polygon", { points: q.map(p => p.join(",")).join(" "), fill: sc.bg || "#0e1720" }, grp);
   const ink = sc.ink || "#e9f1f7", font = HO && sc.font in HO.FAM ? HO.FAM[sc.font] : sc.font || SANS, lines = sc.lines.map(l => typeof l === "string" ? { text: l } : l);
   const pad = SW * 0.07, lh = sc.size ? sc.size * SH : Math.min((SH - 2 * pad) / lines.length, SH * 0.3);
+  // "pre": "blur" (screen-wide or per line): from the moment its frame shows, a line sits there as a soft blur of its own
+  // text, then sharpens to the written line on its cue, so a prop isn't blank until its word (owner, Survive Year 1
+  // review, 2026-11-28). The blur copies are data-aux: the text checks and the number check read only the sharp line.
+  lines.forEach(l => { const pv = l.pre !== undefined ? l.pre : sc.pre;
+    if (pv != null && pv !== false && pv !== "blur") (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`${s.id}: screen "pre" is "blur" or false, not ${JSON.stringify(pv)}`); });
+  const blurOf = l => (l.pre !== undefined ? l.pre : sc.pre) === "blur";
+  const fid = cid + "blur";
+  if (lines.some(blurOf)) {
+    const f = K.el("filter", { id: fid, x: "-50%", y: "-150%", width: "200%", height: "400%" }, K.defs);
+    K.el("feGaussianBlur", { stdDeviation: (lh * 0.25).toFixed(2) }, f);
+  }
   // the font fills the line height unless the longest line would run past the screen's width
   const meas = K.text("", { "font-family": font, "font-size": 100, "font-weight": 600 }, grp);
   const widthAt100 = str => { meas.textContent = str; return meas.getComputedTextLength(); };
@@ -1589,20 +1600,24 @@ function panelScreen(sc, g, IW, IH, s, idx = 0) {
     let u = sc.align === "center" ? (SW - total) / 2 : pad;
     const vb = top + lh * i + lh * 0.5 + fs * 0.35;          // the baseline, so the line's ink sits mid-band
     const t0w = cueT(l, spans[0][0] + 0.3 + i * 0.6), sp = spanOf(t0w), t0 = Math.max(t0w, sp[0]);   // never before its frame
-    const typ = Math.min(0.9, 0.07 * words.length + 0.12);
+    const typ = Math.min(0.9, 0.07 * words.length + 0.12), blur = blurOf(l);
+    const lineInk = l.ink || ink;          // per line: a loss in red, a gain in green on the same paper (owner, 2026-11-28)
     const els = words.map((w, k) => {
       const uc = u + ws[k] / 2; u += ws[k] + space * fs / 100;
       const [x, y] = P(uc, vb - fs * 0.35), [a, b, c, d] = J(uc, vb - fs * 0.35);
-      const el = K.text(w, { "font-family": font, "font-size": fs, "font-weight": 600, fill: ink, "text-anchor": "middle", x: 0, y: fs * 0.35,
-                             transform: `matrix(${a.toFixed(5)} ${b.toFixed(5)} ${c.toFixed(5)} ${d.toFixed(5)} ${x.toFixed(2)} ${y.toFixed(2)})` }, grp);
-      return { el, at: t0 + typ * k / Math.max(words.length, 1) };
+      const at = { "font-family": font, "font-size": fs, "font-weight": 600, fill: lineInk, "text-anchor": "middle", x: 0, y: fs * 0.35,
+                   transform: `matrix(${a.toFixed(5)} ${b.toFixed(5)} ${c.toFixed(5)} ${d.toFixed(5)} ${x.toFixed(2)} ${y.toFixed(2)})` };
+      const ghost = blur ? K.text(w, Object.assign({}, at, { filter: `url(#${fid})`, "data-aux": 1 }), grp) : null;
+      const el = K.text(w, at, grp);
+      return { el, ghost, at: t0 + typ * k / Math.max(words.length, 1), dur: blur ? 0.15 : 0.08 };
     });
     K.label(String(l.text), t0, sp[1], "screen");
     return els;
   });
   meas.remove();
   return t => { const on = up(t);
-    drawn.forEach(ws => ws.forEach(w => { const a = on ? K.prog(t, w.at, w.at + 0.08) : 0; K.show(w.el, a > 0); if (a > 0) w.el.setAttribute("opacity", a.toFixed(3)); })); };
+    drawn.forEach(ws => ws.forEach(w => { const a = on ? K.prog(t, w.at, w.at + w.dur) : 0; K.show(w.el, a > 0); if (a > 0) w.el.setAttribute("opacity", a.toFixed(3));
+      if (w.ghost) { const g = on ? 0.55 * (1 - a) : 0; K.show(w.ghost, g > 0); if (g > 0) w.ghost.setAttribute("opacity", g.toFixed(3)); } })); };
 }
 // ── panel callouts: facts animated into a still's dead space (owner, 2026-11-27: "if there's dead space in an image
 // while something interesting is being said in the transcript or a good source is being used, find a way to animate that

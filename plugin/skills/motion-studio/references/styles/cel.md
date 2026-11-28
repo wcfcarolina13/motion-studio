@@ -52,7 +52,9 @@ Image models garble writing, and the engine never uses theirs (picture-truth.md 
                      "font": "elite", "lines": ["RENT", {"text": "$950/mo", "at": "nine"}]}]}
 ```
 
-3. **A blank prop only appears on the beat that writes on it.** A blank tag or empty calendar with nothing written on it fails review ("No idle placeholders", review.md). If the number isn't said in that beat, draw the prop without a writing area, or leave it out. On a flipbook panel, give each screen the `"frame"` it is drawn on, so the writing leaves with its drawing, and `"until": {"at": "word"}` when it should go sooner (references/longform.md, Flipbook panels).
+A line may take its own `"ink"` (`{"text": "-$400", "at": "lost", "ink": "#C8402F"}`). With `"pre": "blur"` on the screen (or one line), the writing sits on the prop as a soft blur until its word, then sharpens, so the prop is never empty while it is on screen (owner, 2026-11-28: "blur it before the reveal rather than it being blank").
+
+3. **A blank prop only appears on the beat that writes on it.** A prop with `"pre": "blur"` is not blank, so this applies only to screens without it. A blank tag or empty calendar with nothing written on it fails review ("No idle placeholders", review.md). If the number isn't said in that beat, draw the prop without a writing area, or leave it out. On a flipbook panel, give each screen the `"frame"` it is drawn on, so the writing leaves with its drawing, and `"until": {"at": "word"}` when it should go sooner (references/longform.md, Flipbook panels).
 
 `pace` and `check` treat each screen line like any other reveal: a line with no `"at"` is reported, and `pace --apply` cues it to the word that says its number. `check` compares a number on a prop with the narration, the same as a callout.
 
