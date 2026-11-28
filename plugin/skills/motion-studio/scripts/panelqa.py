@@ -628,6 +628,7 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
             whole[str(x)] = {"fit": how, "outside_likeness": k, "size": list(size(full))}
             write_rgb(arr[sy:sy + side, sx:sx + side], rdir / f"out_{x}.png")
     elif model == CHATGPT and method == "markup":
+        import codex_stills
         # the whole panel goes, with the paste region outlined in red, plus the clean panel; the answer is mapped back onto
         # the panel and only the same crop is kept, so the paste, colour match and checks below are the crop route's
         mark = rdir / "markup.png"
@@ -644,6 +645,7 @@ def repair(film, img, box, prompt, *, ref=None, model=CHATGPT, seeds=(1,), conte
             write_rgb(arr[sy:sy + side, sx:sx + side], rdir / f"out_{x}.png")
     elif model == CHATGPT:
         # the crop itself is the edit base; ChatGPT has no seed, so each "seed" is one independent take
+        import codex_stills
         ask = repair_ask(prompt, gen, ref=bool(ref), faceless=faceless)
         for x in seeds:
             out = rdir / f"out_{x}.png"

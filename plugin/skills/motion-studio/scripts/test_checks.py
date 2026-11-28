@@ -1727,6 +1727,52 @@ class BlankProps(unittest.TestCase):
         shown = ns.on_screen(["5:30", "$4,300,000", "\u2212$25,375", "60 DAYS"])
         self.assertEqual(shown, {5.5, 4300000.0, 25375.0, 60.0})               # a clock is one value, not a 5 and a 30
 
+    def test_round_speech_matches_an_exact_figure(self):
+        import numbersync as ns
+        self.assertTrue(ns.matches(25000, {25375}))           # "twenty-five thousand dollars" against an inked -$25,375
+        self.assertTrue(ns.matches(25375, {25000}))           # and a "$25k" card against the exact figure said
+        self.assertTrue(ns.matches(4300000, {4286000}))
+        self.assertFalse(ns.matches(30000, {25375}))          # two significant figures: thirty thousand is not 25,375
+        self.assertFalse(ns.matches(4800, {4860})); self.assertFalse(ns.matches(60, {64}))
+
+
+
+class LocalImports(unittest.TestCase):
+    """A module imported only inside one branch of a function is local to the whole function, so a run that skips the
+    branch dies with UnboundLocalError where it is used outside it. check crashed this way twice (the listen step, then
+    the motion floor on a film with a map, 2026-11-28). This walks every engine script for the pattern."""
+
+    @staticmethod
+    def unbound(src):
+        import ast
+        out = []
+        for fn in [n for n in ast.walk(ast.parse(src)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            parent = {c: n for n in ast.walk(fn) for c in ast.iter_child_nodes(n)}
+            imps = [(st, (a.asname or a.name).split(".")[0]) for st in ast.walk(fn)
+                    if isinstance(st, (ast.Import, ast.ImportFrom)) for a in st.names]
+            names = {nm for _, nm in imps}
+
+            def covered(use, nm):       # an import of nm comes earlier in a block that encloses the use
+                n = use
+                while n in parent and n is not fn:
+                    p = parent[n]
+                    for field in ("body", "orelse", "finalbody"):
+                        seq = getattr(p, field, None)
+                        if isinstance(seq, list) and n in seq:
+                            for st in seq[:seq.index(n)]:
+                                if any(inm == nm and (st is i or (isinstance(st, ast.Try) and i in st.body)) for i, inm in imps):
+                                    return True
+                    n = p
+                return False
+            out += [(fn.name, u.id, u.lineno) for u in ast.walk(fn)
+                    if isinstance(u, ast.Name) and isinstance(u.ctx, ast.Load) and u.id in names and not covered(u, u.id)]
+        return out
+
+    def test_no_branch_only_imports(self):
+        bad = [(f.name,) + r for f in sorted(Path(__file__).parent.glob("*.py")) for r in self.unbound(f.read_text())]
+        self.assertEqual(bad, [])
+        self.assertEqual(self.unbound("def f(a):\n    if a:\n        import json\n        json.dumps(1)\n    return json.loads('1')\n"),
+                         [("f", "json", 5)])
 
 class VideoFrames(unittest.TestCase):
     """Frames for the encoder come as JPEG q100 (6x faster than Chromium's PNG); stills and checks stay PNG."""
