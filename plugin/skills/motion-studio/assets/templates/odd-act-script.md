@@ -31,7 +31,7 @@ Rules: `references/contract-and-story.md`, "Story Short (odd act, then 'You see,
 | 9 | Turn | | | |
 | 10 | Close | | | |
 
-Add or remove escalation rows to fit the word count (6 to 10 in all).
+Add or remove escalation rows to fit the word count (4 to 7 escalations; at about 12 words a line, 95 to 125 words holds 8 to 10 lines in all).
 
 ## Self-check before boarding
 
