@@ -204,6 +204,14 @@ Trade-offs: every real-looking element needs either a capture or an explicit "ma
   - Trade-offs: the napkin takes the top-left corner beside the picture, so stills need room there or the callouts move away. A tick is computed from the card's last value, so a later explicit `"counter"` must agree with the running sum, which `check` does not test.
 - Trade-offs: a tag is still a box on the picture, which is what he called "plastered-on"; tape, tilt and a shadow make it read as stuck on, not melded in. Paper covers drawing, so the quiet-room warning still matters. Special Elite's zero looks like a capital O. The map's sound roles have no recordings yet, so the slaps are silent.
 
+## Finish passes
+
+`"finish": "cel"` in script.json (or `{"kind": "cel", "seed": 3}`) puts a look on every composed frame at render time, under the burned-in captions, which go on afterwards and stay crisp (finish.py; cel style test, 2026-11-28). The cel finish is an old-cartoon print: ink softened about 0.8 px then unsharp-masked for a pale rim, chroma blurred and shifted 2 px off register, a slow luma mottle on fills (±2.5%, drifting over 0.8 s), bloom from highlights, a warm tone with blacks lifted toward #2a1710, a light vignette, and luma grain held on twos.
+
+- The page is never finished, so the dashboard, `check` and contact sheets show the clean picture. `longform.py finish <film> [--at 4 12]` writes before/after stills to review/finish-<t>.png; look at those before a render.
+- Render writes out/silent-raw.mp4, the unfinished picture, beside silent.mp4. final's motion check reads it, because grain and mottle would count as motion on every frame and pass a frozen shot.
+- Trade-offs: about 0.5 s of CPU per 1080x1920 frame, so roughly 9 minutes per worker for a 35 s Short and a few hours across workers for a 12-minute film. A frame with a caption up takes two extra screenshots to matte the caption layer. The cel finish adds its own vignette on top of the grade's, so set `"grade": {"vignette": 0}` if the edges read too dark.
+
 ## Source line
 
 A segment's `source` shows as "Source: …" bottom left. On panels and maps it sits on a dark plate in light grey, since grey text alone was lost on coastlines and busy stills (owner's review, 2026-11-26); elsewhere it stays plain grey. `"source_plate": true` or `false` on a segment overrides that. Trade-off: the plate is a visible box on every panel and map with a source.

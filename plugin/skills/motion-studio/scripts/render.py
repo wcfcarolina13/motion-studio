@@ -67,6 +67,7 @@ class Film:
             print("LINT:", warning, flush=True)
         page.set_viewport_size({"width": self.w, "height": self.h})
         self.page = page
+        self.finish = page.evaluate("(window.TIMELINE || {}).finish || null")    # finish.py: applied by frame(), not shot()
         return self
 
     def __exit__(self, *exc):
@@ -99,6 +100,47 @@ class Film:
         if self.errors:
             raise PageError(self._msg(t, self.errors[0]))
         return png
+
+    def frame(self, t, fps=30):
+        """(png, raw png or None) for frame t of a render: shot(t) as it is, or with the film's finish (finish.py) on the
+        picture under the burned-in captions, which stay crisp on top. raw is the unfinished frame, for the motion
+        check (grain and mottle would read as motion everywhere)."""
+        if not self.finish:
+            return self.shot(t), None
+        import io
+        import numpy as np
+        from PIL import Image
+        import finish
+        self.seek(t)
+        stage = self.page.locator("#stage")
+        caps_on = self.page.evaluate("""() => { const c = document.getElementById('caps');
+            if (!c) return false;
+            return [...c.querySelectorAll('div')].some(d => getComputedStyle(d).visibility === 'visible' && d.textContent.trim()); }""")
+        if caps_on:
+            self.page.evaluate("document.getElementById('caps').style.display = 'none'")   # display: children set visibility
+        scene = np.asarray(Image.open(io.BytesIO(stage.screenshot(type="png", animations="disabled"))).convert("RGB"))
+        caps = None
+        if caps_on:
+            # the caption layer alone, matted from two shots over black and over white (a transparent screenshot came
+            # back opaque in headless Chromium): black = colour x alpha, white - black = (1 - alpha) x 255
+            def over(bg):
+                self.page.evaluate(f"document.getElementById('stage').style.background = '{bg}'")
+                return np.asarray(Image.open(io.BytesIO(stage.screenshot(type="png", animations="disabled"))).convert("RGB"), dtype=np.float32)
+            self.page.evaluate("""() => { document.getElementById('caps').style.display = '';
+                document.getElementById('svg').style.display = 'none'; }""")
+            k, w = over("#000"), over("#fff")
+            self.page.evaluate("""() => { document.getElementById('svg').style.display = '';
+                document.getElementById('stage').style.background = ''; }""")
+            caps = (k, 1 - np.clip((w - k).mean(-1, keepdims=True) / 255, 0, 1))      # premultiplied colour, alpha
+        if self.errors:
+            raise PageError(self._msg(t, self.errors[0]))
+        put = lambda base: np.clip(base if caps is None else caps[0] + (1 - caps[1]) * base, 0, 255).astype(np.uint8)
+        done = Image.fromarray(put(finish.apply(self.finish, scene, int(round(t * fps))).astype(np.float32)), "RGB")
+        raw = Image.fromarray(put(scene.astype(np.float32)), "RGB")
+        out = []
+        for im in (done, raw):
+            b = io.BytesIO(); im.save(b, format="PNG", compress_level=1); out.append(b.getvalue())
+        return out[0], out[1]
 
     def bar_times(self, at=0.72):
         """One time per bar, `at` of the way through it (captions have landed by then)."""
