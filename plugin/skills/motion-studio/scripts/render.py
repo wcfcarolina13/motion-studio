@@ -15,6 +15,11 @@ FPS = 30
 # filters, so a re-render (or a resumed chunk) would not match its neighbours. Software raster of whole tiles is
 # deterministic; MS_GPU_RASTER=1 opts back into GPU raster where speed matters more than repeatable frames.
 RASTER = [] if os.environ.get("MS_GPU_RASTER") == "1" else ["--disable-gpu-rasterization", "--disable-partial-raster"]
+# Frames bound for the video encoder are taken as JPEG at quality 100, not PNG: Chromium's PNG encode of a 1080p frame
+# took 614 ms against 101 ms (render-layer test, 2026-11-28; Remotion's 3.5x speed came from the same choice). The
+# JPEG adds 41-45 dB PSNR of error against the PNG, about what the x264 CRF 18 encode itself costs (44.6 dB), so it is
+# not visible in the video. Stills, sheets and checks keep PNG. MS_FRAME_FORMAT=png renders with PNG again.
+VIDEO_FMT = os.environ.get("MS_FRAME_FORMAT", "jpeg")
 
 
 class PageError(RuntimeError):
@@ -38,8 +43,10 @@ class Film:
     """An open headless page on a film; use as a context manager. Any JavaScript error in the page, while it loads or
     while a frame is drawn, makes shot() raise PageError; console errors are kept in .console for page_problems."""
 
-    def __init__(self, project: Path):
+    def __init__(self, project: Path, video=False):
+        """video=True: shot() and frame() return frames for an encoder (VIDEO_FMT, JPEG q100 by default), not PNG."""
         self.project = Path(project).resolve()
+        self.fmt = VIDEO_FMT if video else "png"
 
     def __enter__(self):
         self._pw = sync_playwright().start()
@@ -96,7 +103,8 @@ class Film:
 
     def shot(self, t):
         self.seek(t)
-        png = self.page.locator("#stage").screenshot(type="png", animations="disabled")
+        kw = {"type": "jpeg", "quality": 100} if self.fmt == "jpeg" else {"type": "png"}
+        png = self.page.locator("#stage").screenshot(animations="disabled", **kw)
         if self.errors:
             raise PageError(self._msg(t, self.errors[0]))
         return png
@@ -118,7 +126,8 @@ class Film:
             return [...c.querySelectorAll('div')].some(d => getComputedStyle(d).visibility === 'visible' && d.textContent.trim()); }""")
         if caps_on:
             self.page.evaluate("document.getElementById('caps').style.display = 'none'")   # display: children set visibility
-        scene = np.asarray(Image.open(io.BytesIO(stage.screenshot(type="png", animations="disabled"))).convert("RGB"))
+        kw = {"type": "jpeg", "quality": 100} if self.fmt == "jpeg" else {"type": "png"}
+        scene = np.asarray(Image.open(io.BytesIO(stage.screenshot(animations="disabled", **kw))).convert("RGB"))
         caps = None
         if caps_on:
             # the caption layer alone, matted from two shots over black and over white (a transparent screenshot came
@@ -139,7 +148,12 @@ class Film:
         raw = Image.fromarray(put(scene.astype(np.float32)), "RGB")
         out = []
         for im in (done, raw):
-            b = io.BytesIO(); im.save(b, format="PNG", compress_level=1); out.append(b.getvalue())
+            b = io.BytesIO()
+            if self.fmt == "jpeg":
+                im.save(b, format="JPEG", quality=100, subsampling=0)
+            else:
+                im.save(b, format="PNG", compress_level=1)
+            out.append(b.getvalue())
         return out[0], out[1]
 
     def bar_times(self, at=0.72):
@@ -255,7 +269,7 @@ def film(project, dest, scale=1.0, sub=1, fps=FPS):
     """Render the whole film to a silent mp4. sub > 1 averages sub-frames for motion blur (sub=4 ≈ 270° shutter)."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with Film(project) as f:
+    with Film(project, video=True) as f:
         n = int(-(-f.dur * fps // 1))          # ceil: a whole-bar film ends on its last bar, not a frame short
         blur = f"tmix=frames={sub},select='not(mod(n+1\\,{sub}))',setpts=N/({fps}*TB)," if sub > 1 else ""
         # even dimensions for libx264, BT.709 limited range, tagged, fast start
