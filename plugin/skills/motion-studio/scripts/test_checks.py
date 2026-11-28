@@ -347,6 +347,40 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
             rv = Path(d, "out", "review.tsv").read_text()
             self.assertIn("a\tnot run: Codex usage limit", rv); self.assertIn("b\tnot run: Codex usage limit", rv)
 
+    def test_limit_on_exit_0_and_the_reason_for_no_image(self):
+        # cel test, 2026-11-28: the limit text as Codex prints it (curly apostrophe), and a shot that drew nothing twice
+        # with no reason in the log
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "limit.py").write_text("import os, sys\nst = os.environ['FAKE_STATE']\n"
+                                           "n = int(open(st).read()) if os.path.exists(st) else 0\nopen(st, 'w').write(str(n + 1))\n"
+                                           "print(\"ERROR: You\u2019ve hit your usage limit. Upgrade to Pro, or try again at 8:13 PM.)\")\n")
+            r = self.run_it(d, "1536x1024", "", env_extra={"CODEX_CMD": f"python3 {d}/limit.py"})
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertEqual(Path(d, "n").read_text(), "1"); self.assertIn("try again at 8:13 PM", r.stderr)
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "talk.py").write_text("print('I made a plan for the picture but stopped before drawing it.')\n")
+            r = self.run_it(d, "1536x1024", "", "--tries", "2", "--only", "a", env_extra={"CODEX_CMD": f"python3 {d}/talk.py"})
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)                 # nothing landed: FAILED, not PARTIAL
+            self.assertIn("Codex said: I made a plan for the picture", r.stdout)
+            self.assertIn("(last: Codex said:", Path(d, "out", "review.tsv").read_text())
+
+    def test_dropped_image_is_sent_again(self):
+        # cel test, 2026-11-28: Codex dropped the --image on 6 of 24 calls and asked for it again, exiting 0
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("RGB", (1536, 1024), (90, 90, 90)).save(f"{d}/photo.png")
+            Path(d, "drop.py").write_text(
+                "import os, sys\nfrom PIL import Image\nst = os.environ['FAKE_STATE']\n"
+                "n = int(open(st).read()) if os.path.exists(st) else 0\nopen(st, 'w').write(str(n + 1))\n"
+                "if n < 2: print(\"The character sheet isn't available here. Could you attach it again?\"); sys.exit(0)\n"
+                "d = os.path.join(os.environ['CODEX_IMAGES'], 's%d' % n); os.makedirs(d, exist_ok=True)\n"
+                "Image.new('RGB', (1536, 1024), (200, 150, 90)).save(os.path.join(d, 'ig.png'))\n")
+            shots = {"style": "ink", "shots": [{"id": "p", "prompt": "a yard", "photo": f"{d}/photo.png", "photo_licence": "own"}]}
+            r = self.run_it(d, "1536x1024", "", "--tries", "1", shots=shots, env_extra={"CODEX_CMD": f"python3 {d}/drop.py"})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)                 # landed on its one try
+            self.assertEqual(Path(d, "n").read_text(), "3")                        # two re-sends, then the picture
+            self.assertIn("didn't get the image", r.stdout); self.assertIn("-> 16:9", r.stdout)
+
     def test_check_is_a_dry_run(self):
         # 2026-11-27: the one-change rule refused a 39-shot job only after it was queued; --check fails it in seconds
         with tempfile.TemporaryDirectory() as d:
@@ -411,9 +445,13 @@ open(st, "w").write(str(n + 1)); print("Looking.\n" + os.environ["JUDGE_SAYS"].s
         with tempfile.TemporaryDirectory() as d:
             # a: three faces, gives up; b: fine. An unclear judge is kept and listed.
             r = self.run_it(d, "1536x1024 1536x1024 1536x1024 1536x1024", "FACE FACE FACE", "--tries", "3")
-            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.returncode, 3)                                  # PARTIAL: b landed, a didn't
+            self.assertIn("PARTIAL: 1 of 2", r.stdout)
             self.assertFalse(Path(d, "out", "a.png").exists()); self.assertTrue(Path(d, "out", "b.png").exists())
-            self.assertIn("a\tno usable image in 3 tries", Path(d, "out", "review.tsv").read_text())
+            rv = Path(d, "out", "review.tsv").read_text()
+            self.assertIn("a\tno usable image in 3 tries", rv); self.assertTrue(rv.startswith("# run "))
+            self.assertIn("originals/a.try<n>.png", rv)                         # the rejected tries are kept
+            self.assertTrue(all(Path(d, "out", "originals", f"a.try{k}.png").exists() for k in (1, 2, 3)))
         with tempfile.TemporaryDirectory() as d:
             r = self.run_it(d, "1536x1024 1536x1024", "hmm", "--only", "a")
             self.assertEqual(r.returncode, 0, r.stdout)
@@ -555,7 +593,7 @@ class CodexEdit(unittest.TestCase):
                 {"id": "z", "edit_from": "nope", "change": "anything"}]}
             # a2 comes back at the base's shape but half the size: resized to the base
             r = self.run_it(d, "1536x1024 768x512", "", shots=shots)
-            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)          # z has no base
+            self.assertEqual(r.returncode, 3, r.stdout + r.stderr)          # z has no base; a and a2 landed (PARTIAL)
             argv = Path(d, "n.argv").read_text().splitlines()
             self.assertNotIn("--image", argv[0])
             # the image is one --image=<path> argument, never a bare -i, which takes every argument after it as a file
@@ -653,6 +691,23 @@ class ReviewNotes1126(unittest.TestCase):
         self.assertFalse(panelqa.refused("doors with a gray pull handle and a red/green occupancy dot"))
         self.assertEqual(panelqa.lint([{"id": 1, "prompt": "The hero from behind, face hidden in black shadow."}], route="codex"), [])
         self.assertTrue(panelqa.lint([{"id": 1, "prompt": "A tank hidden under the floor."}], route="codex"))
+
+    def test_lint_false_positives_from_the_cel_test(self):
+        import panelqa, anatomy
+        lint = lambda t: " ".join(map(str, panelqa.lint([{"id": 1, "prompt": t}], route="codex")))
+        self.assertNotIn("touch", lint("A huge lumpy head with tiny features."))              # "huge" is not "hug"
+        self.assertTrue(lint("Two men hug by the truck."))
+        self.assertNotIn("tipped", lint("A foreman, hard hat tipped far back, grins."))       # worn, not knocked over
+        self.assertIn("tipped", lint("A porta-potty tipped over in the mud."))
+        self.assertNotIn("money", lint("A yard at dawn. No money or coins anywhere."))
+        self.assertIn("money", lint("A stack of cash on the desk."))
+        with tempfile.TemporaryDirectory() as d:                                # "sheet": true tells the judge about detached heads
+            cmd = f"echo \"{{faceless_rule}} sheet={{sheet}}\" > {d}/said; echo PASS"
+            self.assertEqual(anatomy.judge(f"{d}/x.png", sheet=True, cmd=cmd)[0], "PASS")
+            said = Path(d, "said").read_text()
+            self.assertIn("model sheet", said); self.assertIn("sheet=yes", said)
+            anatomy.judge(f"{d}/x.png", cmd=cmd)
+            self.assertNotIn("model sheet", Path(d, "said").read_text())
 
     def test_strong_push_flagged(self):
         import longform

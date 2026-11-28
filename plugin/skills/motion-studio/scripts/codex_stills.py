@@ -76,8 +76,14 @@ it before handing a job to longjob, so a refused shot fails in seconds instead o
 A Codex answer that says the plan's usage limit is hit stops the whole run at once, with no retry, the reset time if
 Codex gave one, and every shot not run listed in review.tsv as "not run: Codex usage limit".
 
-Exit 0 when every shot has output; 1 when some shot ran out of tries or the usage limit stopped the run (listed in
-review.tsv)."""
+A try that is rejected (wrong shape, a face on a faceless shot, an anatomy FAIL) is kept as originals/<id>.try<n>.png.
+When Codex answers that it never got an --image it was passed (it sometimes drops one), the call is sent again without
+spending a try, up to twice per shot. A shot with no image logs Codex's last words. review.tsv gets a "# run" header
+line per run. A shot marked "sheet": true (a character model sheet) tells the anatomy judge that separate head close-ups
+are intended views.
+
+Exit 0 when every shot has output; 3 when some did and some ran out of tries (PARTIAL); 1 when none did, or the usage
+limit stopped the run (all listed in review.tsv)."""
 import argparse, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
@@ -142,6 +148,27 @@ def limit_hit(*texts):
         return None
     m = RESETS.search(t)
     return m.group(0).strip() if m else next((ln.strip() for ln in t.splitlines() if LIMIT.search(ln)), "")[:160]
+
+
+# Codex sometimes drops an --image it was given: its session log shows no attachment, and it answers that the sheet isn't
+# available and asks for it again, exiting 0 with no picture (cel test, 2026-11-28: 6 of 24 calls with style_refs). Such
+# an answer is re-sent without spending a try.
+DROPPED = re.compile(r"(?:re-?)?(?:attach|upload|provide|share|send)\w*\s+(?:\w+\s+){0,3}(?:again|image|sheet|file|picture|reference)"
+                     r"|(?:isn't|is not|wasn't|was not|aren't|are not|not)\s+(?:\w+\s+){0,2}(?:attached|available|included|provided|visible)"
+                     r"|(?:can't|cannot|couldn't|could not|don't|do not|didn't|did not)\s+(?:see|find|access|open|locate)\s+(?:\w+\s+){0,3}"
+                     r"(?:image|attachment|sheet|picture|reference|file)", re.I)
+RESENDS = 2
+
+
+def dropped_image(text):
+    """Codex's answer when it never got the image it was passed, else None."""
+    m = DROPPED.search(text or "")
+    return m.group(0) if m else None
+
+
+def tail(text, n=240):
+    """The last words Codex said, on one line, for a log line that explains a missing image."""
+    return " ".join((text or "").split())[-n:]
 
 
 def edit_image(prompt, images, dest, timeout=None):
@@ -383,6 +410,15 @@ def crop_16x9(src, dst, original_rel):
     crop_to(src, dst, original_rel, 16 / 9)
 
 
+def keep_try(path, out, sid, t, move=False):
+    """A rejected try kept as originals/<id>.try<t>.png for review, not overwritten by the next try (cel test,
+    2026-11-28: try 2 replaced try 1 and the rejected picture was lost)."""
+    if not os.path.exists(path):
+        return
+    dst = os.path.join(out, "originals", f"{sid}.try{t}.png")
+    (shutil.move if move else shutil.copyfile)(path, dst)
+
+
 def edit_base(shot, out, default):
     """The base picture for an edit: an earlier shot's untouched original, a PNG path, or --edit-from."""
     ref = shot.get("edit_from") or default
@@ -529,13 +565,18 @@ def main():
             else:
                 prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw, cast_sentence(cfg, s)), []
             done = False
-            for t in range(1, a.tries + 1):
+            last_why = ""
+            resends = 0
+            t = 0
+            while t < a.tries:
+                t += 1
                 work = tempfile.mkdtemp(prefix="codex-still-")
                 since = time.time() - 1
                 calls += 1; t0 = time.time()
+                r = None
                 try:
                     r = subprocess.run(cmd + extra + [prompt], cwd=work, capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=timeout)
-                    note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"
+                    note = "" if r.returncode == 0 else f"codex exit {r.returncode}: {tail(r.stderr or r.stdout, 200)}"
                     lim = limit_hit(r.stdout, r.stderr) if r.returncode else None
                     if lim is not None:
                         shutil.rmtree(work, True)
@@ -544,7 +585,21 @@ def main():
                     note = f"codex timed out after {timeout} s"
                 png = find_new_png(since, [work, images])
                 if not png:
-                    print(f"{s['id']} try {t}: no image ({note or 'codex returned without one'})"); shutil.rmtree(work, True); continue
+                    said = (r.stdout + "\n" + r.stderr) if r is not None else ""
+                    lim = limit_hit(said) if r is not None else None
+                    if lim is not None:                  # the limit message can come with exit 0 too
+                        shutil.rmtree(work, True)
+                        raise UsageLimit(lim)
+                    drop = dropped_image(said) if any(x.startswith("--image=") for x in extra) else None
+                    shutil.rmtree(work, True)
+                    if drop and resends < RESENDS:
+                        resends += 1; t -= 1             # Codex never got the picture: not the prompt's fault, not a try
+                        print(f"{s['id']} try {t + 1}: Codex didn't get the image (\"{drop}\"); sending again ({resends} of {RESENDS})")
+                        continue
+                    why = note or (f"Codex said: {tail(said)}" if said.strip() else "codex returned without one")
+                    print(f"{s['id']} try {t}: no image ({why})")
+                    last_why = why
+                    continue
                 if s.get("blockout"):         # pass 2, the style pass over the painted blockout (rule 16.3)
                     styled = os.path.join(work, "styled.png")
                     calls += 1
@@ -557,8 +612,10 @@ def main():
                 with Image.open(png) as im:
                     W, H = im.size
                 if not lo <= W / H <= hi:
+                    keep_try(png, a.out, s["id"], t)
                     print(f"{s['id']} try {t}: {W}x{H} is not {aspect} ({lo:g} to {hi:g} wide per high); re-rolling"); shutil.rmtree(work, True); continue
                 if base and (W, H) != (bw, bh) and abs(W / H - bw / bh) > 0.01:
+                    keep_try(png, a.out, s["id"], t)
                     print(f"{s['id']} try {t}: {W}x{H} is not its base's shape ({bw}x{bh}); re-rolling"); shutil.rmtree(work, True); continue
                 orig = os.path.join(a.out, "originals", f"{s['id']}.png")
                 if os.path.exists(orig + ".fit.png"):
@@ -571,7 +628,8 @@ def main():
                 shutil.rmtree(work, True)
                 v = face_verdict(orig, face_cmd) if faceless else "NOFACE"
                 if v == "FACE":
-                    print(f"{s['id']} try {t}: face check found a face; re-rolling"); os.remove(orig); continue
+                    keep_try(orig, a.out, s["id"], t, move=True)
+                    print(f"{s['id']} try {t}: face check found a face; re-rolling"); continue
                 src = orig + ".fit.png" if os.path.exists(orig + ".fit.png") else orig
                 crop_to(src, dst, f"originals/{s['id']}.png", ratio)
                 if base:
@@ -588,14 +646,15 @@ def main():
                 # verdict is logged to judge.tsv and stamped on the still, and one still failing on its last try is kept and
                 # listed for a person
                 if anatomy.needs_check(s):
-                    av, why = anatomy.judge(src, faceless)
+                    av, why = anatomy.judge(src, faceless, sheet=bool(s.get("sheet")))
                     last = t >= a.tries or budget <= 0
                     anatomy.log(a.out, s["id"], t, av if not (av == "FAIL" and last) else "KEPT", why, f"originals/{s['id']}.png")
                     stamp(dst, "motion-studio-anatomy", f"{av}: {why}" if why else av)
                     if av == "FAIL" and not last:
                         budget -= 1
                         print(f"{s['id']} try {t}: anatomy FAIL ({why}); re-rolling ({budget} anatomy re-rolls left this run)")
-                        for x in (orig, orig + ".fit.png", dst):
+                        keep_try(orig, a.out, s["id"], t, move=True)
+                        for x in (orig + ".fit.png", dst):
                             if os.path.exists(x): os.remove(x)
                         continue
                     if av == "FAIL":
@@ -603,10 +662,13 @@ def main():
                                        + ("" if t >= a.tries else "; the run's anatomy re-roll budget was spent")))
                     elif av == "UNCLEAR":
                         review.append((s["id"], f"anatomy judge unclear ({why}): look at the people"))
-                print(f"{s['id']}: {W}x{H} -> 16:9 in {time.time() - t0:.0f} s (try {t})")
+                print(f"{s['id']}: {W}x{H} -> {'9:16' if ratio < 1 else '16:9'} in {time.time() - t0:.0f} s (try {t})")
                 done = True; break
             if not done:
-                failed.append(s["id"]); review.append((s["id"], f"no usable image in {a.tries} tries"))
+                failed.append(s["id"])
+                review.append((s["id"], f"no usable image in {a.tries} tries" + (f" (last: {last_why})" if last_why else "")
+                               + ("; rejected tries kept as originals/" + s["id"] + ".try<n>.png" if any(
+                                   os.path.exists(os.path.join(a.out, "originals", f"{s['id']}.try{k}.png")) for k in range(1, a.tries + 1)) else "")))
     except UsageLimit as e:
         limit = str(e) or "no reset time given"
         left = [x["id"] for x in shots if not os.path.exists(os.path.join(a.out, f"{x['id']}.png")) and x["id"] not in failed]
@@ -625,15 +687,21 @@ def main():
     with open(os.path.join(a.out, "usage.log"), "a") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\tcodex_stills\t{calls} codex calls\t{len(shots)} shots\t{len(failed)} failed\n")
     review = [(i, "lint: " + wtxt) for i, ws in pre for wtxt in ws] + review
-    if review:
-        with open(os.path.join(a.out, "review.tsv"), "a") as f:
-            f.writelines(f"{i}\t{why}\n" for i, why in review)
+    with open(os.path.join(a.out, "review.tsv"), "a") as f:
+        # one header per run (cel test, 2026-11-28: old "no usable image" lines read as current)
+        f.write(f"# run {time.strftime('%Y-%m-%d %H:%M:%S')}\t{len(shots)} shots\t{len(failed)} without an image\t{calls} codex calls\n")
+        f.writelines(f"{i}\t{why}\n" for i, why in review)
     print(f"{calls} codex calls for {len(shots)} shots; {len(failed)} without an image"
           + (f"; see {os.path.join(a.out, 'review.tsv')}" if review else ""))
     if limit is not None:
         raise SystemExit(f"stopped: Codex usage limit hit ({limit}); nothing was retried. Run again after it resets: shots "
                          "with a still are skipped.")    # exit 1, message on stderr
-    sys.exit(1 if failed else 0)
+    # 3: some shots landed and some didn't, so a batch runner can say PARTIAL rather than FAILED (cel test, 2026-11-28:
+    # 15 of 16 landed and longjob marked the batch failed); 1: none landed
+    landed = sum(os.path.exists(os.path.join(a.out, f"{x['id']}.png")) for x in shots)
+    if failed:
+        print(f"PARTIAL: {landed} of {len(shots)} shots have a still" if landed else "FAILED: no shot has a still")
+    sys.exit(0 if not failed else 3 if landed else 1)
 
 
 if __name__ == "__main__":
