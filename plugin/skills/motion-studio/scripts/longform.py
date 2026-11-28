@@ -3834,10 +3834,15 @@ def overlaps(film, segs, step):
     import render
     hits = {}
     with render.Film(film) as f:
+        # the counter's heroes hold big at the centre for about a second: sample each one twice while it holds, so a hero
+        # landing on a callout is seen (the episode thread, 2026-11-28, v31a)
+        heroes = f.page.evaluate("window.STUDIO.heroes || []")
         for s in segs:
             rest = {max(s["t0"] + 0.5, s["t1"] - 0.4)}
             rest |= {c["t"] + 0.7 for c in walk_cues(s.get("data")) if s["t0"] < c["t"] + 0.7 < s["t1"] - 0.3}
             ts = rest | {r + 0.3 for r in rest if r + 0.3 < s["t1"] - 0.05}
+            for h in heroes:
+                ts |= {x for x in (h["t0"] + 0.45, h["t0"] + 0.75) if x < h["fly"] and s["t0"] + 0.05 < x < s["t1"] - 0.05}
             if step:
                 ts |= {s["t0"] + 0.25 + k * step for k in range(int((s["t1"] - s["t0"] - 0.5) / step) + 1)}
             seg = {}

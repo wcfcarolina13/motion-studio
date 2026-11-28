@@ -119,6 +119,9 @@ const counterSpans = (() => {
   const ev = TL.segments.filter(s => "counter" in s).map(s => ({ t: s.counter && s.counter.t != null ? s.counter.t - 0.05 : s.t0, on: s.counter != null }));
   return ev.map((e, i) => ({ t0: e.t, t1: i + 1 < ev.length ? ev[i + 1].t : TL.duration, on: e.on })).filter(x => x.on);
 })();
+// where each placed callout draws on screen over its span, {t0, t1, box: [x, y, w, h]} (the union of its sampled camera
+// positions), so the counter's hero can land clear of them (the episode thread, 2026-11-28: a hero landed on a callout)
+const CALLOUT_BOXES = [];
 const pitch = (size, k = 1.22) => Math.round(size * k);        // line pitch for a size
 const fit = (px, size, k = 0.55) => Math.max(6, Math.floor(px / (size * k)));   // characters per line that fit px at size (SANS ~0.55 em)
 
@@ -1807,6 +1810,9 @@ function panelCallouts(d, s, IW, IH, camAt, card) {
     }
     k.ax = best.ax; k.ay = best.ay;
     placed.push({ k, foot: foot(best.ax, best.ay, zmin) });
+    { const rs = cams.map(cm => { const [sx, sy] = proj(cm, k.ax, k.ay); return [sx - k.w / 2, sy - k.h / 2, sx + k.w / 2, sy + k.h / 2]; });
+      const x0 = Math.min(...rs.map(r => r[0])), y0 = Math.min(...rs.map(r => r[1]));
+      CALLOUT_BOXES.push({ t0: k.c0, t1: k.c1, box: [x0, y0, Math.max(...rs.map(r => r[2])) - x0, Math.max(...rs.map(r => r[3])) - y0] }); }
     (window.STUDIO.callouts = window.STUDIO.callouts || []).push({ seg: s.id, text: k.c.text || String(k.c.value), pos: [+(best.ax / IW).toFixed(3), +(best.ay / IH).toFixed(3)], busy: best.worst, auto: !Array.isArray(k.c.pos), w: k.w, h: k.h });
   });
   // 3. draw. style "ink" (the default since the owner's note on 2026-11-27 that boxed cards looked "plastered-on", not
@@ -2225,8 +2231,8 @@ const TALLY = (() => {
   const VAL = { "font-family": CL ? HF.caslon : FONT, "font-size": READ, "font-weight": 700, "text-anchor": "end", fill: CL ? P.ink : "#1f1d1a" };
   const TIT = { ...AUX, "font-family": CL ? HF.elite : SANS, "font-size": 24, "letter-spacing": 3, fill: CL ? P.ink : C.GREY };
   const num = str => { const m = String(str).match(/^(.*?)(\d[\d,]*(?:\.\d+)?)(.*)$/); if (!m) return null;
-    return { pre: m[1].replace(/[−+-]/g, ""), n: (/[−-]/.test(m[1]) ? -1 : 1) * parseFloat(m[2].replace(/,/g, "")), dec: (m[2].split(".")[1] || "").length, post: m[3] }; };
-  const fmt = (p, n) => (n < 0 ? "−" : "") + p.pre + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: p.dec, maximumFractionDigits: p.dec }) + p.post;
+    return { pre: m[1].replace(/[−+-]/g, ""), plus: /\+/.test(m[1]), n: (/[−-]/.test(m[1]) ? -1 : 1) * parseFloat(m[2].replace(/,/g, "")), dec: (m[2].split(".")[1] || "").length, post: m[3] }; };
+  const fmt = (p, n) => (n < 0 ? "−" : p.plus && n > 0 ? "+" : "") + p.pre + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: p.dec, maximumFractionDigits: p.dec }) + p.post;
   const meas = K.text("", {}, g);
   const width = (str, a) => { Object.entries(a).forEach(([k, v]) => meas.setAttribute(k, v)); meas.textContent = str; return meas.getComputedTextLength(); };
   const LH = Math.round(READ * 1.25), PADX = 30, TOPH = 62, GAP = 48;
@@ -2449,13 +2455,15 @@ const HUD = (() => {
   // is a light grey, and a tag read as light on light (2026-11-26)
   const lum = h => { const n = parseInt(String(h).replace("#", "").slice(0, 6), 16); return ((n >> 16 & 255) * 0.299 + (n >> 8 & 255) * 0.587 + (n & 255) * 0.114) / 255; };
   const INK = /^#[0-9a-f]{6}$/i.test(C.INK) && lum(C.INK) > 0.5 ? "#1f1d1a" : C.INK;
-  const num = str => {          // "−$25,375.50k" -> {sign, pre, n, dec, post}
+  // "−$25,375.50k" -> {pre: "$", plus, n: -25375.5, dec, post: "k"}. The sign never stays in pre: fmt writes it for the
+  // number it is drawing, so a count from −$25,000 up to "+$30,410" reads −$12,000 ... +$4,000, never "−+$12,000" (v39a)
+  const num = str => {
     const m = String(str).match(/^(.*?)(\d[\d,]*(?:\.\d+)?)(.*)$/);
     if (!m) return null;
     const neg = /[−-]/.test(m[1]);
-    return { pre: m[1].replace(/[−-]/g, ""), n: (neg ? -1 : 1) * parseFloat(m[2].replace(/,/g, "")), dec: (m[2].split(".")[1] || "").length, post: m[3] };
+    return { pre: m[1].replace(/[−+-]/g, ""), plus: /\+/.test(m[1]), n: (neg ? -1 : 1) * parseFloat(m[2].replace(/,/g, "")), dec: (m[2].split(".")[1] || "").length, post: m[3] };
   };
-  const fmt = (p, n) => (n < 0 ? "−" : "") + p.pre + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: p.dec, maximumFractionDigits: p.dec }) + p.post;
+  const fmt = (p, n) => (n < 0 ? "−" : p.plus && n > 0 ? "+" : "") + p.pre + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: p.dec, maximumFractionDigits: p.dec }) + p.post;
   const right = V(W - 56, SAFE.x1 - 20), top = TAG_TOP;
 
   // counter: states between events
@@ -2502,7 +2510,7 @@ const HUD = (() => {
     const d = +(c.p.n - c.prev.p.n).toFixed(c.p.dec);
     if (!d) return;
     const t0 = c.hero ? c.hero.land : c.t;        // after a hero, the chip stays under the card from the landing
-    c.d = { n: d, text: (d > 0 ? "+" : "") + fmt(c.p, d), t0, t1: Math.min(t0 + DIN + DHOLD + DOUT, c.t1) };
+    c.d = { n: d, text: fmt({ ...c.p, plus: true }, d), t0, t1: Math.min(t0 + DIN + DHOLD + DOUT, c.t1) };
   });
   const cG = K.el("g", {}, hudG), cShadow = K.el(COLLAGE ? "path" : "rect", { fill: "#000", opacity: COLLAGE ? 0.22 : 0.18, ...(COLLAGE ? { filter: `url(#${houseShadow()})` } : {}) }, cG),
         cCard = COLLAGE ? K.el("path", { fill: PAPER }, cG) : K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 2 }, cG);
@@ -2540,6 +2548,31 @@ const HUD = (() => {
   const COUNT = 0.6;
   // the hero's own card, label, number and chip: drawn at the centre, then moved and scaled onto the corner card
   const HS = Math.round(V(150, 120) * TS), hG = K.el("g", {}, hudG), hShadow = K.el(COLLAGE ? "path" : "rect", { fill: "#000", opacity: 0.18 }, hG);
+  // where the hero holds: centred a little above the middle, unless a callout is up there while it holds; then the
+  // nearest spot (up or down first, then sideways) that clears every such callout by 24 px, inside the frame and above
+  // the captions. With no clear spot it keeps the least-covered one and warns, and check's overlap test reports it.
+  cs.forEach(c => { if (!c.hero) return;
+    const lh = c.label ? 50 : 0, h = 30 + lh + HS * 1.05 + 30, w = c.hero.w, tall = h + (c.d ? 18 + READ * 1.25 : 0);
+    const ups = CALLOUT_BOXES.filter(b => b.t0 < c.hero.land && b.t1 > c.hero.t0).map(b => b.box);
+    const y00 = V(H * 0.42, SMID) - h / 2, PAD = 24;
+    const lo = VERT ? SAFE.y0 + 10 : 40, hi = (TL.captions ? (VERT ? SAFE.y1 - 20 : H - 230) : VERT ? SAFE.y1 - 10 : H - 40) - tall;
+    const xlo = VERT ? SAFE.x0 + 10 : 40, xhi = (VERT ? SAFE.x1 - 10 : W - 40) - w;
+    const cover = (x0, y0) => ups.reduce((a, b) => a + Math.max(0, Math.min(x0 + w + PAD, b[0] + b[2]) - Math.max(x0 - PAD, b[0]))
+                                                * Math.max(0, Math.min(y0 + tall + PAD, b[1] + b[3]) - Math.max(y0 - PAD, b[1])), 0);
+    const opts = [];
+    for (let dy = -H; dy <= H; dy += 20) for (const dx of [0, -0.22 * W, 0.22 * W, -0.32 * W, 0.32 * W]) {
+      const x0 = W / 2 - w / 2 + dx, y0 = y00 + dy;
+      if (y0 < lo || y0 > hi || ((x0 < xlo || x0 > xhi) && dx)) continue;
+      opts.push([Math.abs(dy) + 1.5 * Math.abs(dx), x0, y0]);
+    }
+    opts.sort((a, b) => a[0] - b[0]);
+    let best = null;
+    for (const [, x0, y0] of opts) { const cv = cover(x0, y0); if (!best || cv < best[2]) best = [x0, y0, cv]; if (!cv) break; }
+    best = best || [W / 2 - w / 2, y00, 0];
+    c.hero.x0 = best[0]; c.hero.y0 = best[1];
+    if (best[2]) (window.STUDIO.warnings = window.STUDIO.warnings || []).push(`counter ${c.value}: the hero at ${c.t.toFixed(1)} s has no spot clear of the callouts up then; it covers part of one`);
+  });
+  window.STUDIO.heroes = cs.filter(c => c.hero).map(c => ({ value: c.value, t0: c.hero.t0, fly: c.hero.fly, land: c.hero.land }));
   const hCard = COLLAGE ? K.el("path", { fill: PAPER }, hG) : K.el("rect", { fill: PAPER, stroke: INK, "stroke-width": 3 }, hG);
   if (COLLAGE) { hShadow.setAttribute("filter", `url(#${houseShadow()})`); hShadow.setAttribute("opacity", 0.24); }
   const hTape = COLLAGE ? K.el("path", { fill: HO.PAL.tape, opacity: 0.8 }, hG) : null;
@@ -2627,7 +2660,7 @@ const HUD = (() => {
         hVal.textContent = fmt(c.p, n); K.set(hVal, { fill: n < 0 ? NEG : n > 0 ? POS : INK });
         hLab.textContent = c.label.toUpperCase();
         const dd = c.d, dw = hh_.dw, w = hh_.w, lh = c.label ? 50 : 0, h = 30 + lh + HS * 1.05 + 30;
-        const cx = W / 2, y0 = V(H * 0.42, SMID) - h / 2, x0 = cx - w / 2;
+        const x0 = hh_.x0, y0 = hh_.y0, cx = x0 + w / 2;
         if (COLLAGE) {
           paperOf(hShadow, x0 + 6, y0 + 10, w, h, 51); paperOf(hCard, x0, y0, w, h, 50);
           const tk = Math.round(x0) + "," + Math.round(y0);
