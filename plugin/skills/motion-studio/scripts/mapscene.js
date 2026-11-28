@@ -303,6 +303,7 @@
         const name = d.icon || "trees", size = d.size || 120;
         if (name === "trees" || name === "tree" || name === "forest") {
           const n = Math.max(1, d.n || (name === "tree" ? 1 : 3));
+          q.box = d.paper !== false ? [(n - 1) * size * 0.21 + size * 0.42, size * 0.66, -size * 0.02] : [((n - 1) * 0.42 + 0.56) * size / 2, size * 0.5, 0];
           // on a scrap of paper, so the ink reads over a region's cross-hatch ("paper": false leaves it bare)
           if (d.paper !== false) {
             const rx = (n - 1) * size * 0.21 + size * 0.42, ry = size * 0.66;
@@ -374,7 +375,7 @@
       pieces.concat(cards).forEach(q => {
         if (q.kind === "tag") {
           const fullTxt = q.txt.textContent, bw = q.txt.getComputedTextLength() + q.size * 0.9, bh = q.size * 1.5;
-          K.set(q.rect, { x: -bw / 2, y: -bh / 2, width: bw, height: bh }); void fullTxt;
+          K.set(q.rect, { x: -bw / 2, y: -bh / 2, width: bw, height: bh }); void fullTxt; q.box = [bw / 2, bh / 2, 0];
         }
       });
       measured = true;
@@ -382,6 +383,23 @@
     function typed(q, t, perFrame) {        // letters on at perFrame a frame, line after line
       let n = Math.max(0, Math.floor((frameOf(t) - frameOf(q.t0) - 4) * perFrame));
       q.lines.forEach((ln, i) => { q.tx[i].textContent = ln.slice(0, Math.max(0, n)); n -= ln.length; });
+    }
+    // an icon with no "dx"/"dy" of its own steps down (or up) clear of a tag on screen with it, judged once, on the camera
+    // at the later of the two landings (Survive Year 1 v27, 2026-11-28: the trees' paper covered the forest's own tag).
+    // A pure function of the timeline, so every render chunk agrees.
+    function nudge(q) {
+      if (q.kind !== "icon" || q.d.dx != null || q.d.dy != null || !measured) return 0;
+      if (q.nudgeY != null) return q.nudgeY;
+      const at = (p, c) => { const [mx, my] = toMap(...ll(p.d)); return [(mx - c.mx) * c.z + W / 2 + (p.d.dx || 0), (my - c.my) * c.z + H / 2 + (p.d.dy || 0)]; };
+      let dy = 0;
+      pieces.filter(p => p.kind === "tag" && p.box && !p.fixed && !p.d.along && p.t0 < q.t1 && q.t0 < p.t1)
+        .sort((a, b) => a.t0 - b.t0).forEach(p => {
+          const T = Math.max(q.t0, p.t0), c = camAt(T, keys.length, T), [px, py] = at(p, c), [qx, qy0] = at(q, c), qy = qy0 + dy + q.box[2];
+          const gap = 14, [pw, ph] = p.box, [qw, qh] = q.box;
+          if (Math.abs(qx - px) >= pw + qw + gap || Math.abs(qy - py) >= ph + qh + gap) return;
+          dy += qy >= py ? py + ph + qh + gap - qy : py - ph - qh - gap - qy;
+        });
+      return (q.nudgeY = dy);
     }
     function drawPiece(q, t) {
       const on = t >= q.t0 && t < q.t1;
@@ -392,7 +410,7 @@
       let x, y, rot = q.rot + br;
       if (q.fixed) [x, y] = q.fixed;
       else if (q.d.along) { const a = along(q, t); if (a) { x = a.x; y = a.y; rot += a.rot; } }
-      if (x == null) { const [sx, sy] = scr(...ll(q.d)); x = sx + (q.d.dx || 0); y = sy + (q.d.dy || 0); }
+      if (x == null) { const [sx, sy] = scr(...ll(q.d)); x = sx + (q.d.dx || 0); y = sy + (q.d.dy || 0) + nudge(q); }
       const s = q.kind === "note" || q.kind === "ransom" ? 1 : slap(Math.floor(f / 2) * 2);
       // a pinned piece sits in its camera group: screen position back to map space, then its zoom undone
       const pre = q.fixed ? "" : `translate(${((x - W / 2) / cam.z + cam.mx).toFixed(3)} ${((y - H / 2) / cam.z + cam.my).toFixed(3)}) scale(${(1 / cam.z).toFixed(5)}) translate(${(-x).toFixed(3)} ${(-y).toFixed(3)}) `;

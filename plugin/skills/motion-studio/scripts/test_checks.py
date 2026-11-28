@@ -1771,6 +1771,7 @@ class BlankProps(unittest.TestCase):
                 f.seek(0.5)
                 self.assertEqual([(t, a) for t, a, _, _ in f.page.evaluate(vis)], [("LOSS", 1)])   # blurred copy only; GAIN (pre false) blank
                 self.assertEqual(f.page.evaluate(longform.TEXT_STATE), [])                          # checks don't read the blur
+                self.assertEqual(f.page.evaluate(longform.VISIBLE_TEXT), [])     # nor does the number check (it read them as early)
                 f.seek(2.5)
                 got = f.page.evaluate(vis)
                 self.assertEqual(sorted((t, a, c) for t, a, c, _ in got), [("GAIN", 0, "#222222"), ("LOSS", 0, "#C8402F")])
