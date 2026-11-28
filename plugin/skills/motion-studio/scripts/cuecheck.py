@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 FPS = 30
-W, H = 192, 108
+W, H = 384, 216              # a chart's start dot (about 8 px at 960) is a clear 12x12 block here; at 192x108 it was not
 EARLY, LATE = 0.25, 0.20     # a clear change this far before or after its word fails (the engine lands callouts about
                              # 2 frames early on purpose, "anticipate"; 0.2 s is 6 frames, past any rounding)
 CLEAR = 3.0                  # the change must stand this far (luma levels, 12x12 block) above the scene's own motion
@@ -29,15 +29,29 @@ OFFSET_MS = 45               # soundtrack against the mix: more than this is mor
 
 
 def signal(video, fps=FPS):
-    """Per frame, the largest mean luma change in any 12x12 block (so a small callout counts as well as a cut)."""
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vf", f"fps={fps},scale={W}:{H},format=gray",
-                          "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
-    fr = np.frombuffer(raw, np.uint8).reshape(-1, H, W).astype(np.float32)
-    if len(fr) < 2:
-        return np.zeros(len(fr))
-    diff = np.abs(np.diff(fr, axis=0))
-    blocks = diff[:, :H // 12 * 12, :W // 12 * 12].reshape(len(diff), H // 12, 12, W // 12, 12).mean(axis=(2, 4))
-    return np.r_[0.0, blocks.max(axis=(1, 2))]        # index k: the change that frame k shows
+    """Per frame, the mean luma change in each 12x12 block (frames x rows x columns), so a small callout counts as well as
+    a cut, and each block's own motion can be taken away on its own. Read as a stream: a 12-minute film is 7 GB of
+    frames at this size, and only the blocks are kept (50 MB)."""
+    by, bx, size = H // 12, W // 12, W * H
+    out, prev = [np.zeros((1, by, bx), np.float32)], None
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-vf", f"fps={fps},scale={W}:{H},format=gray",
+                          "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    while True:
+        buf = p.stdout.read(size * 300)
+        if len(buf) < size:
+            break
+        fr = np.frombuffer(buf[:len(buf) // size * size], np.uint8).reshape(-1, H, W).astype(np.float32)
+        if prev is not None:
+            fr = np.concatenate([prev[None], fr])
+        diff = np.abs(np.diff(fr, axis=0))
+        if len(diff):
+            out.append(diff[:, :by * 12, :bx * 12].reshape(len(diff), by, 12, bx, 12).mean(axis=(2, 4)))
+        prev = fr[-1]
+    if p.wait():
+        raise subprocess.CalledProcessError(p.returncode, "ffmpeg")
+    if prev is None:
+        return np.zeros((0, by, bx), np.float32)
+    return np.concatenate(out)                       # index k: the change frame k shows
 
 
 def cues(tl):
@@ -69,13 +83,18 @@ def landings(sig, cue_list, fps=FPS):
         if b - a < 3:
             rows.append({**row, "state": "unseen"}); continue
         before = sig[max(0, a - 15):a]
-        base = float(np.median(before)) if len(before) else 0.0       # the scene's own motion just before the cue
-        w = sig[a:b] - base
+        # the scene's own motion just before the cue, block by block (a sparkle in one corner doesn't hide a dot in
+        # another), at its 90th percentile, not its median: a map camera, a boil or a sparkle on twos changes every
+        # other frame, and the median of that is near 0
+        base = np.percentile(before, 90, axis=0) if len(before) else 0.0
+        w = (sig[a:b] - base).max(axis=(1, 2))
         pk = float(w.max())
         row["strength"] = round(pk, 1)
         if pk < CLEAR:
             rows.append({**row, "state": "unseen"}); continue
-        k = a + int(np.argmax(w > 0.4 * pk))                          # onset: the first frame above 40% of the peak
+        # onset: the first clear change, not the first above a share of the peak. A small first mark (a chart's start
+        # dot, the first letters of a write-on) then a bigger change (the line drawing) was timed on the bigger one
+        k = a + int(np.argmax(w >= CLEAR))
         ms = (k / fps - t) * 1000
         state = "early" if ms < -EARLY * 1000 else "late" if ms > LATE * 1000 else "ok"
         rows.append({**row, "ms": round(ms), "state": state})
