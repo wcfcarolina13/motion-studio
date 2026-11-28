@@ -298,6 +298,66 @@ class StillsRoute(unittest.TestCase):
             self.assertEqual([x.split(":")[0] for x in longform.draft_stills(Path(d), segs)], ["s1"])
 
 
+class LtxLane(unittest.TestCase):
+    """LTX-2.5 beside Wan 2.2 on Colab (owner's pick, 2026-11-28): the same jobs, a licence check before any GPU."""
+    CLI = Path(__file__).resolve().parent.parent / "assets" / "colab" / "cli"
+
+    def test_wan_job_becomes_the_same_shot(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("remote_ltx_render", self.CLI / "remote_ltx_render.py")
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)       # no torch needed: main() isn't run
+        a = m.ltx_job({"id": "a", "image": "a.png", "motion": "rain falls", "lightning": True, "w": 832, "h": 480, "seed": 7})
+        self.assertEqual((a["w"], a["h"], a["frames"], a["seed"]), (832, 480, 73, 7))   # 49 frames at 16 fps = 3.06 s -> 73 at 24
+        self.assertEqual(a["frames"] % 8, 1); self.assertTrue(a["prompt"].endswith("rain falls"))
+        b = m.ltx_job({"id": "b", "image": "b.png", "motion": "x", "ltx_steps": 12})
+        self.assertEqual((b["w"], b["h"], b["frames"], b["steps"]), (1280, 704, 121, 12))
+        self.assertNotIn("guidance", b)
+
+    def fake_bin(self, d, curl_code):
+        b = Path(d, "bin"); b.mkdir()
+        (b / "curl").write_text(f"#!/bin/sh\nprintf {curl_code}\n"); (b / "curl").chmod(0o755)
+        (b / "colab").write_text(f"#!/bin/sh\necho called >> {d}/colab-called\nexit 1\n"); (b / "colab").chmod(0o755)
+        return b
+
+    def batch(self, d):
+        i = Path(d, "in"); i.mkdir()
+        (i / "jobs.json").write_text(json.dumps([{"id": "s1", "image": "s1.png", "motion": "an empty road, rain falls", "seed": s}
+                                                 for s in (1,)]))
+        return i
+
+    def test_refuses_before_any_gpu_without_access(self):
+        with tempfile.TemporaryDirectory() as d:
+            i = self.batch(d); b = self.fake_bin(d, 403)
+            env = dict(os.environ, PATH=f"{b}:{os.environ['PATH']}", WAN_LINT="off", HF_TOKEN_FILE=str(Path(d, "none")))
+            r = subprocess.run(["bash", str(self.CLI / "run_ab.sh"), str(i), str(Path(d, "out"))], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 2); self.assertIn("no Hugging Face token", r.stdout)
+            Path(d, "tok").write_text("hf_x")
+            env["HF_TOKEN_FILE"] = str(Path(d, "tok"))
+            r = subprocess.run(["bash", str(self.CLI / "run_ab.sh"), str(i), str(Path(d, "out"))], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 2); self.assertIn("accept the terms at https://huggingface.co/Lightricks/LTX-2.5-Diffusers", r.stdout)
+            self.assertFalse(Path(d, "colab-called").exists())
+
+    def test_two_lanes_and_side_by_side(self):
+        with tempfile.TemporaryDirectory() as d:
+            i = self.batch(d); b = self.fake_bin(d, 200); Path(d, "tok").write_text("hf_x")
+            runner = Path(d, "runner.sh")          # stands in for run_colab.sh: records its lane, writes a clip
+            runner.write_text(f"""#!/bin/bash
+echo "$COLAB_GPUS ${{SETUP:-wan}} ${{RENDER:-wan}}" >> {d}/lanes
+fps=16; case "${{RENDER:-}}" in *ltx*) fps=24;; esac
+ffmpeg -v error -y -f lavfi -i color=c=gray:s=320x180:r=$fps:d=1 -pix_fmt yuv420p "$2/s1.mp4"
+""")
+            env = dict(os.environ, PATH=f"{b}:{os.environ['PATH']}", WAN_LINT="off", HF_TOKEN_FILE=str(Path(d, "tok")), RUNNER=str(runner))
+            env.pop("SETUP", None); env.pop("RENDER", None)
+            r = subprocess.run(["bash", str(self.CLI / "run_ab.sh"), str(i), str(Path(d, "out"))], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(sorted(Path(d, "lanes").read_text().split("\n")[:2]),
+                             ["A100 remote_ltx_setup.py remote_ltx_render.py", "L4 wan wan"])
+            ab = Path(d, "out", "ab", "s1.mp4"); self.assertTrue(ab.exists(), r.stdout)
+            w = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=width,height", "-of", "csv=p=0", str(ab)],
+                               capture_output=True, text=True).stdout.strip()
+            self.assertEqual(w, "1708,480")      # two 16:9 clips at 480 px high (854 each), side by side
+
+
 class PaceProfile(unittest.TestCase):
     def test_numbers(self):
         import longform
