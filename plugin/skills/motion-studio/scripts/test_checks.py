@@ -1774,6 +1774,19 @@ class LocalImports(unittest.TestCase):
         self.assertEqual(self.unbound("def f(a):\n    if a:\n        import json\n        json.dumps(1)\n    return json.loads('1')\n"),
                          [("f", "json", 5)])
 
+
+class PopDiag(unittest.TestCase):
+    def test_reads_exact_frames_and_scores_a_pop(self):
+        import popdiag
+        with tempfile.TemporaryDirectory() as d:
+            v = Path(d, "v.mp4")       # grey, with frame 5 alone white: a one-frame pop
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30:d=0.4",
+                            "-vf", "drawbox=x=0:y=0:w=320:h=180:color=white:t=fill:enable='eq(n,5)'", "-pix_fmt", "yuv420p", str(v)], check=True)
+            fr = popdiag.video_frames(v, [4, 5, 6, 8], 160, 90)
+            self.assertEqual(sorted(fr), [4, 5, 6, 8])
+            a, b, c = popdiag.pop_row(fr, 5)
+            self.assertGreater(min(a, b), 50); self.assertLess(c, 1)
+
 class VideoFrames(unittest.TestCase):
     """Frames for the encoder come as JPEG q100 (6x faster than Chromium's PNG); stills and checks stay PNG."""
 
