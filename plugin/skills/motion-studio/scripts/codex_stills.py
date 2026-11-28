@@ -7,9 +7,11 @@ open-model Colab route is the fallback when the allowance runs short. It won the
 skies and text.
 
 shots.json is the stills route's format: {"style", "faceless"?, "sizes"?, "cast"?, "props"?, "shots": [{"id", "prompt",
-"style"?, "faceless"?, "char_in_frame"?, "props"?}]}. File-level "cast" and "props" are {"name": "what it looks like"}
+"style"?, "faceless"?, "char_in_frame"?, "props"?, "write_on"?}]}. File-level "cast" and "props" are {"name": "what it looks like"}
 (the lead, the unit model, the truck) and go into every prompt, edits included, so each picture keeps them the same
-and adds none that aren't there. A shot's own "props" stays a list of size-sheet names. Settings, negative prompts and seeds don't apply here; "model" is ignored.
+and adds none that aren't there. A shot's own "props" stays a list of size-sheet names. A shot's "write_on" names the
+signs, tags, papers or screens the engine will letter (["the price tag"]): the prompt asks for each with a clean, empty
+writing area, and the panel's "screen" writes the words on at their cue (references/styles/cel.md, "Blank props"). Settings, negative prompts and seeds don't apply here; "model" is ignored.
 
 Scale (picture-truth.md, rule 1): "sizes" is the film's size sheet (script.json's, same format), or pass
 --sizes script.json to read it from there. A shot naming two or more sized things in "char_in_frame" and "props" gets
@@ -179,7 +181,18 @@ def aspect_of(shot, cfg):
     return shot.get("aspect") or cfg.get("aspect") or "landscape"
 
 
-def cast_sentence(cfg):
+def write_on_sentence(shot):
+    """A shot's "write_on" (["the price tag", "the receipt"]) as one sentence. It says what each thing has (rule 14:
+    "blank doors" lost their handles), so the model draws a plain writing area the engine can letter, not scribbles."""
+    names = [str(n).strip() for n in (shot or {}).get("write_on") or [] if str(n).strip()]
+    if not names:
+        return ""
+    both = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return (f"{both[0].upper() + both[1:]} {'has' if len(names) == 1 else 'each have'} a clean, empty writing area in "
+            "plain paper or screen colour, turned enough toward the camera to read, with room for a short number or a few words to be added later.")
+
+
+def cast_sentence(cfg, shot=None):
     """The job's "cast" and "props" (file level, {"name": "description"}) as one sentence for every prompt, so an edit
     keeps the lead and the props looking the same (Survive Year 1, 2026-11-28: 31 gap edits went out without them, and 6
     came back with a porcelain bowl, strangers in place of the lead, a blue truck or a wrong count)."""
@@ -188,14 +201,15 @@ def cast_sentence(cfg):
         return [(n, str(d).strip().rstrip(".")) for n, d in v.items() if str(d).strip()] if isinstance(v, dict) else []
     cast, props = items("cast"), items("props")
     if not cast and not props:
-        return ""
+        return write_on_sentence(shot)
     parts = []
     if cast:
         parts.append("People: " + "; ".join(f"{n}: {d}" for n, d in cast) + ".")
     if props:
         parts.append("Things: " + "; ".join(f"{n}: {d}" for n, d in props) + ".")
     return ("Whoever and whatever of these is in the picture looks exactly like this, the same in every picture of this "
-            "film. Do not add any that aren't in it, and do not replace them with other people or things. " + " ".join(parts))
+            "film. Do not add any that aren't in it, and do not replace them with other people or things. " + " ".join(parts)
+            + (" " + write_on_sentence(shot) if write_on_sentence(shot) else ""))
 
 
 def ask(shot, style, faceless, scale="", w=1536, h=1024, cast=""):
@@ -444,6 +458,8 @@ def main():
         for s in shots if any(k not in sizes for k in s.get("props") or [])]
     bad += [f'"{k}" at the file level is {{"name": "what they look like"}}, not {type(cfg[k]).__name__}'
             for k in ("cast", "props") if k in cfg and not isinstance(cfg[k], dict)]
+    bad += [f'{s["id"]}: "write_on" is a list of the things the engine will letter, e.g. ["the price tag"]'
+            for s in shots if "write_on" in s and not (isinstance(s["write_on"], list) and all(isinstance(x, str) for x in s["write_on"]))]
     if bad and not a.check:
         raise SystemExit("size sheet problems, nothing run:\n  " + "\n  ".join(bad))
     if not a.check:
@@ -501,17 +517,17 @@ def main():
                 aw, (lo, hi), ratio = ASPECTS[aspect]
                 # --image=<path> as one argument: codex's -i takes any number of files, so a prompt after "-i <path>" was
                 # read as a second image and codex exited with "No prompt provided via stdin" (22 of 22 edits, 2026-11-25)
-                prompt, extra = ask_edit(s, faceless, bw, bh, cast_sentence(cfg)), [f"--image={os.path.abspath(base)}"]
+                prompt, extra = ask_edit(s, faceless, bw, bh, cast_sentence(cfg, s)), [f"--image={os.path.abspath(base)}"]
             elif s.get("photo"):
                 refs = refs_of(s, cfg)
-                prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw, cast_sentence(cfg))
+                prompt = ask_photo(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw, cast_sentence(cfg, s))
                 extra = [f"--image={os.path.abspath(p)}" for p in [s["photo"]] + refs]
             elif s.get("blockout"):
                 refs = refs_of(s, cfg)
-                prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw, cast_sentence(cfg))
+                prompt = ask_blockout(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), refs, *aw, cast_sentence(cfg, s))
                 extra = [f"--image={os.path.abspath(p)}" for p in [s["blockout"]] + refs]
             else:
-                prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw, cast_sentence(cfg)), []
+                prompt, extra = ask(s, cfg.get("style", ""), faceless, scalecheck.scale_sentence(s, sizes), *aw, cast_sentence(cfg, s)), []
             done = False
             for t in range(1, a.tries + 1):
                 work = tempfile.mkdtemp(prefix="codex-still-")

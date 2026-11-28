@@ -1527,6 +1527,66 @@ class CounterHero(unittest.TestCase):
             self.assertEqual(longform.overlaps(film, segs, 0), {})   # check samples the hero's hold, and it is clear
 
 
+class BlankProps(unittest.TestCase):
+    """Blank props (references/styles/cel.md): the still asks for an empty writing area, and the panel letters it with one
+    or more screens, cued like any other reveal."""
+
+    def test_write_on_prompt(self):
+        import codex_stills
+        one = codex_stills.cast_sentence({}, {"write_on": ["the price tag"]})
+        self.assertIn("The price tag has a clean, empty writing area", one)
+        self.assertNotIn("blank", one.lower())                     # rule 14: say what it has
+        two = codex_stills.cast_sentence({"cast": {"Owner": "a man in an ochre cap"}}, {"write_on": ["the tag", "the receipt"]})
+        self.assertIn("Owner: a man in an ochre cap", two); self.assertIn("The tag and the receipt each have", two)
+        self.assertEqual(codex_stills.cast_sentence({}, {}), "")
+
+    def test_screen_lines_are_reveals(self):
+        import pace
+        seg = {"id": "p", "type": "panel", "data": {"screen": [{"quad": [[0, 0], [1, 0], [1, 1], [0, 1]], "lines": ["RENT", {"text": "$950/mo", "at": "nine"}]},
+                                                             {"quad": [[0, 0], [1, 0], [1, 1], [0, 1]], "lines": [{"text": "$1,200"}]}]}}
+        paths = [p for p, _, _ in pace.sites(seg)]
+        self.assertEqual(paths, [("screen", 0, "lines", 0), ("screen", 0, "lines", 1), ("screen", 1, "lines", 0)])
+        self.assertEqual(pace.label(paths[2]), "screen[1].lines[0]")
+        self.assertTrue(pace.set_at(seg["data"], list(paths[0]), "rent"))      # a plain string line becomes {text, at}
+        self.assertEqual(seg["data"]["screen"][0]["lines"][0], {"text": "RENT", "at": "rent"})
+        self.assertFalse(pace.set_at(seg["data"], paths[1], "x"))              # already cued
+        one = {"id": "q", "data": {"screen": {"quad": [], "lines": ["A"]}}}
+        self.assertEqual([p for p, _, _ in pace.sites(one)], [("screen", "lines", 0)])
+
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_two_screens_in_a_house_face(self):
+        import io, json, longform, mapart, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    mapart.cmd_fonts(film)
+            except Exception as e:
+                self.skipTest(f"fonts not reachable: {e}")
+            Image.new("RGB", (1920, 1080), (226, 214, 190)).save(film / "panels" / "yard.png")
+            q1, q2 = [[0.1, 0.1], [0.4, 0.12], [0.4, 0.3], [0.1, 0.28]], [[0.6, 0.5], [0.9, 0.5], [0.9, 0.7], [0.6, 0.7]]
+            segs = [{"id": "p", "type": "panel", "t0": 0, "t1": 4,
+                     "data": {"image": "panels/yard.png", "screen": [{"quad": q1, "bg": False, "ink": "#2a1710", "font": "marker", "lines": [{"text": "$1,200", "t": 0.5}]},
+                                                                     {"quad": q2, "bg": False, "font": "elite", "lines": [{"text": "RENT", "t": 1.0}]}]}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 4, "segments": segs}) + ";\n")
+            with render.Film(film) as f:
+                f.seek(0.3)
+                self.assertEqual(f.page.evaluate("[...document.querySelectorAll('[data-screen] text')].filter(e => getComputedStyle(e).display !== 'none').length"), 0)
+                f.seek(2.0)
+                got = f.page.evaluate("""[...document.querySelectorAll('[data-screen] text')].filter(e => getComputedStyle(e).display !== 'none')
+                                          .map(e => [e.textContent, e.getAttribute('font-family')])""")
+                self.assertEqual(sorted(t for t, _ in got), ["$1,200", "RENT"])
+                self.assertIn("MS Marker", dict(got)["$1,200"]); self.assertIn("MS Elite", dict(got)["RENT"])
+                self.assertTrue(f.page.evaluate("document.fonts.check('40px \\'MS Marker\\'')"))
+                self.assertEqual(f.page.evaluate("document.querySelectorAll('[data-screen] polygon').length"), 0)   # bg false: the still shows
+                self.assertFalse(f.page.evaluate("window.STUDIO.warnings || []"))
+                self.assertFalse(f.errors)
+
+
 class CollageStyle(unittest.TestCase):
     """"style": "collage": tags slap on their word on twos, ink and paint draw on stills, the HUD, source and chart take the
     map's paper and fonts, and every frame is a pure function of t (owner, 2026-11-27: "utilize them over the stills too")."""

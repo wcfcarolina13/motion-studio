@@ -165,8 +165,10 @@ def shown(seg):
             bits += [str(v.get("value", "")), str(v.get("text", "")), str(v.get("label", ""))]
     cc = d.get("caption_card")
     bits.append(cc.get("text", "") if isinstance(cc, dict) else str(cc or ""))
-    for l in ((d.get("screen") or {}).get("lines") or []):
-        bits.append(l.get("text", "") if isinstance(l, dict) else str(l))
+    scr = d.get("screen")
+    for one in (scr if isinstance(scr, list) else [scr]):
+        for l in ((one if isinstance(one, dict) else {}).get("lines") or []):
+            bits.append(l.get("text", "") if isinstance(l, dict) else str(l))
     for c in d.get("callouts") or []:
         bits += [str(c.get("text", "")), str(c.get("value", ""))]
     for it in ((seg.get("tally") or {}).get("items") or []):      # the napkin tally's lines
