@@ -2777,6 +2777,20 @@ class BeatLandings(unittest.TestCase):
             self.assertEqual(probs, [], lines)
             self.assertIn("2 measured", lines[0])
 
+    def test_change_on_the_next_cue_belongs_to_it(self):
+        # a cut at 1.0 into the same picture, whose first mark lands on its first word at 1.4: the cut isn't late
+        import cuecheck
+        with tempfile.TemporaryDirectory() as d:
+            f = self.film(d, [1.4], [1.4])
+            tl = json.loads((f / "timeline.js").read_text().split("=", 1)[1].rstrip(";"))
+            tl["segments"] = [{"id": "a", "type": "panel", "t0": 0, "t1": 1.0}, {"id": "b", "type": "panel", "t0": 1.0, "t1": 4}]
+            (f / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";")
+            lines, probs = cuecheck.run(f)
+            self.assertEqual(probs, [], lines); self.assertIn("1 measured", lines[0])
+        with tempfile.TemporaryDirectory() as d:                    # with no later cue, a late change is still late
+            lines, probs = cuecheck.run(self.film(d, [1.4], [1.0]))
+            self.assertEqual(len(probs), 1, probs)
+
 
 class StillReviewRules(unittest.TestCase):
     """The owner's review of the first 85 ChatGPT stills (picture-truth.md, rule 12), as lint and prompt defaults."""

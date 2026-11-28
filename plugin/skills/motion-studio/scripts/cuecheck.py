@@ -74,7 +74,8 @@ def landings(sig, cue_list, fps=FPS):
     """[{t, label, ms, strength, state}] with state "ok", "early", "late", "unseen" (nothing clear changes near the word)
     or "crowded" (too close after another cue to tell apart)."""
     rows, last = [], None
-    for t, lab in cue_list:
+    times = [t for t, _ in cue_list]
+    for i, (t, lab) in enumerate(cue_list):
         row = {"t": round(t, 3), "label": lab, "ms": None, "strength": 0.0}
         if last is not None and t - last < CROWD:
             rows.append({**row, "state": "crowded"}); last = t; continue
@@ -95,6 +96,11 @@ def landings(sig, cue_list, fps=FPS):
         # onset: the first clear change, not the first above a share of the peak. A small first mark (a chart's start
         # dot, the first letters of a write-on) then a bigger change (the line drawing) was timed on the bigger one
         k = a + int(np.argmax(w >= CLEAR))
+        nxt = times[i + 1] if i + 1 < len(times) else None
+        if nxt is not None and k / fps >= nxt - 1 / fps:
+            # the first change comes on the next cue's word, so it is that cue's landing, not this one's: a cut into a
+            # scene that holds the same picture until its first word (Survive Year 1 v38c, "The strong paths...")
+            rows.append({**row, "state": "unseen"}); continue
         ms = (k / fps - t) * 1000
         state = "early" if ms < -EARLY * 1000 else "late" if ms > LATE * 1000 else "ok"
         rows.append({**row, "ms": round(ms), "state": state})
