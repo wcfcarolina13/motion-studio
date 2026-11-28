@@ -1494,6 +1494,38 @@ class CounterHero(unittest.TestCase):
         (x, y, w), = out[4.5]
         self.assertTrue(x > 1500 and y < 200, out[4.5])  # "hero": false keeps it in the corner
 
+    @unittest.skipUnless(os.environ.get("MS_CHROMIUM"), "needs a browser (MS_CHROMIUM)")
+    def test_hero_clears_callouts_and_signs(self):
+        """v31a: a hero landed on a callout and check's overlap test never sampled it. v39a: counting from −$25,000 up to
+        "+$30,410" drew "−+$12,000"."""
+        import json, longform, render
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            film = Path(d); (film / "panels").mkdir()
+            Image.new("RGB", (1920, 1080), (200, 190, 170)).save(film / "panels" / "yard.png")
+            segs = [{"id": "a", "type": "statement", "chapter": "One", "t0": 0, "t1": 3, "data": {"text": "The first season"}, "counter": {"value": "−$25,000", "label": "CASH", "t": 0.3}},
+                    {"id": "b", "type": "panel", "chapter": "Two", "t0": 3, "t1": 9, "counter": {"value": "+$30,410", "t": 4.0},
+                     "data": {"image": "panels/yard.png", "callouts": [{"kind": "stat", "value": "$1,000/mo", "text": "rent", "t": 3.2, "pos": [0.5, 0.42]}]}}]
+            shutil.copy(longform.TEMPLATE, film / "film.html")
+            for f_ in longform.ENGINE_FILES:
+                shutil.copy(longform.HERE / f_, film / f_)
+            (film / "timeline.js").write_text("window.TIMELINE = " + json.dumps({"duration": 9, "segments": segs, "chapters": [{"title": "One", "t0": 0, "t1": 3}, {"title": "Two", "t0": 3, "t1": 9}]}) + ";\n")
+            shown = set()
+            with render.Film(film) as f:
+                heroes = f.page.evaluate("window.STUDIO.heroes")
+                self.assertEqual([h["value"] for h in heroes], ["+$30,410"])
+                for t in (4.45, 4.75, 5.2):
+                    f.seek(t); self.assertEqual(f.page.evaluate(longform.OVERLAP), [], t)
+                for k in range(120, 270):
+                    f.seek(k / 30)
+                    shown |= set(f.page.evaluate("() => [...document.querySelectorAll('#hud text')].map(e => e.textContent).filter(s => /\\d/.test(s))"))
+                self.assertFalse(f.page.evaluate("window.STUDIO.warnings || []"))
+                self.assertFalse(f.errors)
+            self.assertFalse([v for v in shown if "−+" in v or "++" in v or "+−" in v], shown)
+            self.assertTrue(any(v.startswith("−$") for v in shown) and any(v.startswith("+$") and v != "+$30,410" for v in shown))  # counts across zero
+            self.assertIn("+$55,410", shown)                   # the change chip
+            self.assertEqual(longform.overlaps(film, segs, 0), {})   # check samples the hero's hold, and it is clear
+
 
 class CollageStyle(unittest.TestCase):
     """"style": "collage": tags slap on their word on twos, ink and paint draw on stills, the HUD, source and chart take the
