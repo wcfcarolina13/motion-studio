@@ -2757,6 +2757,26 @@ class BeatLandings(unittest.TestCase):
             lines, probs = cuecheck.run(self.film(d, [1.0], [1.0, 3.0]))
             self.assertEqual(probs, []); self.assertIn("1 with no clear change", lines[0])
 
+    def test_small_first_mark_and_motion_on_twos(self):
+        # Survive Year 1 cel: a chart's start dot on the word then the line drawing 0.3 s later was called 257 ms late,
+        # and lettering on its word in a scene moving on twos was called 312 ms early
+        import cuecheck
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "f"); (f / "out").mkdir(parents=True)
+            vf = ",".join([
+                "drawbox=x=0:y=0:w=640:h=60:color=white:t=fill:enable='lt(mod(n\\,4)\\,2)'",        # motion on twos, all along
+                "drawbox=x=300:y=200:w=10:h=10:color=black:t=fill:enable='gte(t,1.0)'",           # the dot, on the word at 1.0
+                "drawbox=x=100:y=150:w=400:h=120:color=black:t=fill:enable='gte(t,1.3)'",         # the line, bigger, 0.3 s on
+                "drawbox=x=40:y=300:w=14:h=14:color=black:t=fill:enable='gte(t,2.6)'"])          # a small mark on 2.6
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=30:d=4", "-vf", vf,
+                            "-pix_fmt", "yuv420p", str(f / "out" / "silent.mp4")], check=True)
+            tl = {"duration": 4, "segments": [{"id": "a", "type": "panel", "t0": 0, "t1": 4}],
+                  "cues": [{"seg": "a", "at": "people", "t": 1.0}, {"seg": "a", "at": "two", "t": 2.6}]}
+            (f / "timeline.js").write_text("window.TIMELINE = " + json.dumps(tl) + ";")
+            lines, probs = cuecheck.run(f)
+            self.assertEqual(probs, [], lines)
+            self.assertIn("2 measured", lines[0])
+
 
 class StillReviewRules(unittest.TestCase):
     """The owner's review of the first 85 ChatGPT stills (picture-truth.md, rule 12), as lint and prompt defaults."""
